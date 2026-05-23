@@ -11,7 +11,7 @@ APS NoteCast is developed by Alex's Piano Service LLC for practical player-piano
 ## Highlights
 
 - First-run connection wizard for BLE MIDI.
-- Pair-first guidance for WIDI devices that must be paired in Android Bluetooth settings.
+- Scan-first connection guidance, with Android Bluetooth settings kept as a fallback for adapters that do not appear or connect.
 - Bluetooth-off notices with a direct request to turn Bluetooth on.
 - BLE and Android MIDI device scan results in one connection flow.
 - Preferred-device memory and auto-reconnect while the app is open.
@@ -36,18 +36,64 @@ APS NoteCast is designed around Android's MIDI API and the standard BLE MIDI ser
 
 `03B80E5A-EDE8-4B33-A751-6CE34EC4C700`
 
-Many WIDI devices need to be paired in Android Bluetooth settings before Android exposes them as MIDI devices. APS NoteCast's connection flow intentionally tells users to pair first, then scan and connect inside the app.
+Most WIDI and compatible BLE MIDI adapters should start from APS NoteCast: scan, connect, then play. Android Bluetooth settings are a fallback for adapters that do not appear or cannot be connected from the app.
 
 For reliable testing:
 
 1. Power the WIDI or compatible BLE MIDI adapter.
-2. Pair it in Android Bluetooth settings if Android requires pairing.
+2. Open APS NoteCast.
+3. Grant Bluetooth/Nearby Devices permissions.
+4. Scan from APS NoteCast.
+5. Connect to the MIDI device if it is available.
+6. **Only if the adapter does not appear or cannot connect, open Android Bluetooth settings, pair the adapter there, return to APS NoteCast, scan again, and connect.**
+7. Import or select a MIDI file.
+8. Test playback at low volume first.
+9. Test Stop and Panic before leaving a playlist unattended.
+
+## Connection Flow
+
+### First-time connection to a device
+
+1. Power on the WIDI or compatible BLE MIDI adapter.
+2. Turn on Android Bluetooth.
 3. Open APS NoteCast.
-4. Grant Bluetooth/Nearby Devices permissions.
-5. Scan from APS NoteCast and connect to the paired MIDI device.
-6. Import or select a MIDI file.
-7. Test playback at low volume first.
-8. Test Stop and Panic before leaving a playlist unattended.
+4. Grant Bluetooth/Nearby Devices permissions if prompted.
+5. Open BLE MIDI connection.
+6. Tap Scan.
+7. Tap Connect on the target adapter.
+8. If the adapter is not shown or cannot be connected, open Android Bluetooth settings.
+9. Pair the adapter there if Android requires it.
+10. Return to APS NoteCast.
+11. Tap Scan again.
+12. Tap Connect.
+13. Confirm APS NoteCast shows the adapter as Connected.
+14. Play a short MIDI file at low volume.
+15. Tap Stop and confirm all notes and pedals stop.
+
+### Reconnecting later
+
+1. Power on the same adapter.
+2. Open APS NoteCast.
+3. Wait for auto-reconnect if it is enabled.
+4. If it does not reconnect automatically, open BLE MIDI connection.
+5. Tap Connect on the saved adapter.
+6. If APS NoteCast says the saved adapter is not currently available, tap Scan.
+7. Tap Connect when the adapter appears.
+8. **Use Android Bluetooth pairing only if Android forgot the adapter or APS NoteCast still cannot connect after scanning.**
+9. Play a short MIDI file.
+10. Tap Stop and confirm all notes and pedals stop.
+
+### Switching to another saved device
+
+1. Stop playback before changing adapters.
+2. Power on the adapter you want to use.
+3. Open BLE MIDI connection.
+4. Tap Scan if the target adapter is not listed as ready.
+5. Tap Connect on the target adapter.
+6. Confirm APS NoteCast shows the new adapter as Connected.
+7. Play a short MIDI file.
+8. Confirm only the intended instrument responds.
+9. Tap Stop and confirm all notes and pedals stop.
 
 ## Safety
 

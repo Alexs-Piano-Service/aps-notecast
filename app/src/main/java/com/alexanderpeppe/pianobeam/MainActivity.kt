@@ -21,6 +21,8 @@ import androidx.compose.foundation.clickable
 import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.foundation.gestures.detectDragGesturesAfterLongPress
 import androidx.compose.foundation.Image
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxWithConstraints
@@ -263,7 +265,11 @@ class MainActivity : ComponentActivity() {
 
     private fun bluetoothRuntimePermissions(): List<String> {
         return if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
-            listOf(Manifest.permission.BLUETOOTH_SCAN, Manifest.permission.BLUETOOTH_CONNECT)
+            listOf(
+                Manifest.permission.BLUETOOTH_SCAN,
+                Manifest.permission.BLUETOOTH_CONNECT,
+                Manifest.permission.ACCESS_FINE_LOCATION
+            )
         } else {
             listOf(Manifest.permission.ACCESS_FINE_LOCATION)
         }
@@ -377,8 +383,8 @@ private fun NoteCastApp(
     LaunchedEffect(permissionsGranted) {
         service.refreshKnownDevices()
     }
-    LaunchedEffect(showConnector) {
-        service.setAutoReconnectPausedForDevicePicker(showConnector)
+    LaunchedEffect(showConnector, showWizard) {
+        service.setAutoReconnectPausedForDevicePicker(showConnector || showWizard)
     }
     LaunchedEffect(permissionsGranted, settings.scanOnLaunch) {
         if (permissionsGranted && settings.scanOnLaunch) service.startBleScan()
@@ -588,7 +594,10 @@ private fun NoteCastApp(
             onOpenBluetoothPairing = onOpenBluetoothPairing,
             onOpenBatterySettings = onOpenBatterySettings,
             autoReconnectEnabled = settings.autoReconnectEnabled,
-            onDismiss = { showWizard = false }
+            onDismiss = {
+                service.continueOffline()
+                showWizard = false
+            }
         )
     }
 
@@ -1916,6 +1925,7 @@ private fun TransportBar(
                         service = service,
                         onPlaySelection = onPlaySelection,
                         hasSelection = selectedId != null,
+                        stackVolume = true,
                         modifier = Modifier.weight(1f)
                     )
                 }
@@ -1999,6 +2009,50 @@ private fun TransportControls(
     service: NoteCastService,
     onPlaySelection: () -> Unit,
     hasSelection: Boolean,
+    stackVolume: Boolean = false,
+    modifier: Modifier = Modifier
+) {
+    if (stackVolume) {
+        Column(
+            modifier,
+            verticalArrangement = Arrangement.spacedBy(2.dp),
+            horizontalAlignment = Alignment.CenterHorizontally
+        ) {
+            TransportButtons(
+                state = state,
+                service = service,
+                onPlaySelection = onPlaySelection,
+                hasSelection = hasSelection
+            )
+            VolumeControl(
+                state = state,
+                service = service,
+                modifier = Modifier.fillMaxWidth()
+            )
+        }
+    } else {
+        Row(modifier, verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+            TransportButtons(
+                state = state,
+                service = service,
+                onPlaySelection = onPlaySelection,
+                hasSelection = hasSelection
+            )
+            VolumeControl(
+                state = state,
+                service = service,
+                modifier = Modifier.weight(1f)
+            )
+        }
+    }
+}
+
+@Composable
+private fun TransportButtons(
+    state: AppUiState,
+    service: NoteCastService,
+    onPlaySelection: () -> Unit,
+    hasSelection: Boolean,
     modifier: Modifier = Modifier
 ) {
     val playback = state.playback
@@ -2029,6 +2083,16 @@ private fun TransportControls(
         IconButton(onClick = { service.skipToNext() }, enabled = playback.isActive && !playback.isPreparing) {
             Icon(Icons.Default.SkipNext, contentDescription = "Next")
         }
+    }
+}
+
+@Composable
+private fun VolumeControl(
+    state: AppUiState,
+    service: NoteCastService,
+    modifier: Modifier = Modifier
+) {
+    Row(modifier, verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
         Icon(Icons.AutoMirrored.Filled.VolumeUp, contentDescription = null, modifier = Modifier.size(20.dp))
         Slider(
             value = state.volumePercent.toFloat(),
@@ -2094,41 +2158,27 @@ private fun ConnectionWizardDialog(
     autoReconnectEnabled: Boolean,
     onDismiss: () -> Unit
 ) {
-    var pairingScreenOpened by rememberSaveable { mutableStateOf(false) }
-    val hasPairedMidiDevice = state.bleDevices.any {
-        it.source.contains("Paired", ignoreCase = true) || it.source.contains("Android", ignoreCase = true)
-    }
-
-    LaunchedEffect(permissionsGranted, state.connection.bluetoothEnabled, state.connection.connected, hasPairedMidiDevice) {
-        if (
-            permissionsGranted &&
-            state.connection.bluetoothEnabled &&
-            !state.connection.connected &&
-            !hasPairedMidiDevice &&
-            !pairingScreenOpened
-        ) {
-            pairingScreenOpened = true
-            delay(700L)
-            onOpenBluetoothPairing()
-        }
-    }
     AlertDialog(
         onDismissRequest = onDismiss,
         icon = { BrandMark(modifier = Modifier.size(64.dp), contentDescription = "APS NoteCast") },
         title = { Text("Connect BLE MIDI") },
         text = {
-            Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+            Column(
+                modifier = Modifier.verticalScroll(rememberScrollState()),
+                verticalArrangement = Arrangement.spacedBy(12.dp)
+            ) {
                 PrimaryLogoBanner()
                 Text("Choose your piano adapter to start. You can continue offline and connect later.")
-                BatteryUsageRecommendation(onOpenBatterySettings = onOpenBatterySettings)
                 DeviceConnectorContent(
                     state = state,
                     service = service,
                     permissionsGranted = permissionsGranted,
                     onRequestPermissions = onRequestPermissions,
                     onRequestBluetoothEnable = onRequestBluetoothEnable,
-                    onOpenBluetoothPairing = onOpenBluetoothPairing
+                    onOpenBluetoothPairing = onOpenBluetoothPairing,
+                    compact = true
                 )
+                BatteryUsageRecommendation(onOpenBatterySettings = onOpenBatterySettings)
             }
         },
         confirmButton = {
@@ -2175,7 +2225,10 @@ private fun ConnectionDialog(
         icon = { BrandMark(modifier = Modifier.size(56.dp), contentDescription = "APS NoteCast") },
         title = { Text("BLE MIDI connection") },
         text = {
-            Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+            Column(
+                modifier = Modifier.verticalScroll(rememberScrollState()),
+                verticalArrangement = Arrangement.spacedBy(12.dp)
+            ) {
                 DeviceConnectorContent(
                     state = state,
                     service = service,
@@ -2205,6 +2258,8 @@ private fun DeviceConnectorContent(
     compact: Boolean = false
 ) {
     var removeDeviceAddress by rememberSaveable { mutableStateOf<String?>(null) }
+    var renameDeviceAddress by rememberSaveable { mutableStateOf<String?>(null) }
+    var showScanDialog by rememberSaveable { mutableStateOf(false) }
 
     if (!permissionsGranted) {
         Button(onClick = onRequestPermissions, modifier = Modifier.fillMaxWidth()) {
@@ -2263,7 +2318,7 @@ private fun DeviceConnectorContent(
                         service.autoReconnectIfPossible(force = true)
                     }
                 ) {
-                    Text(if (state.connection.autoReconnectSuppressed) "Connect" else "Find")
+                    Text("Connect")
                 }
             }
         }
@@ -2276,49 +2331,59 @@ private fun DeviceConnectorContent(
             actionLabel = if (state.connection.scanning) "Stop" else null,
             onAction = if (state.connection.scanning) ({ service.stopBleScan() }) else null
         )
+    } else if (state.connection.message.isNotBlank() && state.connection.message != "Not connected") {
+        Surface(shape = RoundedCornerShape(4.dp), color = MaterialTheme.colorScheme.surfaceVariant) {
+            Text(
+                state.connection.message,
+                modifier = Modifier.padding(12.dp),
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+        }
     }
 
     Surface(shape = RoundedCornerShape(4.dp), color = MaterialTheme.colorScheme.surfaceVariant) {
         Column(Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-            Text("1. Pair your WIDI device in Android Bluetooth.", fontWeight = FontWeight.SemiBold)
+            Text("Connect a MIDI adapter", fontWeight = FontWeight.SemiBold)
             Text(
-                "2. Return to APS NoteCast, scan, then tap Connect on the paired MIDI device.",
+                "Scan for a nearby BLE MIDI adapter, then connect it. Saved adapters will appear here for quick reconnect.",
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant
             )
-            OutlinedButton(onClick = onOpenBluetoothPairing, modifier = Modifier.fillMaxWidth()) {
-                Icon(Icons.AutoMirrored.Filled.BluetoothSearching, contentDescription = null)
-                Spacer(Modifier.width(8.dp))
-                Text("Pair new device")
-            }
         }
     }
 
     Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
         Button(
-            onClick = { service.startBleScan() },
+            onClick = {
+                showScanDialog = true
+                service.startBleScan()
+            },
             enabled = !state.connection.scanning && !state.connection.connecting,
             modifier = Modifier.fillMaxWidth()
         ) {
             Icon(Icons.Default.Refresh, contentDescription = null)
             Spacer(Modifier.width(8.dp))
-            Text("Scan")
+            Text(if (state.connection.scanning) "Scanning..." else "Scan")
         }
     }
 
-    val deviceResults = state.bleDevices.filterNot { sameDeviceTarget(it.address, state.connection.address) }
+    val deviceResults = state.bleDevices
+        .filter { it.added }
+        .filterNot { sameDeviceTarget(it.address, state.connection.address) }
 
     if (state.connection.connected) {
         ConnectedDeviceRow(
             state = state,
             service = service,
+            onRename = { address -> renameDeviceAddress = address },
             onRemove = { address -> removeDeviceAddress = address }
         )
     }
 
     if (deviceResults.isEmpty() && !state.connection.scanning && !state.connection.connecting) {
         Text(
-            if (state.connection.connected) "Scan to find another MIDI device." else "No devices found. Pair first, then scan.",
+            if (state.connection.connected) "Scan to connect another MIDI device." else "No MIDI devices saved yet. Tap Scan to find one.",
             color = MaterialTheme.colorScheme.onSurfaceVariant
         )
     } else if (deviceResults.isNotEmpty()) {
@@ -2327,14 +2392,60 @@ private fun DeviceConnectorContent(
             verticalArrangement = Arrangement.spacedBy(8.dp)
         ) {
             items(deviceResults, key = { it.address }) { device ->
+                val canSearchForDevice = !state.connection.scanning && !state.connection.connecting
                 DeviceResultRow(
                     device = device,
-                    actionLabel = if (state.connection.connected) "Switch" else "Connect",
-                    onConnect = { service.connect(device.address) },
+                    actionLabel = when {
+                        !device.connectable -> "Scan"
+                        else -> "Connect"
+                    },
+                    actionEnabled = device.connectable || canSearchForDevice,
+                    onConnect = {
+                        if (device.connectable) {
+                            service.connect(device.address)
+                        } else {
+                            showScanDialog = true
+                            service.startBleScan()
+                        }
+                    },
+                    onRename = { renameDeviceAddress = device.address },
                     onRemove = { removeDeviceAddress = device.address }
                 )
             }
         }
+    }
+
+    if (showScanDialog) {
+        ScanDevicesDialog(
+            state = state,
+            service = service,
+            onDismiss = {
+                service.stopBleScan()
+                showScanDialog = false
+            },
+            onRename = { address -> renameDeviceAddress = address },
+            onOpenBluetoothPairing = onOpenBluetoothPairing,
+            onConnect = { address ->
+                service.addDevice(address)
+                service.connect(address)
+                showScanDialog = false
+            }
+        )
+    }
+
+    renameDeviceAddress?.let { address ->
+        val deviceName = state.bleDevices.firstOrNull { it.address == address }?.name
+            ?: (if (state.connection.address == address) state.connection.deviceName else null)
+            ?: "MIDI device"
+        RenameDialog(
+            title = "Rename MIDI device",
+            initialName = deviceName,
+            onDismiss = { renameDeviceAddress = null },
+            onSave = { name ->
+                service.renameDevice(address, name)
+                renameDeviceAddress = null
+            }
+        )
     }
 
     removeDeviceAddress?.let { address ->
@@ -2355,23 +2466,122 @@ private fun DeviceConnectorContent(
 }
 
 @Composable
+private fun ScanDevicesDialog(
+    state: AppUiState,
+    service: NoteCastService,
+    onDismiss: () -> Unit,
+    onRename: (String) -> Unit,
+    onOpenBluetoothPairing: () -> Unit,
+    onConnect: (String) -> Unit
+) {
+    val scanResults = state.bleDevices
+        .filterNot { sameDeviceTarget(it.address, state.connection.address) }
+        .filter { it.source != "Saved" || it.connectable }
+        .filter { it.source == "BLE scan" || it.likelyMidi || it.standardBleMidi || it.added || it.connectable }
+        .sortedWith(
+            compareByDescending<BleMidiDeviceItem> { it.connectable }
+                .thenByDescending { it.standardBleMidi }
+                .thenByDescending { it.likelyMidi }
+                .thenBy { it.name }
+        )
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        icon = { Icon(Icons.AutoMirrored.Filled.BluetoothSearching, contentDescription = null) },
+        title = { Text("Nearby MIDI devices") },
+        text = {
+            Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                if (state.connection.scanning) {
+                    LoadingStatusPanel(
+                        title = "Looking for MIDI",
+                        message = state.connection.message,
+                        actionLabel = "Stop",
+                        onAction = { service.stopBleScan() }
+                    )
+                }
+                if (scanResults.isEmpty()) {
+                    Text(
+                        if (state.connection.scanning) {
+                            "Searching..."
+                        } else {
+                            "No MIDI adapters found. Make sure the adapter is powered on and nearby, then scan again."
+                        },
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                } else {
+                    LazyColumn(
+                        modifier = Modifier.heightIn(max = 360.dp),
+                        verticalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                        items(scanResults, key = { it.address }) { device ->
+                            ScanDeviceRow(
+                                device = device,
+                                onAdd = { service.addDevice(device.address) },
+                                onConnect = { onConnect(device.address) },
+                                onRename = { onRename(device.address) },
+                                onPair = onOpenBluetoothPairing
+                            )
+                        }
+                    }
+                }
+            }
+        },
+        confirmButton = {
+            TextButton(
+                onClick = { service.startBleScan() },
+                enabled = !state.connection.scanning && !state.connection.connecting
+            ) {
+                Text("Scan again")
+            }
+        },
+        dismissButton = {
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                if (scanResults.isEmpty() && !state.connection.scanning && !state.connection.connecting) {
+                    TextButton(onClick = onOpenBluetoothPairing) {
+                        Text("Bluetooth settings")
+                    }
+                }
+                TextButton(onClick = onDismiss) {
+                    Text("Close")
+                }
+            }
+        }
+    )
+}
+
+@Composable
 private fun ConnectedDeviceRow(
     state: AppUiState,
     service: NoteCastService,
+    onRename: (String) -> Unit,
     onRemove: (String) -> Unit
 ) {
     Surface(shape = RoundedCornerShape(4.dp), color = MaterialTheme.colorScheme.secondaryContainer) {
-        Row(Modifier.padding(12.dp), verticalAlignment = Alignment.CenterVertically) {
-            Icon(Icons.Default.Check, contentDescription = null)
-            Spacer(Modifier.width(8.dp))
-            Column(Modifier.weight(1f)) {
-                Text(state.connection.deviceName ?: "BLE MIDI Device", fontWeight = FontWeight.SemiBold)
-                Text("Connected", style = MaterialTheme.typography.bodySmall)
+        Column(Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Icon(Icons.Default.Check, contentDescription = null)
+                Spacer(Modifier.width(10.dp))
+                Column(Modifier.weight(1f)) {
+                    Text(
+                        state.connection.deviceName ?: "BLE MIDI Device",
+                        fontWeight = FontWeight.SemiBold,
+                        maxLines = 1,
+                        softWrap = false,
+                        overflow = TextOverflow.Ellipsis
+                    )
+                    Text("Connected", style = MaterialTheme.typography.bodySmall)
+                }
             }
-            TextButton(onClick = { service.disconnect() }) { Text("Disconnect") }
-            state.connection.address?.let { address ->
-                IconButton(onClick = { onRemove(address) }) {
-                    Icon(Icons.Default.Delete, contentDescription = "Remove ${state.connection.deviceName ?: "device"}")
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
+                Button(onClick = { service.disconnect() }, modifier = Modifier.weight(1f)) {
+                    Text("Disconnect", maxLines = 1, softWrap = false, overflow = TextOverflow.Ellipsis)
+                }
+                state.connection.address?.let { address ->
+                    IconButton(onClick = { onRename(address) }) {
+                        Icon(Icons.Default.DriveFileRenameOutline, contentDescription = "Rename ${state.connection.deviceName ?: "device"}")
+                    }
+                    IconButton(onClick = { onRemove(address) }) {
+                        Icon(Icons.Default.Delete, contentDescription = "Remove ${state.connection.deviceName ?: "device"}")
+                    }
                 }
             }
         }
@@ -2382,34 +2592,119 @@ private fun ConnectedDeviceRow(
 private fun DeviceResultRow(
     device: BleMidiDeviceItem,
     actionLabel: String,
+    actionEnabled: Boolean,
     onConnect: () -> Unit,
+    onRename: () -> Unit,
     onRemove: () -> Unit
 ) {
     Surface(shape = RoundedCornerShape(4.dp), color = MaterialTheme.colorScheme.surfaceVariant) {
-        Row(Modifier.padding(12.dp), verticalAlignment = Alignment.CenterVertically) {
-            Icon(Icons.Default.Bluetooth, contentDescription = null)
-            Spacer(Modifier.width(10.dp))
-            Column(Modifier.weight(1f)) {
-                Text(device.name, fontWeight = FontWeight.SemiBold, maxLines = 1, overflow = TextOverflow.Ellipsis)
-                Text(
-                    listOfNotNull(
-                        when {
-                            device.standardBleMidi -> "BLE MIDI"
-                            device.likelyMidi -> "Likely MIDI"
-                            else -> "BLE"
-                        },
-                        device.source,
-                        device.detail,
-                        device.rssi?.let { "$it dBm" }
-                    ).joinToString(" - "),
-                    style = MaterialTheme.typography.bodySmall,
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis
-                )
+        Column(Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Icon(Icons.Default.Bluetooth, contentDescription = null)
+                Spacer(Modifier.width(10.dp))
+                Column(Modifier.weight(1f)) {
+                    Text(
+                        device.name,
+                        fontWeight = FontWeight.SemiBold,
+                        maxLines = 1,
+                        softWrap = false,
+                        overflow = TextOverflow.Ellipsis
+                    )
+                    Text(
+                        listOfNotNull(
+                            if (device.added) "Added" else null,
+                            when {
+                                device.standardBleMidi -> "BLE MIDI"
+                                device.likelyMidi -> "Possible MIDI"
+                                else -> "BLE"
+                            },
+                            device.source,
+                            device.detail,
+                            device.rssi?.let { "$it dBm" }
+                        ).joinToString(" - "),
+                        style = MaterialTheme.typography.bodySmall,
+                        maxLines = 1,
+                        softWrap = false,
+                        overflow = TextOverflow.Ellipsis
+                    )
+                }
             }
-            Button(onClick = onConnect) { Text(actionLabel) }
-            IconButton(onClick = onRemove) {
-                Icon(Icons.Default.Delete, contentDescription = "Remove ${device.name}")
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
+                Button(onClick = onConnect, enabled = actionEnabled, modifier = Modifier.weight(1f)) {
+                    Text(actionLabel, maxLines = 1, softWrap = false, overflow = TextOverflow.Ellipsis)
+                }
+                IconButton(onClick = onRename) {
+                    Icon(Icons.Default.DriveFileRenameOutline, contentDescription = "Rename ${device.name}")
+                }
+                IconButton(onClick = onRemove) {
+                    Icon(Icons.Default.Delete, contentDescription = "Remove ${device.name}")
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun ScanDeviceRow(
+    device: BleMidiDeviceItem,
+    onAdd: () -> Unit,
+    onConnect: () -> Unit,
+    onRename: () -> Unit,
+    onPair: () -> Unit
+) {
+    Surface(shape = RoundedCornerShape(4.dp), color = MaterialTheme.colorScheme.surfaceVariant) {
+        Column(Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Icon(Icons.Default.Bluetooth, contentDescription = null)
+                Spacer(Modifier.width(10.dp))
+                Column(Modifier.weight(1f)) {
+                    Text(
+                        device.name,
+                        fontWeight = FontWeight.SemiBold,
+                        maxLines = 1,
+                        softWrap = false,
+                        overflow = TextOverflow.Ellipsis
+                    )
+                    Text(
+                        listOfNotNull(
+                            if (device.added) "Added" else null,
+                            when {
+                                device.standardBleMidi -> "BLE MIDI"
+                                device.likelyMidi -> "Possible MIDI"
+                                else -> "BLE"
+                            },
+                            device.source,
+                            device.detail,
+                            device.rssi?.let { "$it dBm" }
+                        ).joinToString(" - "),
+                        style = MaterialTheme.typography.bodySmall,
+                        maxLines = 1,
+                        softWrap = false,
+                        overflow = TextOverflow.Ellipsis
+                    )
+                }
+                IconButton(onClick = onRename) {
+                    Icon(Icons.Default.DriveFileRenameOutline, contentDescription = "Rename ${device.name}")
+                }
+            }
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                if (device.connectable && !device.added) {
+                    OutlinedButton(onClick = onAdd, modifier = Modifier.weight(1f)) {
+                        Text("Add", maxLines = 1, softWrap = false, overflow = TextOverflow.Ellipsis)
+                    }
+                }
+                if (device.connectable) {
+                    Button(
+                        onClick = onConnect,
+                        modifier = Modifier.weight(1f)
+                    ) {
+                        Text("Connect", maxLines = 1, softWrap = false, overflow = TextOverflow.Ellipsis)
+                    }
+                } else {
+                    TextButton(onClick = onPair, modifier = Modifier.fillMaxWidth()) {
+                        Text("Bluetooth settings", maxLines = 1, softWrap = false, overflow = TextOverflow.Ellipsis)
+                    }
+                }
             }
         }
     }

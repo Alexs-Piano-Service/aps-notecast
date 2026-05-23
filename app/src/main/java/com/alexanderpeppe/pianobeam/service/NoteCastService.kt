@@ -38,6 +38,7 @@ import android.os.Handler
 import android.os.IBinder
 import android.os.Looper
 import android.os.PowerManager
+import android.os.SystemClock
 import androidx.core.app.NotificationManagerCompat
 import androidx.core.content.ContextCompat
 import androidx.core.content.FileProvider
@@ -90,6 +91,9 @@ class NoteCastService : Service() {
         private const val ACTION_PANIC = "com.alexanderpeppe.pianobeam.PANIC"
         private const val SCAN_WINDOW_MS = 12_000L
         private const val AUTO_RECONNECT_SCAN_WINDOW_MS = 4_500L
+        private const val RECENT_BLE_SCAN_TTL_MS = 60_000L
+        private const val CONNECTION_ATTACH_VERIFY_DELAY_MS = 1_500L
+        private const val BLE_MIDI_READY_SETTLE_MS = 2_000L
         private const val SCHEDULE_AHEAD_NS = 45_000_000L
         private const val START_DELAY_NS = 160_000_000L
         private const val PROGRESS_POST_INTERVAL_NS = 220_000_000L
@@ -98,9 +102,11 @@ class NoteCastService : Service() {
         private const val PREF_LAST_DEVICE_NAME = "last_device_name"
         private const val PREF_KNOWN_DEVICES = "known_devices"
         private const val PREF_HIDDEN_DEVICES = "hidden_devices"
+        private const val PREF_DEVICE_ALIASES = "device_aliases"
         private const val PREF_MANUAL_DISCONNECT = "manual_disconnect"
 
         private val MIDI_SERVICE_UUID: UUID = UUID.fromString("03B80E5A-EDE8-4B33-A751-6CE34EC4C700")
+        private val OPAQUE_BLE_NAME_REGEX = Regex("^[0-9A-Fa-f]{8,}$")
         private val MIDI_NAME_HINTS = listOf(
             "widi",
             "cme",
@@ -109,6 +115,9 @@ class NoteCastService : Service() {
             "midi",
             "md-bt",
             "ud-bt"
+        )
+        private val GENERIC_BLE_NAME_PREFIXES = listOf(
+            "elk-ble"
         )
     }
 
@@ -129,6 +138,8 @@ class NoteCastService : Service() {
 
     private val devicesByAddress = linkedMapOf<String, BluetoothDevice>()
     private val bleScanItemsByAddress = linkedMapOf<String, BleMidiDeviceItem>()
+    private val bleScanSeenAtMsByAddress = linkedMapOf<String, Long>()
+    private val bleScanSeenAtMsByName = linkedMapOf<String, Long>()
     private val midiDevicesByConnectionId = linkedMapOf<String, MidiDeviceInfo>()
     private var scanCallback: ScanCallback? = null
     private var scanTimeoutJob: Job? = null
@@ -144,9 +155,12 @@ class NoteCastService : Service() {
 
         override fun onDeviceRemoved(device: MidiDeviceInfo) {
             val removedConnectionId = midiConnectionId(device)
+            val openedConnectionId = connectedMidiDeviceInfo?.let { midiConnectionId(it) }
+            val removedCurrentDevice = connectedMidiDeviceInfo?.id == device.id ||
+                sameConnectionTarget(openedConnectionId, removedConnectionId)
             refreshAndroidMidiDevices()
             val connection = _state.value.connection
-            if (connection.connected && connection.address == removedConnectionId) {
+            if (connection.connected && (sameConnectionTarget(connection.address, removedConnectionId) || removedCurrentDevice)) {
                 handleConnectionLost("${connection.deviceName ?: "MIDI device"} disconnected.")
             }
         }
@@ -166,19 +180,22 @@ class NoteCastService : Service() {
                         }
                     }
                 }
+                BluetoothDevice.ACTION_ACL_CONNECTED -> refreshKnownDevices()
                 BluetoothDevice.ACTION_ACL_DISCONNECTED,
-                BluetoothDevice.ACTION_ACL_DISCONNECT_REQUESTED -> handleBluetoothDeviceDisconnected(intent.bluetoothDeviceExtra())
+                BluetoothDevice.ACTION_ACL_DISCONNECT_REQUESTED -> noteBluetoothDeviceDisconnected(intent.bluetoothDeviceExtra())
             }
         }
     }
     private var bluetoothStateReceiverRegistered = false
 
     private var midiDevice: MidiDevice? = null
+    private var connectedMidiDeviceInfo: MidiDeviceInfo? = null
     private var midiInputPort: MidiInputPort? = null
     private var midiOutputPort: MidiOutputPort? = null
     private var playbackJob: Job? = null
     private var recordingCountdownJob: Job? = null
     private var connectionMonitorJob: Job? = null
+    private var connectionVerificationJob: Job? = null
     private var reconnectJob: Job? = null
     private val connectionGeneration = AtomicLong(0L)
     private val playbackGeneration = AtomicLong(0L)
@@ -262,6 +279,7 @@ class NoteCastService : Service() {
         playbackJob?.cancel()
         recordingCountdownJob?.cancel()
         connectionMonitorJob?.cancel()
+        connectionVerificationJob?.cancel()
         reconnectJob?.cancel()
         if (wasActive) sendPanicMessages()
         closeMidiConnection()
@@ -429,7 +447,7 @@ class NoteCastService : Service() {
         val refreshedCandidates = knownReconnectCandidates()
         val preferred = refreshedCandidates.firstOrNull() ?: return
         val available = refreshedCandidates.firstNotNullOfOrNull { candidate ->
-            availableConnectionAddress(candidate.address)?.let { address -> candidate to address }
+            availableAutoReconnectAddress(candidate.address)?.let { address -> candidate to address }
         }
         if (available != null) {
             val (candidate, address) = available
@@ -439,7 +457,7 @@ class NoteCastService : Service() {
         }
         val initialFallbackAddress = refreshedCandidates
             .drop(1)
-            .firstNotNullOfOrNull { availableConnectionAddress(it.address) }
+            .firstNotNullOfOrNull { availableAutoReconnectAddress(it.address) }
         if (!hasScanPermission()) {
             postMessage("Bluetooth scan permission is needed before looking for ${preferred.name}.")
             return
@@ -496,6 +514,8 @@ class NoteCastService : Service() {
         stopBleScan(connectReconnectFallback = false)
         devicesByAddress.clear()
         bleScanItemsByAddress.clear()
+        bleScanSeenAtMsByAddress.clear()
+        bleScanSeenAtMsByName.clear()
         refreshBondedBluetoothDevices()
         refreshAndroidMidiDevices()
         scanAutoConnectKnownDevices = autoConnectKnownDevices
@@ -590,8 +610,13 @@ class NoteCastService : Service() {
 
     fun connect(address: String) {
         val resolvedAddress = availableConnectionAddress(address) ?: address
-        if (_state.value.connection.connected && sameConnectionTarget(_state.value.connection.address, resolvedAddress)) {
-            postMessage("Already connected to ${_state.value.connection.deviceName ?: "that MIDI device"}.")
+        val currentConnection = _state.value.connection
+        if (
+            (currentConnection.connected || currentConnection.connecting) &&
+            sameConnectionTarget(currentConnection.address, resolvedAddress)
+        ) {
+            val name = currentConnection.deviceName ?: currentConnection.rememberedDeviceName ?: "that MIDI device"
+            postMessage(if (currentConnection.connecting) "Already connecting to $name..." else "Already connected to $name.")
             return
         }
         clearManualDisconnectSuppression()
@@ -601,17 +626,22 @@ class NoteCastService : Service() {
         }
         val device = devicesByAddress[resolvedAddress]
         if (device == null) {
-            postMessage("That BLE MIDI device is no longer in the scan list. Scan again.")
+            updateConnectionMessage("That BLE MIDI device is not in the current scan list. Scan again with the device powered on.")
             return
         }
         if (!hasConnectPermission()) {
-            postMessage("Bluetooth connect permission is required before connecting.")
+            updateConnectionMessage("Bluetooth connect permission is required before connecting.")
+            return
+        }
+        if (!isRecentlyScannedBleDevice(resolvedAddress)) {
+            val name = runCatching { displayNameForBluetoothDevice(resolvedAddress, device, null) }.getOrDefault("That BLE MIDI device")
+            updateConnectionMessage("$name was not seen in the latest scan. Scan again with the device powered on.")
             return
         }
         val generation = connectionGeneration.incrementAndGet()
         stopBleScan()
         prepareForConnectionChange()
-        val name = safeDeviceName(device)
+        val name = displayNameForBluetoothDevice(resolvedAddress, device, null)
         _state.update {
             it.copy(
                 connection = ConnectionUiState(
@@ -638,7 +668,9 @@ class NoteCastService : Service() {
                 if (openedDevice == null) {
                     _state.update {
                         it.copy(
-                            connection = rememberedConnection(message = "Could not open $name as a BLE MIDI device."),
+                            connection = rememberedConnection(
+                                message = "Could not open $name as a BLE MIDI device. Pair it in Android Bluetooth, then scan again."
+                            ),
                             lastMessage = "Connection failed."
                         )
                     }
@@ -659,7 +691,9 @@ class NoteCastService : Service() {
             if (isCurrentConnectionAttempt(generation, resolvedAddress)) {
                 _state.update {
                     it.copy(
-                        connection = rememberedConnection(message = "Android could not start the BLE MIDI connection."),
+                        connection = rememberedConnection(
+                            message = "Android could not start the BLE MIDI connection. Pair it in Android Bluetooth, then scan again."
+                        ),
                         lastMessage = "Connection failed: ${t.message ?: "unknown error"}"
                     )
                 }
@@ -670,6 +704,8 @@ class NoteCastService : Service() {
     private fun prepareForConnectionChange() {
         val wasActive = _state.value.playback.isActive
         connectionMonitorJob?.cancel()
+        connectionVerificationJob?.cancel()
+        connectionVerificationJob = null
         reconnectJob?.cancel()
         reconnectJob = null
         playbackGeneration.incrementAndGet()
@@ -690,6 +726,8 @@ class NoteCastService : Service() {
     fun disconnect() {
         connectionGeneration.incrementAndGet()
         connectionMonitorJob?.cancel()
+        connectionVerificationJob?.cancel()
+        connectionVerificationJob = null
         reconnectJob?.cancel()
         reconnectJob = null
         suppressAutoReconnectAfterManualDisconnect()
@@ -703,6 +741,86 @@ class NoteCastService : Service() {
         }
     }
 
+    fun continueOffline() {
+        connectionGeneration.incrementAndGet()
+        reconnectJob?.cancel()
+        reconnectJob = null
+        stopBleScan()
+        suppressAutoReconnectAfterManualDisconnect()
+        _state.update {
+            it.copy(
+                connection = rememberedConnection(message = "Auto-reconnect paused."),
+                lastMessage = "Continuing offline."
+            )
+        }
+    }
+
+    fun renameDevice(address: String, name: String) {
+        val cleanName = cleanStoredDeviceName(name)
+        if (cleanName.isBlank()) return
+        val aliases = deviceAliases().toMutableMap()
+        connectionTargetAliases(address).forEach { aliasAddress ->
+            aliases[aliasAddress] = cleanName
+        }
+        val updatedKnownDevices = knownDevices().map { known ->
+            if (sameConnectionTarget(known.address, address)) known.copy(name = cleanName) else known
+        }
+        val editor = prefs.edit()
+            .putString(PREF_DEVICE_ALIASES, aliases.toSortedMap().entries.joinToString("\n") { "${it.key}\t${it.value}" })
+            .putString(PREF_KNOWN_DEVICES, updatedKnownDevices.joinToString("\n") { "${it.address}\t${it.name}" })
+        if (sameConnectionTarget(rememberedDeviceAddress(), address)) {
+            editor.putString(PREF_LAST_DEVICE_NAME, cleanName)
+        }
+        editor.apply()
+        _state.update {
+            val connection = it.connection
+            val updatedConnection = if (sameConnectionTarget(connection.address, address)) {
+                connection.copy(
+                    deviceName = cleanName,
+                    rememberedDeviceName = rememberedDeviceName(),
+                    rememberedDeviceAddress = rememberedDeviceAddress()
+                )
+            } else {
+                connection.copy(
+                    rememberedDeviceName = rememberedDeviceName(),
+                    rememberedDeviceAddress = rememberedDeviceAddress()
+                )
+            }
+            it.copy(
+                bleDevices = mergedDeviceList(),
+                connection = updatedConnection,
+                lastMessage = "Renamed MIDI device to $cleanName."
+            )
+        }
+    }
+
+    fun addDevice(address: String) {
+        val currentItem = mergedDeviceList().firstOrNull { sameConnectionTarget(it.address, address) }
+        val cleanName = cleanStoredDeviceName(
+            currentItem?.name ?: deviceAlias(address) ?: "BLE MIDI Adapter ${shortBluetoothIdentifier(address)}"
+        ).ifBlank { "MIDI device" }
+        val updatedKnownDevices = (listOf(KnownMidiDevice(address, cleanName)) + knownDevices().filterNot {
+            sameConnectionTarget(it.address, address)
+        }).take(8)
+        val hidden = hiddenDevices() - connectionTargetAliases(address)
+        prefs.edit()
+            .putString(PREF_KNOWN_DEVICES, updatedKnownDevices.joinToString("\n") { "${it.address}\t${it.name}" })
+            .putString(PREF_HIDDEN_DEVICES, hidden.sorted().joinToString("\n"))
+            .putBoolean(PREF_MANUAL_DISCONNECT, false)
+            .apply()
+        _state.update {
+            it.copy(
+                bleDevices = mergedDeviceList(),
+                connection = it.connection.copy(
+                    rememberedDeviceName = rememberedDeviceName(),
+                    rememberedDeviceAddress = rememberedDeviceAddress(),
+                    autoReconnectSuppressed = manualDisconnectSuppressed()
+                ),
+                lastMessage = "Added $cleanName to APS NoteCast."
+            )
+        }
+    }
+
     fun removeDevice(address: String) {
         val connection = _state.value.connection
         val name = _state.value.bleDevices.firstOrNull { it.address == address }?.name
@@ -712,6 +830,8 @@ class NoteCastService : Service() {
         if (wasCurrentConnection) {
             connectionGeneration.incrementAndGet()
             connectionMonitorJob?.cancel()
+            connectionVerificationJob?.cancel()
+            connectionVerificationJob = null
             reconnectJob?.cancel()
             reconnectJob = null
             stopPlayback(userRequested = true)
@@ -726,8 +846,12 @@ class NoteCastService : Service() {
         }
 
         val remainingKnownDevices = knownDevices().filterNot { sameConnectionTarget(it.address, address) }
+        val remainingAliases = deviceAliases().filterNot { (aliasAddress, _) ->
+            sameConnectionTarget(aliasAddress, address)
+        }
         val editor = prefs.edit()
             .putString(PREF_KNOWN_DEVICES, remainingKnownDevices.joinToString("\n") { "${it.address}\t${it.name}" })
+            .putString(PREF_DEVICE_ALIASES, remainingAliases.toSortedMap().entries.joinToString("\n") { "${it.key}\t${it.value}" })
             .putBoolean(PREF_MANUAL_DISCONNECT, false)
         if (sameConnectionTarget(rememberedDeviceAddress(), address)) {
             editor.remove(PREF_LAST_DEVICE_ADDRESS)
@@ -759,6 +883,7 @@ class NoteCastService : Service() {
             .remove(PREF_LAST_DEVICE_ADDRESS)
             .remove(PREF_LAST_DEVICE_NAME)
             .remove(PREF_KNOWN_DEVICES)
+            .remove(PREF_DEVICE_ALIASES)
             .remove(PREF_HIDDEN_DEVICES)
             .putBoolean(PREF_MANUAL_DISCONNECT, false)
             .apply()
@@ -798,10 +923,14 @@ class NoteCastService : Service() {
             postMessage("That Android MIDI device is no longer available. Scan again.")
             return
         }
+        val name = displayNameForMidiDevice(info)
+        if (!isAvailableAndroidMidiConnection(connectionId)) {
+            postMessage("$name is not connected in Android Bluetooth.")
+            return
+        }
         val generation = connectionGeneration.incrementAndGet()
         stopBleScan()
         prepareForConnectionChange()
-        val name = midiDeviceName(info)
         _state.update {
             it.copy(
                 connection = ConnectionUiState(
@@ -885,6 +1014,39 @@ class NoteCastService : Service() {
         midiDevice = openedDevice
         midiInputPort = inputPort
         midiOutputPort = outputPort
+        connectedMidiDeviceInfo = openedDevice.info
+        connectionVerificationJob?.cancel()
+        connectionVerificationJob = null
+        if (!isConnectionHealthy(connectionId)) {
+            _state.update {
+                it.copy(
+                    connection = it.connection.copy(
+                        connecting = true,
+                        message = "Waiting for Android Bluetooth to attach to $name..."
+                    ),
+                    lastMessage = "Waiting for Android Bluetooth to attach to $name..."
+                )
+            }
+            scheduleInitialConnectionVerification(name, connectionId, generation)
+            return
+        }
+        if (isBluetoothMidiConnection(connectionId, openedDevice.info)) {
+            _state.update {
+                it.copy(
+                    connection = it.connection.copy(
+                        connecting = true,
+                        message = "Finalizing BLE MIDI connection to $name..."
+                    ),
+                    lastMessage = "Finalizing BLE MIDI connection to $name..."
+                )
+            }
+            scheduleInitialConnectionVerification(name, connectionId, generation, BLE_MIDI_READY_SETTLE_MS)
+            return
+        }
+        markMidiConnectionConnected(name, connectionId)
+    }
+
+    private fun markMidiConnectionConnected(name: String, connectionId: String) {
         reconnectJob?.cancel()
         reconnectJob = null
         rememberConnectedDevice(connectionId, name)
@@ -907,6 +1069,35 @@ class NoteCastService : Service() {
             )
         }
         startConnectionMonitor(name, connectionId)
+    }
+
+    private fun scheduleInitialConnectionVerification(
+        name: String,
+        connectionId: String,
+        generation: Long,
+        delayMs: Long = CONNECTION_ATTACH_VERIFY_DELAY_MS
+    ) {
+        connectionVerificationJob?.cancel()
+        connectionVerificationJob = serviceScope.launch {
+            delay(delayMs)
+            if (!isCurrentConnectionAttempt(generation, connectionId)) return@launch
+            if (isConnectionHealthy(connectionId)) {
+                markMidiConnectionConnected(name, connectionId)
+                return@launch
+            }
+            AppEventLog.append("$name opened as MIDI, but Android Bluetooth is not attached.")
+            closeMidiConnection()
+            _state.update {
+                it.copy(
+                    connection = rememberedConnection(message = "$name is not connected in Android Bluetooth."),
+                    playback = PlaybackUiState(),
+                    lastMessage = "$name is not connected in Android Bluetooth."
+                )
+            }
+            updatePlaybackSurfaces(updateNotification = true)
+            stopForegroundIfNeeded()
+            releaseWakeLock()
+        }
     }
 
     private fun startConnectionMonitor(name: String, connectionId: String) {
@@ -937,29 +1128,77 @@ class NoteCastService : Service() {
     private fun isConnectionHealthy(connectionId: String): Boolean {
         refreshBluetoothState()
         if (!isBluetoothEnabled()) return false
-        if (isAndroidMidiConnectionId(connectionId)) {
-            refreshAndroidMidiDevices()
-            val info = midiDevicesByConnectionId[connectionId] ?: return false
-            val bluetoothDevice = midiBluetoothDevice(info)
-            return bluetoothDevice == null || isBluetoothDeviceConnected(bluetoothDevice)
+        if (midiInputPort == null || midiDevice == null) return false
+        refreshAndroidMidiDevices()
+        val openedConnectionId = connectedMidiDeviceInfo?.let { midiConnectionId(it) }
+        val midiDevicePresent = midiDevicesByConnectionId.keys.any { availableConnectionId ->
+            sameConnectionTarget(availableConnectionId, connectionId) ||
+                sameConnectionTarget(availableConnectionId, openedConnectionId)
         }
-        if (!hasConnectPermission()) return true
-        val device = devicesByAddress[connectionId] ?: return false
-        val bonded = runCatching { device.bondState == BluetoothDevice.BOND_BONDED }.getOrDefault(true)
-        if (!bonded) return false
-        return midiInputPort != null && isBluetoothDeviceConnected(device)
+        return midiDevicePresent && isBluetoothMidiConnectionAttached(connectionId, connectedMidiDeviceInfo)
+    }
+
+    private fun isBluetoothMidiConnection(connectionId: String, info: MidiDeviceInfo?): Boolean {
+        return info?.type == MidiDeviceInfo.TYPE_BLUETOOTH ||
+            info?.let { midiBluetoothDevice(it) } != null ||
+            bluetoothAddressFromConnectionId(connectionId) != null ||
+            !isAndroidMidiConnectionId(connectionId)
     }
 
     @SuppressLint("MissingPermission")
-    private fun handleBluetoothDeviceDisconnected(device: BluetoothDevice?) {
+    private fun isBluetoothMidiConnectionAttached(connectionId: String, info: MidiDeviceInfo?): Boolean {
+        val device = bluetoothDeviceForMidiConnection(connectionId, info) ?: return true
+        if (!hasConnectPermission()) return true
+        return runCatching {
+            bluetoothManager.getConnectionState(device, BluetoothProfile.GATT) == BluetoothProfile.STATE_CONNECTED ||
+                bluetoothManager.getConnectedDevices(BluetoothProfile.GATT).any { connectedDevice ->
+                    bluetoothDevicesReferToSameDevice(device, connectedDevice)
+                }
+        }.getOrDefault(false)
+    }
+
+    @SuppressLint("MissingPermission")
+    private fun bluetoothDevicesReferToSameDevice(left: BluetoothDevice, right: BluetoothDevice): Boolean {
+        val leftAddress = runCatching { left.address }.getOrNull()
+        val rightAddress = runCatching { right.address }.getOrNull()
+        if (!leftAddress.isNullOrBlank() && leftAddress == rightAddress) return true
+        val leftName = runCatching { left.name }.getOrNull()
+        val rightName = runCatching { right.name }.getOrNull()
+        return !leftName.isNullOrBlank() && leftName == rightName
+    }
+
+    private fun bluetoothDeviceForMidiConnection(connectionId: String, info: MidiDeviceInfo?): BluetoothDevice? {
+        info?.let { midiBluetoothDevice(it) }?.let { return it }
+        val bluetoothAddress = bluetoothAddressFromConnectionId(connectionId)
+            ?: connectionId.takeUnless { isAndroidMidiConnectionId(it) }
+        return bluetoothAddress?.let { devicesByAddress[it] }
+    }
+
+    @SuppressLint("MissingPermission")
+    private fun noteBluetoothDeviceDisconnected(device: BluetoothDevice?) {
         if (device == null) return
         val address = runCatching { device.address }.getOrNull() ?: return
         val connection = _state.value.connection
         if (!connection.connected && !connection.connecting) return
         if (!currentConnectionMatchesBluetoothDevice(address)) return
         val name = connection.deviceName ?: runCatching { safeDeviceName(device) }.getOrDefault("MIDI device")
-        AppEventLog.append("$name disconnected at the Bluetooth layer.")
-        handleConnectionLost("$name disconnected.")
+        AppEventLog.append("$name reported a Bluetooth-layer disconnect; waiting for MIDI I/O confirmation.")
+        scheduleConnectionVerification("$name disconnected.")
+    }
+
+    private fun scheduleConnectionVerification(message: String) {
+        val connection = _state.value.connection
+        val address = connection.address ?: return
+        if (!connection.connected && !connection.connecting) return
+        val generation = connectionGeneration.get()
+        connectionVerificationJob?.cancel()
+        connectionVerificationJob = serviceScope.launch {
+            delay(1_200L)
+            if (connectionGeneration.get() != generation) return@launch
+            val current = _state.value.connection
+            if ((!current.connected && !current.connecting) || current.address != address) return@launch
+            if (!isConnectionHealthy(address)) handleConnectionLost(message)
+        }
     }
 
     @SuppressLint("MissingPermission")
@@ -971,14 +1210,6 @@ class NoteCastService : Service() {
         val bluetoothDevice = midiDevicesByConnectionId[connectionAddress]?.let { midiBluetoothDevice(it) }
             ?: midiDevice?.info?.let { midiBluetoothDevice(it) }
         return runCatching { bluetoothDevice?.address == address }.getOrDefault(false)
-    }
-
-    @SuppressLint("MissingPermission")
-    private fun isBluetoothDeviceConnected(device: BluetoothDevice): Boolean {
-        if (!hasConnectPermission()) return true
-        return runCatching {
-            bluetoothManager.getConnectionState(device, BluetoothProfile.GATT) == BluetoothProfile.STATE_CONNECTED
-        }.getOrDefault(true)
     }
 
     private fun handleBluetoothTurnedOff() {
@@ -1007,6 +1238,8 @@ class NoteCastService : Service() {
         if (!connection.connected && !connection.connecting) return
         val deviceName = connection.deviceName ?: connection.rememberedDeviceName ?: "MIDI device"
         connectionMonitorJob?.cancel()
+        connectionVerificationJob?.cancel()
+        connectionVerificationJob = null
         connectionGeneration.incrementAndGet()
         playbackGeneration.incrementAndGet()
         playbackJob?.cancel()
@@ -1720,15 +1953,31 @@ class NoteCastService : Service() {
         _state.update { it.copy(lastMessage = message) }
     }
 
+    private fun updateConnectionMessage(message: String) {
+        AppEventLog.append(message)
+        _state.update {
+            it.copy(
+                connection = it.connection.copy(
+                    message = message,
+                    rememberedDeviceName = rememberedDeviceName(),
+                    rememberedDeviceAddress = rememberedDeviceAddress(),
+                    autoReconnectSuppressed = manualDisconnectSuppressed()
+                ),
+                lastMessage = message
+            )
+        }
+    }
+
     private fun registerBluetoothStateReceiver() {
         if (bluetoothStateReceiverRegistered) return
         val filter = IntentFilter().apply {
             addAction(BluetoothAdapter.ACTION_STATE_CHANGED)
+            addAction(BluetoothDevice.ACTION_ACL_CONNECTED)
             addAction(BluetoothDevice.ACTION_ACL_DISCONNECTED)
             addAction(BluetoothDevice.ACTION_ACL_DISCONNECT_REQUESTED)
         }
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
-            registerReceiver(bluetoothStateReceiver, filter, Context.RECEIVER_NOT_EXPORTED)
+            registerReceiver(bluetoothStateReceiver, filter, Context.RECEIVER_EXPORTED)
         } else {
             @Suppress("DEPRECATION")
             registerReceiver(bluetoothStateReceiver, filter)
@@ -1754,16 +2003,19 @@ class NoteCastService : Service() {
                     if (isDeviceHidden(address)) return@forEach
                     devicesByAddress[address] = device
                     if (!bleScanItemsByAddress.containsKey(address)) {
-                        val name = safeDeviceName(device)
+                        val rawName = safeDeviceName(device)
                         val standardBleMidi = deviceHasBleMidiUuid(device)
+                        val recentlySeen = isRecentlyScannedBleDevice(address)
                         bleScanItemsByAddress[address] = BleMidiDeviceItem(
-                            name = name,
+                            name = displayNameForAddress(address, rawName, isMidi = true),
                             address = address,
                             rssi = null,
                             likelyMidi = true,
                             standardBleMidi = standardBleMidi,
+                            connectable = recentlySeen,
+                            added = isKnownDeviceAddress(address),
                             source = "Paired Bluetooth",
-                            detail = address
+                            detail = if (recentlySeen) address else "$address - not seen in latest scan"
                         )
                     }
                 }
@@ -1810,6 +2062,9 @@ class NoteCastService : Service() {
         return !leftBluetoothAddress.isNullOrBlank() && leftBluetoothAddress == rightBluetoothAddress
     }
 
+    private fun connectionTargetKey(address: String): String =
+        bluetoothAddressFromConnectionId(address) ?: address
+
     private fun connectionTargetAliases(address: String): Set<String> {
         val bluetoothAddress = bluetoothAddressFromConnectionId(address)
         return when {
@@ -1820,16 +2075,42 @@ class NoteCastService : Service() {
     }
 
     private fun availableConnectionAddress(address: String): String? {
-        if (midiDevicesByConnectionId.containsKey(address)) return address
+        if (midiDevicesByConnectionId.containsKey(address) && isAvailableAndroidMidiConnection(address)) return address
         bluetoothAddressFromConnectionId(address)?.let { bluetoothAddress ->
-            if (devicesByAddress.containsKey(bluetoothAddress)) return bluetoothAddress
+            if (isRecentlyScannedBleDevice(bluetoothAddress) && devicesByAddress.containsKey(bluetoothAddress)) return bluetoothAddress
         }
         if (!isAndroidMidiConnectionId(address)) {
             val androidMidiAddress = androidBluetoothMidiConnectionId(address)
-            if (midiDevicesByConnectionId.containsKey(androidMidiAddress)) return androidMidiAddress
+            if (midiDevicesByConnectionId.containsKey(androidMidiAddress) && isAvailableAndroidMidiConnection(androidMidiAddress)) {
+                return androidMidiAddress
+            }
         }
-        if (devicesByAddress.containsKey(address)) return address
+        if (isRecentlyScannedBleDevice(address) && devicesByAddress.containsKey(address)) return address
         return null
+    }
+
+    private fun availableAutoReconnectAddress(address: String): String? {
+        if (midiDevicesByConnectionId.containsKey(address) && isAvailableAndroidMidiConnection(address)) return address
+        bluetoothAddressFromConnectionId(address)?.let { bluetoothAddress ->
+            val androidMidiAddress = androidBluetoothMidiConnectionId(bluetoothAddress)
+            if (midiDevicesByConnectionId.containsKey(androidMidiAddress) && isAvailableAndroidMidiConnection(androidMidiAddress)) {
+                return androidMidiAddress
+            }
+        }
+        if (!isAndroidMidiConnectionId(address)) {
+            val androidMidiAddress = androidBluetoothMidiConnectionId(address)
+            if (midiDevicesByConnectionId.containsKey(androidMidiAddress) && isAvailableAndroidMidiConnection(androidMidiAddress)) {
+                return androidMidiAddress
+            }
+        }
+        return null
+    }
+
+    private fun isAvailableAndroidMidiConnection(connectionId: String): Boolean {
+        val info = midiDevicesByConnectionId[connectionId] ?: return false
+        return midiBluetoothDevice(info) == null ||
+            isBluetoothMidiConnectionAttached(connectionId, info) ||
+            isRecentlyScannedMidiDevice(info)
     }
 
     private fun midiDeviceName(info: MidiDeviceInfo): String {
@@ -1853,7 +2134,7 @@ class NoteCastService : Service() {
     }
 
     private fun midiProperty(info: MidiDeviceInfo, key: String): String? {
-        return info.properties.get(key)?.toString()?.takeIf { it.isNotBlank() }
+        return info.properties.get(key)?.toString()?.cleanDeviceName()?.takeIf { it.isNotBlank() }
     }
 
     @Suppress("DEPRECATION")
@@ -1879,13 +2160,16 @@ class NoteCastService : Service() {
             .mapNotNull { info -> midiBluetoothDevice(info)?.let { runCatching { it.address }.getOrNull() } }
             .toSet()
         val midiItems = midiDevicesByConnectionId.values.map { info ->
-            val name = midiDeviceName(info)
+            val connectionId = midiConnectionId(info)
+            val name = displayNameForMidiDevice(info)
             BleMidiDeviceItem(
                 name = name,
-                address = midiConnectionId(info),
+                address = connectionId,
                 rssi = null,
                 likelyMidi = true,
                 standardBleMidi = info.type == MidiDeviceInfo.TYPE_BLUETOOTH,
+                connectable = isAvailableAndroidMidiConnection(connectionId),
+                added = isKnownDeviceAddress(connectionId),
                 source = if (info.type == MidiDeviceInfo.TYPE_BLUETOOTH) "Android Bluetooth MIDI" else "Android MIDI",
                 detail = midiDeviceDetail(info)
             )
@@ -1893,19 +2177,46 @@ class NoteCastService : Service() {
         val bleItems = devicesByAddress.values.map { device ->
             val address = runCatching { device.address }.getOrNull() ?: ""
             if (address in androidMidiBluetoothAddresses) return@map null
+            if (!isFreshScanTimestamp(bleScanSeenAtMsByAddress[address])) return@map null
             val existing = bleScanItemsByAddress[address]
-            existing ?: BleMidiDeviceItem(
-                name = safeDeviceName(device),
+            val added = isKnownDeviceAddress(address)
+            existing?.copy(
+                added = added,
+                connectable = existing.connectable
+            ) ?: BleMidiDeviceItem(
+                name = displayNameForBluetoothDevice(address, device, null),
                 address = address,
+                connectable = false,
+                added = added,
                 source = "BLE scan",
                 detail = address
             )
         }.filterNotNull()
-        return (midiItems + bleItems)
+        val representedTargets = (midiItems + bleItems)
+            .map { connectionTargetKey(it.address) }
+            .toSet()
+        val knownItems = knownDevices()
+            .filterNot { connectionTargetKey(it.address) in representedTargets }
+            .map { known ->
+                val availableAddress = availableConnectionAddress(known.address)
+                BleMidiDeviceItem(
+                    name = displayNameForAddress(known.address, known.name, isMidi = true),
+                    address = availableAddress ?: known.address,
+                    rssi = null,
+                    likelyMidi = true,
+                    standardBleMidi = bluetoothAddressFromConnectionId(known.address) != null || !isAndroidMidiConnectionId(known.address),
+                    connectable = availableAddress != null,
+                    added = true,
+                    source = "Saved",
+                    detail = if (availableAddress != null) "Ready" else "not seen in latest scan"
+                )
+            }
+        return (midiItems + bleItems + knownItems)
             .filterNot { isDeviceHidden(it.address) }
-            .distinctBy { it.address }
+            .distinctBy { connectionTargetKey(it.address) }
             .sortedWith(
-                compareByDescending<BleMidiDeviceItem> { it.standardBleMidi }
+                compareByDescending<BleMidiDeviceItem> { it.added }
+                    .thenByDescending { it.standardBleMidi }
                     .thenByDescending { it.likelyMidi }
                     .thenByDescending { it.rssi ?: -999 }
                     .thenBy { it.name }
@@ -1918,18 +2229,41 @@ class NoteCastService : Service() {
         val address = runCatching { device.address }.getOrNull() ?: return
         if (isDeviceHidden(address)) return
         devicesByAddress[address] = device
-        val name = safeDeviceName(device, result)
+        val rawName = safeDeviceName(device, result)
+        rememberBleScanSighting(address, rawName)
         val standardBleMidi = advertisesBleMidi(result)
-        val likelyMidi = standardBleMidi || nameLooksLikeMidi(name)
+        val opaqueCandidate = rawName.isNotBlank() && rawName != "Nearby BLE Device" && isOpaqueDeviceName(rawName)
+        val likelyMidi = standardBleMidi || nameLooksLikeMidi(rawName) || opaqueCandidate
+        val known = isKnownDeviceAddress(address)
+        val hasAlias = deviceAlias(address) != null
+        val name = displayNameForAddress(address, rawName, isMidi = likelyMidi || standardBleMidi || hasAlias || known)
+        if (name != rawName) rememberBleScanSightingName(name)
+        val detail = when {
+            rawName.isBlank() || rawName == "Nearby BLE Device" || rawName == name -> address
+            else -> "$rawName - $address"
+        }
         val current = _state.value.bleDevices.associateBy { it.address }.toMutableMap()
+        val connectableBleAdvert = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            result.isConnectable
+        } else {
+            true
+        }
+        val previous = bleScanItemsByAddress[address]
         val item = BleMidiDeviceItem(
             name = name,
             address = address,
             rssi = result.rssi,
             likelyMidi = likelyMidi,
             standardBleMidi = standardBleMidi,
+            connectable = previous?.connectable == true ||
+                likelyMidi ||
+                standardBleMidi ||
+                hasAlias ||
+                known ||
+                connectableBleAdvert,
+            added = known,
             source = "BLE scan",
-            detail = address
+            detail = detail
         )
         current[address] = item
         bleScanItemsByAddress[address] = item
@@ -1940,6 +2274,38 @@ class NoteCastService : Service() {
             )
         }
         considerReconnectScanCandidate(address)
+    }
+
+    private fun isRecentlyScannedBleDevice(address: String): Boolean {
+        return isFreshScanTimestamp(bleScanSeenAtMsByAddress[address]).also { fresh ->
+            if (!fresh) bleScanSeenAtMsByAddress.remove(address)
+        }
+    }
+
+    private fun isRecentlyScannedMidiDevice(info: MidiDeviceInfo): Boolean {
+        val bluetoothAddress = midiBluetoothDevice(info)?.let { device ->
+            runCatching { device.address }.getOrNull()
+        }
+        if (!bluetoothAddress.isNullOrBlank() && isRecentlyScannedBleDevice(bluetoothAddress)) return true
+        val nameKey = normalizedDeviceName(midiDeviceName(info))
+        return isFreshScanTimestamp(bleScanSeenAtMsByName[nameKey]).also { fresh ->
+            if (!fresh) bleScanSeenAtMsByName.remove(nameKey)
+        }
+    }
+
+    private fun rememberBleScanSighting(address: String, name: String) {
+        val now = SystemClock.elapsedRealtime()
+        bleScanSeenAtMsByAddress[address] = now
+        rememberBleScanSightingName(name, now)
+    }
+
+    private fun rememberBleScanSightingName(name: String, now: Long = SystemClock.elapsedRealtime()) {
+        val nameKey = normalizedDeviceName(name)
+        if (nameKey.isNotBlank()) bleScanSeenAtMsByName[nameKey] = now
+    }
+
+    private fun isFreshScanTimestamp(seenAt: Long?): Boolean {
+        return seenAt != null && SystemClock.elapsedRealtime() - seenAt <= RECENT_BLE_SCAN_TTL_MS
     }
 
     private fun considerReconnectScanCandidate(address: String) {
@@ -1964,10 +2330,96 @@ class NoteCastService : Service() {
     @SuppressLint("MissingPermission")
     private fun safeDeviceName(device: BluetoothDevice, result: ScanResult? = null): String {
         val fromScan = result?.scanRecord?.deviceName
+        val fromAlias = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+            runCatching { device.alias }.getOrNull()
+        } else {
+            null
+        }
         val fromDevice = runCatching { device.name }.getOrNull()
-        return fromScan?.takeIf { it.isNotBlank() }
-            ?: fromDevice?.takeIf { it.isNotBlank() }
+        return fromScan?.cleanDeviceName()?.takeIf { it.isNotBlank() }
+            ?: fromAlias?.cleanDeviceName()?.takeIf { it.isNotBlank() }
+            ?: fromDevice?.cleanDeviceName()?.takeIf { it.isNotBlank() }
             ?: "Nearby BLE Device"
+    }
+
+    private fun displayNameForBluetoothDevice(address: String, device: BluetoothDevice, result: ScanResult?): String {
+        val rawName = safeDeviceName(device, result)
+        val opaqueCandidate = rawName.isNotBlank() && rawName != "Nearby BLE Device" && isOpaqueDeviceName(rawName)
+        val isMidi = deviceHasBleMidiUuid(device) ||
+            nameLooksLikeMidi(rawName) ||
+            opaqueCandidate ||
+            isKnownDeviceAddress(address) ||
+            deviceAlias(address) != null
+        return displayNameForAddress(address, rawName, isMidi = isMidi)
+    }
+
+    private fun displayNameForMidiDevice(info: MidiDeviceInfo): String {
+        return displayNameForAddress(
+            address = midiConnectionId(info),
+            rawName = midiDeviceName(info),
+            isMidi = true
+        )
+    }
+
+    private fun displayNameForAddress(address: String, rawName: String, isMidi: Boolean): String {
+        deviceAlias(address)
+            ?.takeUnless { isGeneratedDeviceName(it) }
+            ?.let { return it }
+        knownDevices()
+            .firstOrNull { sameConnectionTarget(it.address, address) }
+            ?.name
+            ?.takeIf { it.isNotBlank() }
+            ?.takeUnless { isGeneratedDeviceName(it) }
+            ?.let { return it }
+        val cleanName = rawName.cleanDeviceName()
+        val shortId = shortBluetoothIdentifier(address)
+        canonicalMidiDeviceName(cleanName, shortId)?.let { return it }
+        return when {
+            isMidi && isGeneratedDeviceName(cleanName) -> "BLE MIDI Adapter $shortId"
+            isMidi && isOpaqueDeviceName(cleanName) -> "BLE MIDI Adapter $shortId"
+            !isMidi && isOpaqueDeviceName(cleanName) -> "Nearby BLE Device $shortId"
+            cleanName.isBlank() -> if (isMidi) "BLE MIDI Adapter $shortId" else "Nearby BLE Device $shortId"
+            else -> cleanName
+        }
+    }
+
+    private fun canonicalMidiDeviceName(cleanName: String, shortId: String): String? {
+        val normalized = normalizedDeviceName(cleanName)
+        return when {
+            normalized == "widi thru6" || normalized.startsWith("widi thru6 ") -> "WIDI Thru6"
+            normalized == "widi master" || normalized.startsWith("widi master ") -> "WIDI Master"
+            normalized == "widi jack" || normalized.startsWith("widi jack ") -> "WIDI Jack"
+            normalized == "widi uhost" || normalized.startsWith("widi uhost ") -> "WIDI Uhost"
+            normalized.startsWith("elk-ble") -> "BLE MIDI Adapter $shortId"
+            else -> null
+        }
+    }
+
+    private fun isOpaqueDeviceName(name: String): Boolean {
+        val normalized = normalizedDeviceName(name)
+        return normalized.isBlank() ||
+            normalized.startsWith("nearby ble device") ||
+            OPAQUE_BLE_NAME_REGEX.matches(name.trim()) ||
+            GENERIC_BLE_NAME_PREFIXES.any { normalized.startsWith(it) }
+    }
+
+    private fun isGeneratedNearbyBleName(name: String): Boolean =
+        normalizedDeviceName(name).startsWith("nearby ble device")
+
+    private fun isGeneratedMidiAdapterName(name: String): Boolean {
+        val normalized = normalizedDeviceName(name)
+        return normalized.startsWith("bluetooth midi adapter") ||
+            normalized.startsWith("ble midi adapter") ||
+            normalized.startsWith("nearby midi adapter")
+    }
+
+    private fun isGeneratedDeviceName(name: String): Boolean =
+        isGeneratedNearbyBleName(name) || isGeneratedMidiAdapterName(name)
+
+    private fun shortBluetoothIdentifier(address: String): String {
+        val bluetoothAddress = bluetoothAddressFromConnectionId(address) ?: address
+        val parts = bluetoothAddress.split(':').filter { it.isNotBlank() }
+        return if (parts.size >= 2) parts.takeLast(2).joinToString(":") else bluetoothAddress.takeLast(5)
     }
 
     private fun advertisesBleMidi(result: ScanResult): Boolean {
@@ -1985,9 +2437,17 @@ class NoteCastService : Service() {
     }
 
     private fun nameLooksLikeMidi(name: String): Boolean {
-        val normalized = name.lowercase()
+        val normalized = normalizedDeviceName(name)
         return MIDI_NAME_HINTS.any { normalized.contains(it) }
     }
+
+    private fun normalizedDeviceName(name: String): String = name.trim().lowercase()
+
+    private fun String.cleanDeviceName(): String =
+        replace('\t', ' ')
+            .replace('\n', ' ')
+            .trim()
+            .replace(Regex("\\s+"), " ")
 
     private fun restoreRememberedDevice() {
         _state.update { it.copy(connection = rememberedConnection(message = it.connection.message)) }
@@ -2000,8 +2460,18 @@ class NoteCastService : Service() {
             connection.address == address
     }
 
-    private fun rememberedDeviceName(): String? =
-        prefs.getString(PREF_LAST_DEVICE_NAME, null)
+    private fun rememberedDeviceName(): String? {
+        val storedName = prefs.getString(PREF_LAST_DEVICE_NAME, null)?.cleanDeviceName()
+        val storedAddress = rememberedDeviceAddress()
+        return when {
+            storedAddress.isNullOrBlank() -> storedName?.takeIf { it.isNotBlank() }
+            else -> displayNameForAddress(
+                address = storedAddress,
+                rawName = storedName.orEmpty(),
+                isMidi = true
+            )
+        }
+    }
 
     private fun rememberedDeviceAddress(): String? =
         prefs.getString(PREF_LAST_DEVICE_ADDRESS, null)
@@ -2016,9 +2486,6 @@ class NoteCastService : Service() {
             candidates += KnownMidiDevice(lastAddress, lastName?.takeIf { it.isNotBlank() } ?: "Preferred MIDI device")
         }
         candidates += knownDevices()
-        bleScanItemsByAddress.values
-            .filter { it.source.contains("Paired", ignoreCase = true) || it.source.contains("Android", ignoreCase = true) }
-            .forEach { item -> candidates += KnownMidiDevice(item.address, item.name) }
         return candidates
             .filter { it.address.isNotBlank() }
             .filterNot { isDeviceHidden(it.address) }
@@ -2032,10 +2499,38 @@ class NoteCastService : Service() {
             .mapNotNull { line ->
                 val parts = line.split('\t', limit = 2)
                 val address = parts.getOrNull(0).orEmpty().trim()
-                val name = parts.getOrNull(1).orEmpty().trim()
+                val name = parts.getOrNull(1).orEmpty().cleanDeviceName()
                 if (address.isBlank()) null else KnownMidiDevice(address, name.ifBlank { "Known MIDI device" })
             }
             .toList()
+    }
+
+    private fun isKnownDeviceAddress(address: String?): Boolean {
+        if (address.isNullOrBlank()) return false
+        val rememberedAddress = rememberedDeviceAddress()
+        if (!rememberedAddress.isNullOrBlank() && sameConnectionTarget(rememberedAddress, address)) return true
+        return knownDevices().any { sameConnectionTarget(it.address, address) }
+    }
+
+    private fun deviceAliases(): Map<String, String> =
+        prefs.getString(PREF_DEVICE_ALIASES, null)
+            .orEmpty()
+            .lineSequence()
+            .mapNotNull { line ->
+                val parts = line.split('\t', limit = 2)
+                val address = parts.getOrNull(0).orEmpty().trim()
+                val name = parts.getOrNull(1).orEmpty().cleanDeviceName()
+                if (address.isBlank() || name.isBlank()) null else address to name
+            }
+            .toMap()
+
+    private fun deviceAlias(address: String?): String? {
+        if (address.isNullOrBlank()) return null
+        val aliases = deviceAliases()
+        aliases[address]?.let { return it }
+        return aliases.entries.firstOrNull { (aliasAddress, _) ->
+            sameConnectionTarget(aliasAddress, address)
+        }?.value
     }
 
     private fun hiddenDevices(): Set<String> =
@@ -2063,7 +2558,7 @@ class NoteCastService : Service() {
     }
 
     private fun rememberConnectedDevice(address: String, name: String) {
-        val cleanName = name.replace('\t', ' ').replace('\n', ' ').trim().ifBlank { "MIDI device" }
+        val cleanName = cleanStoredDeviceName(name).ifBlank { "MIDI device" }
         val updated = (listOf(KnownMidiDevice(address, cleanName)) + knownDevices().filterNot { sameConnectionTarget(it.address, address) })
             .take(8)
         val hidden = hiddenDevices() - connectionTargetAliases(address)
@@ -2075,6 +2570,8 @@ class NoteCastService : Service() {
             .putBoolean(PREF_MANUAL_DISCONNECT, false)
             .apply()
     }
+
+    private fun cleanStoredDeviceName(name: String): String = name.cleanDeviceName()
 
     private fun clearReconnectScanState() {
         scanAutoConnectKnownDevices = false
@@ -2221,7 +2718,8 @@ class NoteCastService : Service() {
 
     private fun hasScanPermission(): Boolean {
         return if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
-            ContextCompat.checkSelfPermission(this, Manifest.permission.BLUETOOTH_SCAN) == PackageManager.PERMISSION_GRANTED
+            ContextCompat.checkSelfPermission(this, Manifest.permission.BLUETOOTH_SCAN) == PackageManager.PERMISSION_GRANTED &&
+                ContextCompat.checkSelfPermission(this, Manifest.permission.ACCESS_FINE_LOCATION) == PackageManager.PERMISSION_GRANTED
         } else {
             ContextCompat.checkSelfPermission(this, Manifest.permission.ACCESS_FINE_LOCATION) == PackageManager.PERMISSION_GRANTED
         }
@@ -2241,6 +2739,7 @@ class NoteCastService : Service() {
         midiInputPort = null
         midiOutputPort = null
         midiDevice = null
+        connectedMidiDeviceInfo = null
         runCatching { inputPort?.close() }
         runCatching { outputPort?.close() }
         runCatching { device?.close() }

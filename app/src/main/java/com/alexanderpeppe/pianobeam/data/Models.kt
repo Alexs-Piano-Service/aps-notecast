@@ -30,6 +30,8 @@ data class BleMidiDeviceItem(
     val rssi: Int? = null,
     val likelyMidi: Boolean = false,
     val standardBleMidi: Boolean = false,
+    val connectable: Boolean = true,
+    val added: Boolean = false,
     val source: String = "BLE",
     val detail: String = address
 )
