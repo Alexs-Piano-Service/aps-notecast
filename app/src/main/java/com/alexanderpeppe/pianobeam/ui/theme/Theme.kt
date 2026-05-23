@@ -12,7 +12,7 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.ui.unit.dp
 import com.alexanderpeppe.pianobeam.data.AppThemeMode
 
-private val PianoBeamLightScheme = lightColorScheme(
+private val NoteCastLightScheme = lightColorScheme(
     primary = Color(0xFF0B6FA4),
     onPrimary = Color.White,
     primaryContainer = Color(0xFFD8F0FF),
@@ -35,7 +35,7 @@ private val PianoBeamLightScheme = lightColorScheme(
     error = Color(0xFFB3261E)
 )
 
-private val PianoBeamDarkScheme = darkColorScheme(
+private val NoteCastDarkScheme = darkColorScheme(
     primary = Color(0xFF94DDFF),
     onPrimary = Color(0xFF00283B),
     primaryContainer = Color(0xFF126184),
@@ -62,7 +62,7 @@ private val PianoBeamDarkScheme = darkColorScheme(
     inverseOnSurface = Color(0xFF17303F)
 )
 
-private val PianoBeamShapes = Shapes(
+private val NoteCastShapes = Shapes(
     extraSmall = RoundedCornerShape(2.dp),
     small = RoundedCornerShape(3.dp),
     medium = RoundedCornerShape(4.dp),
@@ -71,7 +71,7 @@ private val PianoBeamShapes = Shapes(
 )
 
 @Composable
-fun PianoBeamTheme(
+fun NoteCastTheme(
     themeMode: AppThemeMode = AppThemeMode.System,
     content: @Composable () -> Unit
 ) {
@@ -82,9 +82,9 @@ fun PianoBeamTheme(
     }
 
     MaterialTheme(
-        colorScheme = if (darkTheme) PianoBeamDarkScheme else PianoBeamLightScheme,
+        colorScheme = if (darkTheme) NoteCastDarkScheme else NoteCastLightScheme,
         typography = Typography(),
-        shapes = PianoBeamShapes,
+        shapes = NoteCastShapes,
         content = content
     )
 }

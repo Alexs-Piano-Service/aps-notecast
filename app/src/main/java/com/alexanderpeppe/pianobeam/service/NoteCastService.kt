@@ -10,6 +10,7 @@ import android.app.Service
 import android.bluetooth.BluetoothAdapter
 import android.bluetooth.BluetoothDevice
 import android.bluetooth.BluetoothManager
+import android.bluetooth.BluetoothProfile
 import android.bluetooth.le.ScanCallback
 import android.bluetooth.le.ScanResult
 import android.bluetooth.le.ScanSettings
@@ -78,7 +79,7 @@ import java.util.concurrent.atomic.AtomicLong
 import kotlin.math.min
 import kotlin.coroutines.coroutineContext
 
-class PianoBeamService : Service() {
+class NoteCastService : Service() {
     companion object {
         private const val CHANNEL_ID = "pianobeam_playback"
         private const val NOTIFICATION_ID = 440
@@ -112,7 +113,7 @@ class PianoBeamService : Service() {
     }
 
     inner class LocalBinder : Binder() {
-        fun service(): PianoBeamService = this@PianoBeamService
+        fun service(): NoteCastService = this@NoteCastService
     }
 
     private val binder = LocalBinder()
@@ -152,16 +153,21 @@ class PianoBeamService : Service() {
     }
     private val bluetoothStateReceiver = object : BroadcastReceiver() {
         override fun onReceive(context: Context?, intent: Intent?) {
-            if (intent?.action != BluetoothAdapter.ACTION_STATE_CHANGED) return
-            refreshBluetoothState()
-            when (intent.getIntExtra(BluetoothAdapter.EXTRA_STATE, BluetoothAdapter.ERROR)) {
-                BluetoothAdapter.STATE_TURNING_OFF,
-                BluetoothAdapter.STATE_OFF -> handleBluetoothTurnedOff()
-                BluetoothAdapter.STATE_ON -> {
-                    AppEventLog.append("Bluetooth turned on.")
-                    refreshKnownDevices()
-                    if (appSettings.autoReconnectEnabled) autoReconnectIfPossible()
+            when (intent?.action) {
+                BluetoothAdapter.ACTION_STATE_CHANGED -> {
+                    refreshBluetoothState()
+                    when (intent.getIntExtra(BluetoothAdapter.EXTRA_STATE, BluetoothAdapter.ERROR)) {
+                        BluetoothAdapter.STATE_TURNING_OFF,
+                        BluetoothAdapter.STATE_OFF -> handleBluetoothTurnedOff()
+                        BluetoothAdapter.STATE_ON -> {
+                            AppEventLog.append("Bluetooth turned on.")
+                            refreshKnownDevices()
+                            if (appSettings.autoReconnectEnabled) autoReconnectIfPossible()
+                        }
+                    }
                 }
+                BluetoothDevice.ACTION_ACL_DISCONNECTED,
+                BluetoothDevice.ACTION_ACL_DISCONNECT_REQUESTED -> handleBluetoothDeviceDisconnected(intent.bluetoothDeviceExtra())
             }
         }
     }
@@ -422,20 +428,23 @@ class PianoBeamService : Service() {
         refreshKnownDevices()
         val refreshedCandidates = knownReconnectCandidates()
         val preferred = refreshedCandidates.firstOrNull() ?: return
-        if (midiDevicesByConnectionId.containsKey(preferred.address) || devicesByAddress.containsKey(preferred.address)) {
-            postMessage("Reconnecting to ${preferred.name}...")
-            connect(preferred.address)
+        val available = refreshedCandidates.firstNotNullOfOrNull { candidate ->
+            availableConnectionAddress(candidate.address)?.let { address -> candidate to address }
+        }
+        if (available != null) {
+            val (candidate, address) = available
+            postMessage("Reconnecting to ${candidate.name}...")
+            connect(address)
             return
         }
         val initialFallbackAddress = refreshedCandidates
             .drop(1)
-            .firstOrNull { midiDevicesByConnectionId.containsKey(it.address) || devicesByAddress.containsKey(it.address) }
-            ?.address
+            .firstNotNullOfOrNull { availableConnectionAddress(it.address) }
         if (!hasScanPermission()) {
             postMessage("Bluetooth scan permission is needed before looking for ${preferred.name}.")
             return
         }
-        postMessage("Looking for ${preferred.name}...")
+        postMessage("Looking for known BLE MIDI devices...")
         startBleScan(autoConnectKnownDevices = true, initialFallbackAddress = initialFallbackAddress)
     }
 
@@ -492,15 +501,16 @@ class PianoBeamService : Service() {
         scanAutoConnectKnownDevices = autoConnectKnownDevices
         scanPreferredReconnectAddress = knownReconnectCandidates().firstOrNull()?.address
         scanFallbackReconnectAddress = initialFallbackAddress
+        val message = if (autoConnectKnownDevices) {
+            "Looking for known BLE MIDI devices..."
+        } else {
+            "Scanning nearby BLE and Android MIDI devices..."
+        }
         _state.update {
             it.copy(
                 bleDevices = mergedDeviceList(),
-                connection = it.connection.copy(scanning = true, bluetoothEnabled = true),
-                lastMessage = if (autoConnectKnownDevices) {
-                    "Looking for known BLE MIDI devices..."
-                } else {
-                    "Scanning for nearby BLE and Android MIDI devices..."
-                }
+                connection = it.connection.copy(scanning = true, bluetoothEnabled = true, message = message),
+                lastMessage = message
             )
         }
 
@@ -572,19 +582,24 @@ class PianoBeamService : Service() {
         clearReconnectScanState()
         _state.update { it.copy(connection = it.connection.copy(scanning = false)) }
         if (shouldUseFallback && fallbackAddress != null && !_state.value.connection.connected && !_state.value.connection.connecting) {
-            val fallback = knownReconnectCandidates().firstOrNull { it.address == fallbackAddress }
+            val fallback = knownReconnectCandidates().firstOrNull { sameConnectionTarget(it.address, fallbackAddress) }
             postMessage("Preferred device not found. Reconnecting to ${fallback?.name ?: "known MIDI device"}...")
-            mainHandler.post { connect(fallbackAddress) }
+            mainHandler.post { connect(availableConnectionAddress(fallbackAddress) ?: fallbackAddress) }
         }
     }
 
     fun connect(address: String) {
-        clearManualDisconnectSuppression()
-        if (address.startsWith("midi:")) {
-            connectAndroidMidiDevice(address)
+        val resolvedAddress = availableConnectionAddress(address) ?: address
+        if (_state.value.connection.connected && sameConnectionTarget(_state.value.connection.address, resolvedAddress)) {
+            postMessage("Already connected to ${_state.value.connection.deviceName ?: "that MIDI device"}.")
             return
         }
-        val device = devicesByAddress[address]
+        clearManualDisconnectSuppression()
+        if (isAndroidMidiConnectionId(resolvedAddress)) {
+            connectAndroidMidiDevice(resolvedAddress)
+            return
+        }
+        val device = devicesByAddress[resolvedAddress]
         if (device == null) {
             postMessage("That BLE MIDI device is no longer in the scan list. Scan again.")
             return
@@ -595,7 +610,7 @@ class PianoBeamService : Service() {
         }
         val generation = connectionGeneration.incrementAndGet()
         stopBleScan()
-        closeMidiConnection()
+        prepareForConnectionChange()
         val name = safeDeviceName(device)
         _state.update {
             it.copy(
@@ -604,7 +619,7 @@ class PianoBeamService : Service() {
                     connecting = true,
                     scanning = false,
                     deviceName = name,
-                    address = address,
+                    address = resolvedAddress,
                     rememberedDeviceName = rememberedDeviceName(),
                     rememberedDeviceAddress = rememberedDeviceAddress(),
                     autoReconnectSuppressed = manualDisconnectSuppressed(),
@@ -616,7 +631,7 @@ class PianoBeamService : Service() {
 
         try {
             midiManager.openBluetoothDevice(device, { openedDevice ->
-                if (!isCurrentConnectionAttempt(generation, address) || !isBluetoothEnabled()) {
+                if (!isCurrentConnectionAttempt(generation, resolvedAddress) || !isBluetoothEnabled()) {
                     runCatching { openedDevice?.close() }
                     return@openBluetoothDevice
                 }
@@ -629,10 +644,10 @@ class PianoBeamService : Service() {
                     }
                     return@openBluetoothDevice
                 }
-                finishMidiConnection(openedDevice, name, address, generation)
+                finishMidiConnection(openedDevice, name, resolvedAddress, generation)
             }, mainHandler)
         } catch (security: SecurityException) {
-            if (isCurrentConnectionAttempt(generation, address)) {
+            if (isCurrentConnectionAttempt(generation, resolvedAddress)) {
                 _state.update {
                     it.copy(
                         connection = rememberedConnection(message = "Bluetooth connect permission was denied by Android."),
@@ -641,7 +656,7 @@ class PianoBeamService : Service() {
                 }
             }
         } catch (t: Throwable) {
-            if (isCurrentConnectionAttempt(generation, address)) {
+            if (isCurrentConnectionAttempt(generation, resolvedAddress)) {
                 _state.update {
                     it.copy(
                         connection = rememberedConnection(message = "Android could not start the BLE MIDI connection."),
@@ -649,6 +664,26 @@ class PianoBeamService : Service() {
                     )
                 }
             }
+        }
+    }
+
+    private fun prepareForConnectionChange() {
+        val wasActive = _state.value.playback.isActive
+        connectionMonitorJob?.cancel()
+        reconnectJob?.cancel()
+        reconnectJob = null
+        playbackGeneration.incrementAndGet()
+        playbackJob?.cancel()
+        playbackJob = null
+        skipRequest = 0
+        seekRequestUs = -1L
+        if (wasActive) sendPanicMessages()
+        closeMidiConnection()
+        if (wasActive) {
+            _state.update { it.copy(playback = PlaybackUiState()) }
+            updatePlaybackSurfaces(updateNotification = true)
+            stopForegroundIfNeeded()
+            releaseWakeLock()
         }
     }
 
@@ -684,15 +719,17 @@ class PianoBeamService : Service() {
         }
 
         hideDevice(address)
-        devicesByAddress.remove(address)
-        bleScanItemsByAddress.remove(address)
-        midiDevicesByConnectionId.remove(address)
+        connectionTargetAliases(address).forEach { alias ->
+            devicesByAddress.remove(alias)
+            bleScanItemsByAddress.remove(alias)
+            midiDevicesByConnectionId.remove(alias)
+        }
 
-        val remainingKnownDevices = knownDevices().filterNot { it.address == address }
+        val remainingKnownDevices = knownDevices().filterNot { sameConnectionTarget(it.address, address) }
         val editor = prefs.edit()
             .putString(PREF_KNOWN_DEVICES, remainingKnownDevices.joinToString("\n") { "${it.address}\t${it.name}" })
             .putBoolean(PREF_MANUAL_DISCONNECT, false)
-        if (rememberedDeviceAddress() == address) {
+        if (sameConnectionTarget(rememberedDeviceAddress(), address)) {
             editor.remove(PREF_LAST_DEVICE_ADDRESS)
                 .remove(PREF_LAST_DEVICE_NAME)
         }
@@ -763,7 +800,7 @@ class PianoBeamService : Service() {
         }
         val generation = connectionGeneration.incrementAndGet()
         stopBleScan()
-        closeMidiConnection()
+        prepareForConnectionChange()
         val name = midiDeviceName(info)
         _state.update {
             it.copy(
@@ -900,15 +937,48 @@ class PianoBeamService : Service() {
     private fun isConnectionHealthy(connectionId: String): Boolean {
         refreshBluetoothState()
         if (!isBluetoothEnabled()) return false
-        if (connectionId.startsWith("midi:")) {
+        if (isAndroidMidiConnectionId(connectionId)) {
             refreshAndroidMidiDevices()
-            return midiDevicesByConnectionId.containsKey(connectionId)
+            val info = midiDevicesByConnectionId[connectionId] ?: return false
+            val bluetoothDevice = midiBluetoothDevice(info)
+            return bluetoothDevice == null || isBluetoothDeviceConnected(bluetoothDevice)
         }
         if (!hasConnectPermission()) return true
         val device = devicesByAddress[connectionId] ?: return false
         val bonded = runCatching { device.bondState == BluetoothDevice.BOND_BONDED }.getOrDefault(true)
         if (!bonded) return false
-        return midiInputPort != null
+        return midiInputPort != null && isBluetoothDeviceConnected(device)
+    }
+
+    @SuppressLint("MissingPermission")
+    private fun handleBluetoothDeviceDisconnected(device: BluetoothDevice?) {
+        if (device == null) return
+        val address = runCatching { device.address }.getOrNull() ?: return
+        val connection = _state.value.connection
+        if (!connection.connected && !connection.connecting) return
+        if (!currentConnectionMatchesBluetoothDevice(address)) return
+        val name = connection.deviceName ?: runCatching { safeDeviceName(device) }.getOrDefault("MIDI device")
+        AppEventLog.append("$name disconnected at the Bluetooth layer.")
+        handleConnectionLost("$name disconnected.")
+    }
+
+    @SuppressLint("MissingPermission")
+    private fun currentConnectionMatchesBluetoothDevice(address: String): Boolean {
+        val connectionAddress = _state.value.connection.address ?: return false
+        if (connectionAddress == address) return true
+        if (connectionAddress == androidBluetoothMidiConnectionId(address)) return true
+        if (!isAndroidMidiConnectionId(connectionAddress)) return false
+        val bluetoothDevice = midiDevicesByConnectionId[connectionAddress]?.let { midiBluetoothDevice(it) }
+            ?: midiDevice?.info?.let { midiBluetoothDevice(it) }
+        return runCatching { bluetoothDevice?.address == address }.getOrDefault(false)
+    }
+
+    @SuppressLint("MissingPermission")
+    private fun isBluetoothDeviceConnected(device: BluetoothDevice): Boolean {
+        if (!hasConnectPermission()) return true
+        return runCatching {
+            bluetoothManager.getConnectionState(device, BluetoothProfile.GATT) == BluetoothProfile.STATE_CONNECTED
+        }.getOrDefault(true)
     }
 
     private fun handleBluetoothTurnedOff() {
@@ -1652,7 +1722,11 @@ class PianoBeamService : Service() {
 
     private fun registerBluetoothStateReceiver() {
         if (bluetoothStateReceiverRegistered) return
-        val filter = IntentFilter(BluetoothAdapter.ACTION_STATE_CHANGED)
+        val filter = IntentFilter().apply {
+            addAction(BluetoothAdapter.ACTION_STATE_CHANGED)
+            addAction(BluetoothDevice.ACTION_ACL_DISCONNECTED)
+            addAction(BluetoothDevice.ACTION_ACL_DISCONNECT_REQUESTED)
+        }
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
             registerReceiver(bluetoothStateReceiver, filter, Context.RECEIVER_NOT_EXPORTED)
         } else {
@@ -1709,7 +1783,54 @@ class PianoBeamService : Service() {
         _state.update { it.copy(bleDevices = mergedDeviceList()) }
     }
 
-    private fun midiConnectionId(info: MidiDeviceInfo): String = "midi:${info.id}"
+    private fun midiConnectionId(info: MidiDeviceInfo): String {
+        val bluetoothAddress = midiBluetoothDevice(info)?.let { device ->
+            runCatching { device.address }.getOrNull()
+        }
+        return if (info.type == MidiDeviceInfo.TYPE_BLUETOOTH && !bluetoothAddress.isNullOrBlank()) {
+            androidBluetoothMidiConnectionId(bluetoothAddress)
+        } else {
+            "midi:${info.id}"
+        }
+    }
+
+    private fun androidBluetoothMidiConnectionId(bluetoothAddress: String): String = "midi-bt:$bluetoothAddress"
+
+    private fun isAndroidMidiConnectionId(address: String?): Boolean =
+        address?.startsWith("midi:") == true || address?.startsWith("midi-bt:") == true
+
+    private fun bluetoothAddressFromConnectionId(address: String?): String? =
+        address?.takeIf { it.startsWith("midi-bt:") }?.removePrefix("midi-bt:")?.takeIf { it.isNotBlank() }
+
+    private fun sameConnectionTarget(left: String?, right: String?): Boolean {
+        if (left.isNullOrBlank() || right.isNullOrBlank()) return false
+        if (left == right) return true
+        val leftBluetoothAddress = bluetoothAddressFromConnectionId(left) ?: left.takeUnless { isAndroidMidiConnectionId(it) }
+        val rightBluetoothAddress = bluetoothAddressFromConnectionId(right) ?: right.takeUnless { isAndroidMidiConnectionId(it) }
+        return !leftBluetoothAddress.isNullOrBlank() && leftBluetoothAddress == rightBluetoothAddress
+    }
+
+    private fun connectionTargetAliases(address: String): Set<String> {
+        val bluetoothAddress = bluetoothAddressFromConnectionId(address)
+        return when {
+            bluetoothAddress != null -> setOf(address, bluetoothAddress)
+            isAndroidMidiConnectionId(address) -> setOf(address)
+            else -> setOf(address, androidBluetoothMidiConnectionId(address))
+        }
+    }
+
+    private fun availableConnectionAddress(address: String): String? {
+        if (midiDevicesByConnectionId.containsKey(address)) return address
+        bluetoothAddressFromConnectionId(address)?.let { bluetoothAddress ->
+            if (devicesByAddress.containsKey(bluetoothAddress)) return bluetoothAddress
+        }
+        if (!isAndroidMidiConnectionId(address)) {
+            val androidMidiAddress = androidBluetoothMidiConnectionId(address)
+            if (midiDevicesByConnectionId.containsKey(androidMidiAddress)) return androidMidiAddress
+        }
+        if (devicesByAddress.containsKey(address)) return address
+        return null
+    }
 
     private fun midiDeviceName(info: MidiDeviceInfo): String {
         return midiProperty(info, MidiDeviceInfo.PROPERTY_NAME)
@@ -1735,7 +1856,28 @@ class PianoBeamService : Service() {
         return info.properties.get(key)?.toString()?.takeIf { it.isNotBlank() }
     }
 
+    @Suppress("DEPRECATION")
+    private fun midiBluetoothDevice(info: MidiDeviceInfo): BluetoothDevice? {
+        return if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+            info.properties.getParcelable(MidiDeviceInfo.PROPERTY_BLUETOOTH_DEVICE, BluetoothDevice::class.java)
+        } else {
+            info.properties.getParcelable(MidiDeviceInfo.PROPERTY_BLUETOOTH_DEVICE)
+        }
+    }
+
+    @Suppress("DEPRECATION")
+    private fun Intent.bluetoothDeviceExtra(): BluetoothDevice? {
+        return if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+            getParcelableExtra(BluetoothDevice.EXTRA_DEVICE, BluetoothDevice::class.java)
+        } else {
+            getParcelableExtra(BluetoothDevice.EXTRA_DEVICE)
+        }
+    }
+
     private fun mergedDeviceList(): List<BleMidiDeviceItem> {
+        val androidMidiBluetoothAddresses = midiDevicesByConnectionId.values
+            .mapNotNull { info -> midiBluetoothDevice(info)?.let { runCatching { it.address }.getOrNull() } }
+            .toSet()
         val midiItems = midiDevicesByConnectionId.values.map { info ->
             val name = midiDeviceName(info)
             BleMidiDeviceItem(
@@ -1750,6 +1892,7 @@ class PianoBeamService : Service() {
         }
         val bleItems = devicesByAddress.values.map { device ->
             val address = runCatching { device.address }.getOrNull() ?: ""
+            if (address in androidMidiBluetoothAddresses) return@map null
             val existing = bleScanItemsByAddress[address]
             existing ?: BleMidiDeviceItem(
                 name = safeDeviceName(device),
@@ -1757,7 +1900,7 @@ class PianoBeamService : Service() {
                 source = "BLE scan",
                 detail = address
             )
-        }
+        }.filterNotNull()
         return (midiItems + bleItems)
             .filterNot { isDeviceHidden(it.address) }
             .distinctBy { it.address }
@@ -1804,16 +1947,16 @@ class PianoBeamService : Service() {
         if (_state.value.connection.connected || _state.value.connection.connecting) return
         val candidates = knownReconnectCandidates()
         val preferredAddress = scanPreferredReconnectAddress ?: candidates.firstOrNull()?.address
-        if (preferredAddress != null && address == preferredAddress) {
-            val preferred = candidates.firstOrNull { it.address == address }
+        if (preferredAddress != null && sameConnectionTarget(address, preferredAddress)) {
+            val preferred = candidates.firstOrNull { sameConnectionTarget(it.address, address) }
             postMessage("Reconnecting to ${preferred?.name ?: "preferred MIDI device"}...")
-            mainHandler.post { connect(address) }
+            mainHandler.post { connect(availableConnectionAddress(preferredAddress) ?: address) }
             return
         }
-        val index = candidates.indexOfFirst { it.address == address }
+        val index = candidates.indexOfFirst { sameConnectionTarget(it.address, address) }
         if (index < 0) return
         val currentIndex = scanFallbackReconnectAddress?.let { current ->
-            candidates.indexOfFirst { it.address == current }
+            candidates.indexOfFirst { sameConnectionTarget(it.address, current) }
         } ?: Int.MAX_VALUE
         if (index < currentIndex) scanFallbackReconnectAddress = address
     }
@@ -1904,11 +2047,11 @@ class PianoBeamService : Service() {
             .toSet()
 
     private fun isDeviceHidden(address: String): Boolean =
-        address.isNotBlank() && address in hiddenDevices()
+        address.isNotBlank() && connectionTargetAliases(address).any { it in hiddenDevices() }
 
     private fun hideDevice(address: String) {
         if (address.isBlank()) return
-        val updated = (hiddenDevices() + address).sorted()
+        val updated = (hiddenDevices() + connectionTargetAliases(address)).sorted()
         prefs.edit()
             .putString(PREF_HIDDEN_DEVICES, updated.joinToString("\n"))
             .apply()
@@ -1921,13 +2064,14 @@ class PianoBeamService : Service() {
 
     private fun rememberConnectedDevice(address: String, name: String) {
         val cleanName = name.replace('\t', ' ').replace('\n', ' ').trim().ifBlank { "MIDI device" }
-        val updated = (listOf(KnownMidiDevice(address, cleanName)) + knownDevices().filterNot { it.address == address })
+        val updated = (listOf(KnownMidiDevice(address, cleanName)) + knownDevices().filterNot { sameConnectionTarget(it.address, address) })
             .take(8)
+        val hidden = hiddenDevices() - connectionTargetAliases(address)
         prefs.edit()
             .putString(PREF_LAST_DEVICE_ADDRESS, address)
             .putString(PREF_LAST_DEVICE_NAME, cleanName)
             .putString(PREF_KNOWN_DEVICES, updated.joinToString("\n") { "${it.address}\t${it.name}" })
-            .putString(PREF_HIDDEN_DEVICES, (hiddenDevices() - address).sorted().joinToString("\n"))
+            .putString(PREF_HIDDEN_DEVICES, hidden.sorted().joinToString("\n"))
             .putBoolean(PREF_MANUAL_DISCONNECT, false)
             .apply()
     }
@@ -2106,7 +2250,7 @@ class PianoBeamService : Service() {
     private fun sendPanicMessages() {
         val connection = _state.value.connection
         if (!connection.connected) return
-        if (connection.address?.startsWith("midi:") != true && !isBluetoothEnabled()) return
+        if (!isAndroidMidiConnectionId(connection.address) && !isBluetoothEnabled()) return
         val port = midiInputPort ?: return
         val now = System.nanoTime()
         try {
@@ -2130,7 +2274,7 @@ class PianoBeamService : Service() {
     private fun sendVolumeMessages(percent: Int) {
         val connection = _state.value.connection
         if (!connection.connected) return
-        if (connection.address?.startsWith("midi:") != true && !isBluetoothEnabled()) return
+        if (!isAndroidMidiConnectionId(connection.address) && !isBluetoothEnabled()) return
         val port = midiInputPort ?: return
         val controls = appSettings.channelControls.normalizedControls()
         val now = System.nanoTime()
@@ -2379,7 +2523,7 @@ class PianoBeamService : Service() {
         val intent = PendingIntent.getService(
             this,
             requestCode,
-            Intent(this, PianoBeamService::class.java).setAction(action),
+            Intent(this, NoteCastService::class.java).setAction(action),
             flags
         )
         return Notification.Action.Builder(

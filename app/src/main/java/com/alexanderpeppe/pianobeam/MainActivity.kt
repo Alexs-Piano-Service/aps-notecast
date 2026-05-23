@@ -145,21 +145,21 @@ import com.alexanderpeppe.pianobeam.reporting.BugReportClient
 import com.alexanderpeppe.pianobeam.reporting.BugReportInput
 import com.alexanderpeppe.pianobeam.reporting.CrashReportStore
 import com.alexanderpeppe.pianobeam.settings.AppSettingsStore
-import com.alexanderpeppe.pianobeam.service.PianoBeamService
+import com.alexanderpeppe.pianobeam.service.NoteCastService
 import com.alexanderpeppe.pianobeam.ui.settings.SettingsDialog
-import com.alexanderpeppe.pianobeam.ui.theme.PianoBeamTheme
+import com.alexanderpeppe.pianobeam.ui.theme.NoteCastTheme
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlin.math.roundToInt
 
 class MainActivity : ComponentActivity() {
-    private var service by mutableStateOf<PianoBeamService?>(null)
+    private var service by mutableStateOf<NoteCastService?>(null)
     private lateinit var settingsStore: AppSettingsStore
     private var bound = false
 
     private val connection = object : ServiceConnection {
         override fun onServiceConnected(name: ComponentName?, binder: IBinder?) {
-            service = (binder as PianoBeamService.LocalBinder).service()
+            service = (binder as NoteCastService.LocalBinder).service()
             bound = true
         }
 
@@ -173,14 +173,14 @@ class MainActivity : ComponentActivity() {
         super.onCreate(savedInstanceState)
         CrashReportStore.install(applicationContext)
         settingsStore = AppSettingsStore(this)
-        val intent = Intent(this, PianoBeamService::class.java)
+        val intent = Intent(this, NoteCastService::class.java)
         startService(intent)
         bindService(intent, connection, BIND_AUTO_CREATE)
 
         setContent {
             val appSettings by settingsStore.settings.collectAsState()
 
-            PianoBeamTheme(themeMode = appSettings.themeMode) {
+            NoteCastTheme(themeMode = appSettings.themeMode) {
                 var permissionsGranted by remember { mutableStateOf(hasAllRuntimePermissions()) }
                 val permissionLauncher = rememberLauncherForActivityResult(
                     ActivityResultContracts.RequestMultiplePermissions()
@@ -208,7 +208,7 @@ class MainActivity : ComponentActivity() {
                     if (currentService == null) {
                         LoadingScreen()
                     } else {
-                        PianoBeamApp(
+                        NoteCastApp(
                             service = currentService,
                             permissionsGranted = permissionsGranted,
                             settings = appSettings,
@@ -336,8 +336,8 @@ private fun PrimaryLogoBanner(modifier: Modifier = Modifier) {
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-private fun PianoBeamApp(
-    service: PianoBeamService,
+private fun NoteCastApp(
+    service: NoteCastService,
     permissionsGranted: Boolean,
     settings: AppSettings,
     onSettingsChange: (AppSettings) -> Unit,
@@ -648,7 +648,7 @@ private fun PianoBeamApp(
 @Composable
 private fun AdaptiveHome(
     state: AppUiState,
-    service: PianoBeamService,
+    service: NoteCastService,
     permissionsGranted: Boolean,
     onRequestPermissions: () -> Unit,
     onRequestBluetoothEnable: () -> Unit,
@@ -736,7 +736,7 @@ private fun AdaptiveHome(
 @Composable
 private fun LibraryPane(
     state: AppUiState,
-    service: PianoBeamService,
+    service: NoteCastService,
     selectedKind: String,
     selectedId: String?,
     onSelectFile: (String) -> Unit,
@@ -1033,19 +1033,25 @@ private fun LibraryHero(
                 }
             }
             BoxWithConstraints {
-                val compact = maxWidth < 430.dp
-                if (compact) {
-                    Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
-                        LibraryActionButton(Icons.Default.UploadFile, "Add MIDI", onImport)
-                        LibraryActionButton(Icons.Default.FiberManualRecord, "Record MIDI", onRecord, inviting = true)
-                        LibraryActionButton(Icons.Default.CreateNewFolder, "New Playlist", onCreatePlaylist)
-                    }
-                } else {
-                    Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                        LibraryActionButton(Icons.Default.UploadFile, "Add MIDI", onImport, Modifier.weight(1f))
-                        LibraryActionButton(Icons.Default.FiberManualRecord, "Record MIDI", onRecord, Modifier.weight(1f), inviting = true)
-                        LibraryActionButton(Icons.Default.CreateNewFolder, "New Playlist", onCreatePlaylist, Modifier.weight(1f))
-                    }
+                val veryNarrow = maxWidth < 300.dp
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(6.dp)
+                ) {
+                    LibraryActionButton(Icons.Default.UploadFile, if (veryNarrow) "Add" else "Add MIDI", onImport, Modifier.weight(1f))
+                    LibraryActionButton(
+                        Icons.Default.FiberManualRecord,
+                        if (veryNarrow) "Record" else "Record MIDI",
+                        onRecord,
+                        Modifier.weight(1f),
+                        inviting = true
+                    )
+                    LibraryActionButton(
+                        Icons.Default.CreateNewFolder,
+                        if (veryNarrow) "Playlist" else "New Playlist",
+                        onCreatePlaylist,
+                        Modifier.weight(1f)
+                    )
                 }
             }
         }
@@ -1068,10 +1074,15 @@ private fun LibraryActionButton(
     } else {
         ButtonDefaults.filledTonalButtonColors()
     }
-    FilledTonalButton(onClick = onClick, modifier = modifier.height(40.dp), colors = colors) {
-        Icon(icon, contentDescription = null, modifier = Modifier.size(18.dp))
-        Spacer(Modifier.width(6.dp))
-        Text(label, maxLines = 1)
+    FilledTonalButton(
+        onClick = onClick,
+        modifier = modifier.height(40.dp),
+        colors = colors,
+        contentPadding = PaddingValues(horizontal = 6.dp)
+    ) {
+        Icon(icon, contentDescription = null, modifier = Modifier.size(16.dp))
+        Spacer(Modifier.width(4.dp))
+        Text(label, maxLines = 1, overflow = TextOverflow.Ellipsis, style = MaterialTheme.typography.labelSmall)
     }
 }
 
@@ -1147,7 +1158,7 @@ private fun BugReportDialog(
     context: Context,
     state: AppUiState,
     settings: AppSettings,
-    service: PianoBeamService,
+    service: NoteCastService,
     onDismiss: () -> Unit
 ) {
     val pendingCrash = remember(context) { CrashReportStore.pendingCrash(context) }
@@ -1742,7 +1753,7 @@ private fun EmptyLibraryCard(
 @Composable
 private fun DevicePanel(
     state: AppUiState,
-    service: PianoBeamService,
+    service: NoteCastService,
     permissionsGranted: Boolean,
     onRequestPermissions: () -> Unit,
     onRequestBluetoothEnable: () -> Unit,
@@ -1782,7 +1793,7 @@ private fun DevicePanel(
 @Composable
 private fun PlayerPanel(
     state: AppUiState,
-    service: PianoBeamService,
+    service: NoteCastService,
     modifier: Modifier = Modifier
 ) {
     val playback = state.playback
@@ -1859,7 +1870,7 @@ private fun TransportBar(
     selectedKind: String,
     selectedId: String?,
     onPlaySelection: () -> Unit,
-    service: PianoBeamService
+    service: NoteCastService
 ) {
     val playback = state.playback
     val selectedTitle = when (selectedKind) {
@@ -1985,7 +1996,7 @@ private fun TransportTitle(
 @Composable
 private fun TransportControls(
     state: AppUiState,
-    service: PianoBeamService,
+    service: NoteCastService,
     onPlaySelection: () -> Unit,
     hasSelection: Boolean,
     modifier: Modifier = Modifier
@@ -2074,7 +2085,7 @@ private fun ConnectionPill(state: AppUiState, onClick: () -> Unit) {
 @Composable
 private fun ConnectionWizardDialog(
     state: AppUiState,
-    service: PianoBeamService,
+    service: NoteCastService,
     permissionsGranted: Boolean,
     onRequestPermissions: () -> Unit,
     onRequestBluetoothEnable: () -> Unit,
@@ -2152,7 +2163,7 @@ private fun BatteryUsageRecommendation(onOpenBatterySettings: () -> Unit) {
 @Composable
 private fun ConnectionDialog(
     state: AppUiState,
-    service: PianoBeamService,
+    service: NoteCastService,
     permissionsGranted: Boolean,
     onRequestPermissions: () -> Unit,
     onRequestBluetoothEnable: () -> Unit,
@@ -2186,7 +2197,7 @@ private fun ConnectionDialog(
 @Composable
 private fun DeviceConnectorContent(
     state: AppUiState,
-    service: PianoBeamService,
+    service: NoteCastService,
     permissionsGranted: Boolean,
     onRequestPermissions: () -> Unit,
     onRequestBluetoothEnable: () -> Unit,
@@ -2261,12 +2272,7 @@ private fun DeviceConnectorContent(
     if (state.connection.connecting || state.connection.scanning) {
         LoadingStatusPanel(
             title = if (state.connection.connecting) "Connecting to MIDI" else "Looking for MIDI",
-            message = when {
-                state.connection.connecting -> state.connection.message
-                state.connection.rememberedDeviceName != null && !state.connection.autoReconnectSuppressed ->
-                    "Checking for ${state.connection.rememberedDeviceName} nearby..."
-                else -> "Scanning nearby BLE MIDI devices..."
-            },
+            message = state.connection.message,
             actionLabel = if (state.connection.scanning) "Stop" else null,
             onAction = if (state.connection.scanning) ({ service.stopBleScan() }) else null
         )
@@ -2300,25 +2306,30 @@ private fun DeviceConnectorContent(
         }
     }
 
+    val deviceResults = state.bleDevices.filterNot { sameDeviceTarget(it.address, state.connection.address) }
+
     if (state.connection.connected) {
         ConnectedDeviceRow(
             state = state,
             service = service,
             onRemove = { address -> removeDeviceAddress = address }
         )
-    } else if (state.bleDevices.isEmpty() && !state.connection.scanning && !state.connection.connecting) {
+    }
+
+    if (deviceResults.isEmpty() && !state.connection.scanning && !state.connection.connecting) {
         Text(
-            "No devices found. Pair first, then scan.",
+            if (state.connection.connected) "Scan to find another MIDI device." else "No devices found. Pair first, then scan.",
             color = MaterialTheme.colorScheme.onSurfaceVariant
         )
-    } else {
+    } else if (deviceResults.isNotEmpty()) {
         LazyColumn(
             modifier = Modifier.heightIn(max = if (compact) 210.dp else 300.dp),
             verticalArrangement = Arrangement.spacedBy(8.dp)
         ) {
-            items(state.bleDevices, key = { it.address }) { device ->
+            items(deviceResults, key = { it.address }) { device ->
                 DeviceResultRow(
                     device = device,
+                    actionLabel = if (state.connection.connected) "Switch" else "Connect",
                     onConnect = { service.connect(device.address) },
                     onRemove = { removeDeviceAddress = device.address }
                 )
@@ -2346,7 +2357,7 @@ private fun DeviceConnectorContent(
 @Composable
 private fun ConnectedDeviceRow(
     state: AppUiState,
-    service: PianoBeamService,
+    service: NoteCastService,
     onRemove: (String) -> Unit
 ) {
     Surface(shape = RoundedCornerShape(4.dp), color = MaterialTheme.colorScheme.secondaryContainer) {
@@ -2370,6 +2381,7 @@ private fun ConnectedDeviceRow(
 @Composable
 private fun DeviceResultRow(
     device: BleMidiDeviceItem,
+    actionLabel: String,
     onConnect: () -> Unit,
     onRemove: () -> Unit
 ) {
@@ -2395,12 +2407,22 @@ private fun DeviceResultRow(
                     overflow = TextOverflow.Ellipsis
                 )
             }
-            Button(onClick = onConnect) { Text("Connect") }
+            Button(onClick = onConnect) { Text(actionLabel) }
             IconButton(onClick = onRemove) {
                 Icon(Icons.Default.Delete, contentDescription = "Remove ${device.name}")
             }
         }
     }
+}
+
+private fun sameDeviceTarget(left: String?, right: String?): Boolean {
+    if (left.isNullOrBlank() || right.isNullOrBlank()) return false
+    if (left == right) return true
+    val leftBluetoothAddress = left.removePrefix("midi-bt:").takeIf { it != left }
+        ?: left.takeUnless { it.startsWith("midi:") || it.startsWith("midi-bt:") }
+    val rightBluetoothAddress = right.removePrefix("midi-bt:").takeIf { it != right }
+        ?: right.takeUnless { it.startsWith("midi:") || it.startsWith("midi-bt:") }
+    return !leftBluetoothAddress.isNullOrBlank() && leftBluetoothAddress == rightBluetoothAddress
 }
 
 @Composable
@@ -2543,7 +2565,7 @@ private fun AddPlaylistDialog(
 @Composable
 private fun RecordDialog(
     state: AppUiState,
-    service: PianoBeamService,
+    service: NoteCastService,
     settings: AppSettings,
     onDismiss: () -> Unit
 ) {

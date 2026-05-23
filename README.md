@@ -85,7 +85,7 @@ adb shell am start -n com.alexanderpeppe.pianobeam/.MainActivity
 ## Project Structure
 
 - `app/src/main/java/com/alexanderpeppe/pianobeam/MainActivity.kt`: Jetpack Compose UI, library, connection dialogs, transport, recording, and app info.
-- `app/src/main/java/com/alexanderpeppe/pianobeam/service/PianoBeamService.kt`: BLE MIDI connection, MIDI playback, media session, notification, recording, reconnect, and diagnostics.
+- `app/src/main/java/com/alexanderpeppe/pianobeam/service/NoteCastService.kt`: BLE MIDI connection, MIDI playback, media session, notification, recording, reconnect, and diagnostics.
 - `app/src/main/java/com/alexanderpeppe/pianobeam/data/`: Library metadata, settings models, and repository.
 - `app/src/main/java/com/alexanderpeppe/pianobeam/midi/`: Standard MIDI File parser and writer.
 - `app/src/main/java/com/alexanderpeppe/pianobeam/ui/`: Theme and settings UI.

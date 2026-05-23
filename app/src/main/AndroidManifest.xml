@@ -33,12 +33,12 @@
         android:localeConfig="@xml/locales_config"
         android:roundIcon="@mipmap/ic_launcher_round"
         android:supportsRtl="true"
-        android:theme="@style/Theme.PianoBeam">
+        android:theme="@style/Theme.NoteCast">
 
         <activity
             android:name=".MainActivity"
             android:exported="true"
-            android:theme="@style/Theme.PianoBeam">
+            android:theme="@style/Theme.NoteCast">
             <intent-filter>
                 <action android:name="android.intent.action.MAIN" />
                 <category android:name="android.intent.category.LAUNCHER" />
@@ -46,7 +46,7 @@
         </activity>
 
         <service
-            android:name=".service.PianoBeamService"
+            android:name=".service.NoteCastService"
             android:exported="false"
             android:foregroundServiceType="mediaPlayback" />
 

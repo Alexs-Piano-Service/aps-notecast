@@ -1,4 +1,4 @@
-# PianoBeam field test notes
+# APS NoteCast field test notes
 
 ## Recommended first test file
 
