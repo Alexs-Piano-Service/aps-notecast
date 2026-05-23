@@ -1,0 +1,10 @@
+<resources>
+    <style name="Theme.PianoBeam" parent="android:style/Theme.Material.Light.NoActionBar">
+        <item name="android:windowActionBar">false</item>
+        <item name="android:windowNoTitle">true</item>
+        <item name="android:fontFamily">sans</item>
+        <item name="android:windowLightStatusBar">true</item>
+        <item name="android:navigationBarColor">#FCFBFF</item>
+        <item name="android:statusBarColor">#FCFBFF</item>
+    </style>
+</resources>

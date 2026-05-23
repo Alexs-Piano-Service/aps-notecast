@@ -1,0 +1,12 @@
+<resources>
+    <string name="app_name">APS NoteCast</string>
+    <string name="developed_by">Desenvolvido por</string>
+    <string name="company_name">Alex\'s Piano Service LLC</string>
+    <string name="company_address">432 Elm St, Suite P, Biddeford, ME 04005</string>
+    <string name="website">Site</string>
+    <string name="website_url">https://www.alexanderpeppe.com</string>
+    <string name="disclaimer">Aviso legal</string>
+    <string name="disclaimer_url">https://www.alexanderpeppe.com/disclaimer/</string>
+    <string name="privacy_policy">Política de privacidade</string>
+    <string name="privacy_policy_url">https://www.alexanderpeppe.com/privacy-policy/</string>
+</resources>
