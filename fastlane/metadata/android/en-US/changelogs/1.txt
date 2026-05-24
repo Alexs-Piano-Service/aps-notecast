@@ -1,0 +1,7 @@
+Initial public release.
+
+* BLE MIDI scan, connect, reconnect, and switch flow
+* MIDI library, playlists, playback controls, and recording
+* Connection diagnostics and reliability monitoring
+* Light/dark theme support
+* Release build and signing task support

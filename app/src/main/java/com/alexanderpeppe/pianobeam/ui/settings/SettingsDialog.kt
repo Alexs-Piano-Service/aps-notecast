@@ -194,7 +194,7 @@ fun SettingsDialog(
                     SettingSection("Connection") {
                         SwitchRow(
                             title = "Auto-reconnect",
-                            subtitle = "Keep looking for the preferred WIDI while APS NoteCast is open",
+                            subtitle = "Keep looking for the preferred MIDI device while APS NoteCast is open",
                             checked = settings.autoReconnectEnabled,
                             onCheckedChange = { onSettingsChange(settings.copy(autoReconnectEnabled = it)) }
                         )
@@ -219,7 +219,7 @@ fun SettingsDialog(
                             onValueChange = { onSettingsChange(settings.copy(reconnectTimeoutSeconds = it.roundToInt())) }
                         )
                         Text(
-                            "Preferred WIDI: ${preferredDeviceName ?: "none"}",
+                            "Preferred MIDI device: ${preferredDeviceName ?: "none"}",
                             style = MaterialTheme.typography.bodyMedium,
                             color = MaterialTheme.colorScheme.onSurfaceVariant
                         )

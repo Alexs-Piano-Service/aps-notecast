@@ -4,6 +4,9 @@ Copyright 2026 Alex's Piano Service LLC
 This product includes software developed for APS NoteCast and is licensed under
 the Apache License, Version 2.0.
 
+Third-party runtime library and bundled asset provenance is documented in
+THIRD_PARTY_NOTICES.md.
+
 APS NoteCast is an independent project and is not affiliated with CME, WIDI,
 Yamaha, PianoDisc, QRS, or other companies mentioned in documentation or UI.
 Trademarks belong to their respective owners.

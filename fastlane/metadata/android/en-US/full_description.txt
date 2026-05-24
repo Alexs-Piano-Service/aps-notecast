@@ -1,0 +1,18 @@
+APS NoteCast is an Android app for practical player-piano and BLE MIDI workflows.
+
+It lets you scan for compatible Bluetooth LE MIDI adapters, connect to the selected MIDI device, import Standard MIDI Files, organize playlists, and send playback to a player piano or other MIDI receiver.
+
+Core features:
+
+* Scan-first BLE MIDI connection flow
+* Saved MIDI devices with quick reconnect and switching
+* Local MIDI library and playlists
+* Single-file and playlist playback
+* Shuffle, repeat, stop-after-current, and stop-after-playlist modes
+* Tempo, transpose, volume, mute, solo, and per-channel controls
+* Panic controls for all notes, sound, controllers, and pedals
+* BLE MIDI recording to Standard MIDI File
+* MIDI export/share and library backup/restore
+* Light, dark, and system appearance modes
+
+APS NoteCast does not include analytics or advertising. Optional bug reports are sent only when the user opens the report dialog and submits one.

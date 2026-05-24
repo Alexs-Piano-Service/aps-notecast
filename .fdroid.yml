@@ -1,0 +1,41 @@
+Categories:
+  - Multimedia
+License: Apache-2.0
+AuthorName: Alex's Piano Service LLC
+AuthorWebSite: https://www.alexanderpeppe.com/
+WebSite: https://www.alexanderpeppe.com/
+SourceCode: https://github.com/Alexs-Piano-Service/aps-notecast
+IssueTracker: https://github.com/Alexs-Piano-Service/aps-notecast/issues
+Changelog: https://github.com/Alexs-Piano-Service/aps-notecast/blob/main/CHANGELOG.md
+
+RepoType: git
+Repo: https://github.com/Alexs-Piano-Service/aps-notecast.git
+
+Builds:
+  - versionName: 0.1.2
+    versionCode: 3
+    commit: v0.1.2
+    gradle:
+      - yes
+
+  - versionName: 0.1.0
+    versionCode: 1
+    commit: v0.1.0
+    gradle:
+      - yes
+
+AutoUpdateMode: Version
+UpdateCheckMode: Tags
+CurrentVersion: 0.1.2
+CurrentVersionCode: 3
+
+MaintainerNotes: |-
+  The Android/Kotlin/Compose dependencies resolve to Apache-2.0-family
+  licenses. See THIRD_PARTY_NOTICES.md for dependency and bundled asset
+  provenance.
+
+  The bundled demo MIDI files are content assets, not code dependencies. Their
+  underlying compositions are public domain, but the specific captured/prepared
+  MIDI files need a confirmed libre redistribution license before submission to
+  the main F-Droid repository. If that cannot be confirmed, replace or remove
+  those demo files before submitting.
