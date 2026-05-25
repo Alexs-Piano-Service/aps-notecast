@@ -36,6 +36,33 @@ data class BleMidiDeviceItem(
     val detail: String = address
 )
 
+data class KuhmannMidiResult(
+    val id: Int,
+    val title: String,
+    val folder: String,
+    val filename: String,
+    val url: String,
+    val midiType: String,
+    val midiFormat: Int?,
+    val channelCount: Int,
+    val channels: List<Int>,
+    val fileSize: Long,
+    val sha256: String
+)
+
+data class KuhmannSearchUiState(
+    val searching: Boolean = false,
+    val downloading: Boolean = false,
+    val query: String = "",
+    val format: Int? = 0,
+    val pianoOnly: Boolean = false,
+    val channel: Int? = null,
+    val limit: Int = 50,
+    val results: List<KuhmannMidiResult> = emptyList(),
+    val message: String = "Search the Kuhmann MIDI directory.",
+    val lastImportedIds: List<Int> = emptyList()
+)
+
 data class ConnectionUiState(
     val connected: Boolean = false,
     val connecting: Boolean = false,
@@ -92,6 +119,7 @@ data class AppUiState(
     val connection: ConnectionUiState = ConnectionUiState(),
     val playback: PlaybackUiState = PlaybackUiState(),
     val recording: RecordingUiState = RecordingUiState(),
+    val kuhmann: KuhmannSearchUiState = KuhmannSearchUiState(),
     val volumePercent: Int = 88,
     val lastMessage: String = "Ready"
 )

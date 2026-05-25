@@ -20,6 +20,7 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.foundation.gestures.detectDragGesturesAfterLongPress
+import androidx.compose.foundation.gestures.scrollBy
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
@@ -41,6 +42,7 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.lazy.grid.GridCells
 import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
 import androidx.compose.foundation.lazy.grid.items as gridItems
@@ -107,6 +109,7 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
@@ -120,6 +123,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Rect
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.luminance
 import androidx.compose.ui.input.pointer.pointerInput
@@ -132,6 +136,7 @@ import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalUriHandler
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
@@ -143,6 +148,8 @@ import com.alexanderpeppe.pianobeam.data.AppSettings
 import com.alexanderpeppe.pianobeam.data.AppUiState
 import com.alexanderpeppe.pianobeam.data.AppThemeMode
 import com.alexanderpeppe.pianobeam.data.BleMidiDeviceItem
+import com.alexanderpeppe.pianobeam.data.KuhmannMidiResult
+import com.alexanderpeppe.pianobeam.data.KuhmannSearchUiState
 import com.alexanderpeppe.pianobeam.data.MidiLibraryItem
 import com.alexanderpeppe.pianobeam.data.MidiPlaylist
 import com.alexanderpeppe.pianobeam.data.PlaybackMode
@@ -182,7 +189,7 @@ class MainActivity : ComponentActivity() {
         CrashReportStore.install(applicationContext)
         settingsStore = AppSettingsStore(this)
         val intent = Intent(this, NoteCastService::class.java)
-        startService(intent)
+        runCatching { startService(intent) }
         bindService(intent, connection, BIND_AUTO_CREATE)
 
         setContent {
@@ -389,11 +396,17 @@ private fun NoteCastApp(
     LaunchedEffect(permissionsGranted) {
         service.refreshKnownDevices()
     }
-    LaunchedEffect(showConnector, showWizard) {
-        service.setAutoReconnectPausedForDevicePicker(showConnector || showWizard)
+    LaunchedEffect(showConnector) {
+        service.setAutoReconnectPausedForDevicePicker(showConnector)
     }
-    LaunchedEffect(permissionsGranted, settings.scanOnLaunch) {
-        if (permissionsGranted && settings.scanOnLaunch) service.startBleScan()
+    LaunchedEffect(permissionsGranted, settings.scanOnLaunch, settings.autoReconnectEnabled) {
+        if (permissionsGranted && settings.scanOnLaunch) {
+            if (settings.autoReconnectEnabled) delay(250L)
+            val connection = service.state.value.connection
+            if (!connection.connected && !connection.connecting && !connection.scanning) {
+                service.startBleScan()
+            }
+        }
     }
     LaunchedEffect(permissionsGranted, settings.autoReconnectEnabled, settings.reconnectIntervalSeconds) {
         while (permissionsGranted && settings.autoReconnectEnabled) {
@@ -767,6 +780,7 @@ private fun LibraryPane(
     }
     var showPlaylistDialog by rememberSaveable { mutableStateOf(false) }
     var showRecordDialog by rememberSaveable { mutableStateOf(false) }
+    var showKuhmannDialog by rememberSaveable { mutableStateOf(false) }
     var addFilesPlaylistId by rememberSaveable { mutableStateOf<String?>(null) }
     var renameFileId by rememberSaveable { mutableStateOf<String?>(null) }
     var renamePlaylistId by rememberSaveable { mutableStateOf<String?>(null) }
@@ -777,7 +791,35 @@ private fun LibraryPane(
     var draggingFile by remember { mutableStateOf<MidiLibraryItem?>(null) }
     var dragPosition by remember { mutableStateOf<Offset?>(null) }
     var paneOrigin by remember { mutableStateOf(Offset.Zero) }
+    var listBounds by remember { mutableStateOf<Rect?>(null) }
+    val listState = rememberLazyListState()
+    val density = LocalDensity.current
     val filesById = remember(state.files) { state.files.associateBy { it.id } }
+
+    LaunchedEffect(draggingFile) {
+        if (draggingFile == null) return@LaunchedEffect
+        while (true) {
+            val bounds = listBounds
+            val position = dragPosition
+            if (bounds != null && position != null) {
+                val edgeSize = 96f.coerceAtMost(bounds.height / 3f)
+                val maxStep = 28f
+                val scrollDelta = when {
+                    position.y < bounds.top + edgeSize -> {
+                        val pressure = ((bounds.top + edgeSize - position.y) / edgeSize).coerceIn(0f, 1f)
+                        -maxStep * pressure
+                    }
+                    position.y > bounds.bottom - edgeSize -> {
+                        val pressure = ((position.y - (bounds.bottom - edgeSize)) / edgeSize).coerceIn(0f, 1f)
+                        maxStep * pressure
+                    }
+                    else -> 0f
+                }
+                if (scrollDelta != 0f) listState.scrollBy(scrollDelta)
+            }
+            delay(16L)
+        }
+    }
 
     fun finishDrag() {
         val file = draggingFile
@@ -802,7 +844,10 @@ private fun LibraryPane(
                 .onGloballyPositioned { paneOrigin = it.localToRoot(Offset.Zero) }
         ) {
             LazyColumn(
-                modifier = Modifier.fillMaxSize(),
+                state = listState,
+                modifier = Modifier
+                    .fillMaxSize()
+                    .onGloballyPositioned { listBounds = it.boundsInRoot() },
                 contentPadding = PaddingValues(10.dp),
                 verticalArrangement = Arrangement.spacedBy(6.dp)
             ) {
@@ -811,6 +856,7 @@ private fun LibraryPane(
                         fileCount = state.files.size,
                         playlistCount = state.playlists.size,
                         onImport = { importLauncher.launch(arrayOf("audio/midi", "audio/x-midi", "application/octet-stream", "*/*")) },
+                        onBrowseKuhmann = { showKuhmannDialog = true },
                         onRecord = { showRecordDialog = true },
                         onCreatePlaylist = { showPlaylistDialog = true },
                         onOpenConnection = onOpenConnection
@@ -829,6 +875,9 @@ private fun LibraryPane(
                 if (state.playlists.isNotEmpty()) {
                     item { SectionLabel("Playlists") }
                     items(state.playlists, key = { it.id }) { playlist ->
+                        DisposableEffect(playlist.id) {
+                            onDispose { playlistBounds.remove(playlist.id) }
+                        }
                         val expanded = expandedPlaylists[playlist.id] ?: false
                         val highlighted = dragPosition?.let { playlistBounds[playlist.id]?.contains(it) } == true
                         PlaylistFolder(
@@ -902,25 +951,21 @@ private fun LibraryPane(
 
             draggingFile?.let { file ->
                 val position = dragPosition ?: Offset.Zero
-                Surface(
+                val previewWidth = with(density) {
+                    ((listBounds?.width ?: 420f) - 20f).coerceIn(280f, 520f).toDp()
+                }
+                DraggedMidiFilePreview(
+                    item = file,
                     modifier = Modifier
+                        .width(previewWidth)
                         .graphicsLayer {
                             translationX = position.x - paneOrigin.x + 12f
                             translationY = position.y - paneOrigin.y + 12f
-                        },
-                    shape = RoundedCornerShape(4.dp),
-                    color = MaterialTheme.colorScheme.inverseSurface,
-                    shadowElevation = 8.dp
-                ) {
-                    Row(
-                        modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp),
-                        verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.spacedBy(8.dp)
-                    ) {
-                        Icon(Icons.Default.MusicNote, contentDescription = null, tint = MaterialTheme.colorScheme.inverseOnSurface)
-                        Text(file.title, color = MaterialTheme.colorScheme.inverseOnSurface, maxLines = 1)
-                    }
-                }
+                            alpha = 0.94f
+                            scaleX = 0.99f
+                            scaleY = 0.99f
+                        }
+                )
             }
         }
     }
@@ -941,6 +986,14 @@ private fun LibraryPane(
             service = service,
             settings = settings,
             onDismiss = { showRecordDialog = false }
+        )
+    }
+
+    if (showKuhmannDialog) {
+        KuhmannMidiDialog(
+            state = state.kuhmann,
+            service = service,
+            onDismiss = { showKuhmannDialog = false }
         )
     }
 
@@ -1022,6 +1075,7 @@ private fun LibraryHero(
     fileCount: Int,
     playlistCount: Int,
     onImport: () -> Unit,
+    onBrowseKuhmann: () -> Unit,
     onRecord: () -> Unit,
     onCreatePlaylist: () -> Unit,
     onOpenConnection: () -> Unit
@@ -1054,6 +1108,7 @@ private fun LibraryHero(
                     horizontalArrangement = Arrangement.spacedBy(6.dp)
                 ) {
                     LibraryActionButton(Icons.Default.UploadFile, if (veryNarrow) "Add" else "Add MIDI", onImport, Modifier.weight(1f))
+                    LibraryActionButton(Icons.Default.Search, if (veryNarrow) "Web" else "Kuhmann", onBrowseKuhmann, Modifier.weight(1f))
                     LibraryActionButton(
                         Icons.Default.FiberManualRecord,
                         if (veryNarrow) "Record" else "Record MIDI",
@@ -1545,6 +1600,59 @@ private fun MidiFileRow(
                             showMenu = false
                             onDelete()
                         }
+                    )
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun DraggedMidiFilePreview(item: MidiLibraryItem, modifier: Modifier = Modifier) {
+    Surface(
+        modifier = modifier,
+        shape = RoundedCornerShape(4.dp),
+        color = MaterialTheme.colorScheme.surfaceVariant,
+        tonalElevation = 6.dp,
+        shadowElevation = 12.dp
+    ) {
+        Row(
+            modifier = Modifier.padding(horizontal = 10.dp, vertical = 7.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Icon(Icons.Default.MusicNote, contentDescription = null, modifier = Modifier.size(24.dp))
+            Spacer(Modifier.width(10.dp))
+            Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(1.dp)) {
+                Text(item.title, fontWeight = FontWeight.SemiBold, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                Text(
+                    "${item.durationUs.formatDuration()} - ${item.originalName}",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis
+                )
+            }
+            Surface(
+                shape = RoundedCornerShape(4.dp),
+                color = MaterialTheme.colorScheme.primaryContainer
+            ) {
+                Row(
+                    modifier = Modifier.padding(horizontal = 8.dp, vertical = 5.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(4.dp)
+                ) {
+                    Icon(
+                        Icons.Default.ContentCopy,
+                        contentDescription = null,
+                        modifier = Modifier.size(16.dp),
+                        tint = MaterialTheme.colorScheme.onPrimaryContainer
+                    )
+                    Text(
+                        "Copy",
+                        style = MaterialTheme.typography.labelSmall,
+                        fontWeight = FontWeight.SemiBold,
+                        color = MaterialTheme.colorScheme.onPrimaryContainer,
+                        maxLines = 1
                     )
                 }
             }
@@ -2306,8 +2414,20 @@ private fun DeviceConnectorContent(
     }
 
     if (state.connection.rememberedDeviceName != null && !connected) {
-        Surface(shape = RoundedCornerShape(4.dp), color = MaterialTheme.colorScheme.surfaceVariant) {
-            Row(Modifier.padding(12.dp), verticalAlignment = Alignment.CenterVertically) {
+        val reconnect = { service.autoReconnectIfPossible(force = true) }
+        Surface(
+            modifier = Modifier
+                .fillMaxWidth()
+                .clickable(onClick = reconnect),
+            shape = RoundedCornerShape(4.dp),
+            color = MaterialTheme.colorScheme.surfaceVariant
+        ) {
+            Row(
+                Modifier
+                    .fillMaxWidth()
+                    .padding(12.dp),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
                 Icon(Icons.Default.Refresh, contentDescription = null)
                 Spacer(Modifier.width(8.dp))
                 Text(
@@ -2321,9 +2441,7 @@ private fun DeviceConnectorContent(
                     overflow = TextOverflow.Ellipsis
                 )
                 TextButton(
-                    onClick = {
-                        service.autoReconnectIfPossible(force = true)
-                    }
+                    onClick = reconnect
                 ) {
                     Text("Connect")
                 }
@@ -2501,7 +2619,7 @@ private fun ScanDevicesDialog(
     val scanResults = state.bleDevices
         .filterNot { sameDeviceTarget(it.address, state.connection.address) }
         .filter { it.source != "Saved" || it.connectable }
-        .filter { it.source == "BLE scan" || it.likelyMidi || it.standardBleMidi || it.added || it.connectable }
+        .filter { it.likelyMidi || it.standardBleMidi || it.added || it.connectable }
         .sortedWith(
             compareByDescending<BleMidiDeviceItem> { it.connectable }
                 .thenByDescending { it.standardBleMidi }
@@ -2752,6 +2870,385 @@ private fun sameDeviceTarget(left: String?, right: String?): Boolean {
 }
 
 @Composable
+private fun KuhmannMidiDialog(
+    state: KuhmannSearchUiState,
+    service: NoteCastService,
+    onDismiss: () -> Unit
+) {
+    var query by rememberSaveable { mutableStateOf(state.query) }
+    var channelText by rememberSaveable { mutableStateOf(state.channel?.toString() ?: "") }
+    var limitText by rememberSaveable { mutableStateOf(state.limit.toString()) }
+    var includeType0 by rememberSaveable { mutableStateOf(state.format != 1) }
+    var includeType1 by rememberSaveable { mutableStateOf(state.format == null || state.format == 1) }
+    var pianoOnly by rememberSaveable { mutableStateOf(state.pianoOnly) }
+    val selected = remember { mutableStateMapOf<Int, Boolean>() }
+    LaunchedEffect(state.results) {
+        selected.clear()
+    }
+    LaunchedEffect(state.lastImportedIds) {
+        state.lastImportedIds.forEach { selected.remove(it) }
+    }
+    val selectedResults = state.results.filter { selected[it.id] == true && it.id !in state.lastImportedIds }
+    val selectedFormat = selectedKuhmannFormat(includeType0, includeType1)
+    Dialog(
+        onDismissRequest = onDismiss,
+        properties = DialogProperties(usePlatformDefaultWidth = false)
+    ) {
+        BoxWithConstraints(
+            modifier = Modifier
+                .fillMaxSize()
+                .padding(12.dp),
+            contentAlignment = Alignment.Center
+        ) {
+            val columns = when {
+                maxWidth >= 900.dp -> 3
+                maxWidth >= 560.dp -> 2
+                else -> 1
+            }
+            val compactControls = maxWidth < 620.dp
+            val dialogMaxWidth = when (columns) {
+                3 -> 1080.dp
+                2 -> 760.dp
+                else -> 540.dp
+            }
+            Surface(
+                modifier = Modifier
+                    .widthIn(max = dialogMaxWidth)
+                    .fillMaxWidth()
+                    .heightIn(max = maxHeight),
+                shape = RoundedCornerShape(8.dp),
+                color = MaterialTheme.colorScheme.surface,
+                tonalElevation = 6.dp
+            ) {
+                Column(
+                    modifier = Modifier
+                        .heightIn(max = maxHeight)
+                        .padding(16.dp),
+                    verticalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                        Icon(Icons.Default.Search, contentDescription = null)
+                        Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(1.dp)) {
+                            Text("Kuhmann MIDI", style = MaterialTheme.typography.headlineSmall, maxLines = 1)
+                            Text(
+                                state.message,
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                maxLines = 2,
+                                overflow = TextOverflow.Ellipsis
+                            )
+                        }
+                        IconButton(onClick = onDismiss, modifier = Modifier.size(40.dp)) {
+                            Icon(Icons.Default.Close, contentDescription = "Close")
+                        }
+                    }
+                    OutlinedTextField(
+                        value = query,
+                        onValueChange = { query = it },
+                        modifier = Modifier.fillMaxWidth(),
+                        singleLine = true,
+                        label = { Text("Search Kuhmann directory") },
+                        leadingIcon = { Icon(Icons.Default.Search, contentDescription = null) },
+                        trailingIcon = {
+                            if (query.isNotEmpty()) {
+                                IconButton(onClick = { query = "" }) {
+                                    Icon(Icons.Default.Close, contentDescription = "Clear search")
+                                }
+                            }
+                        }
+                    )
+                    if (compactControls) {
+                        Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                            KuhmannSearchFilters(
+                                includeType0 = includeType0,
+                                includeType1 = includeType1,
+                                pianoOnly = pianoOnly,
+                                onIncludeType0Change = { checked ->
+                                    if (checked || includeType1) includeType0 = checked
+                                },
+                                onIncludeType1Change = { checked ->
+                                    if (checked || includeType0) includeType1 = checked
+                                },
+                                onPianoOnlyChange = { pianoOnly = it }
+                            )
+                            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                                KuhmannSmallNumberField("Channel", channelText, { channelText = it }, Modifier.weight(1f))
+                                KuhmannSmallNumberField("Limit", limitText, { limitText = it }, Modifier.weight(1f))
+                            }
+                        }
+                    } else {
+                        Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                            KuhmannSearchFilters(
+                                includeType0 = includeType0,
+                                includeType1 = includeType1,
+                                pianoOnly = pianoOnly,
+                                onIncludeType0Change = { checked ->
+                                    if (checked || includeType1) includeType0 = checked
+                                },
+                                onIncludeType1Change = { checked ->
+                                    if (checked || includeType0) includeType1 = checked
+                                },
+                                onPianoOnlyChange = { pianoOnly = it },
+                                modifier = Modifier.weight(1f)
+                            )
+                            KuhmannSmallNumberField("Channel", channelText, { channelText = it }, Modifier.width(104.dp))
+                            KuhmannSmallNumberField("Limit", limitText, { limitText = it }, Modifier.width(92.dp))
+                        }
+                    }
+                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
+                        TextButton(
+                            onClick = {
+                                state.results
+                                    .filterNot { it.id in state.lastImportedIds }
+                                    .forEach { selected[it.id] = true }
+                            },
+                            enabled = state.results.isNotEmpty() && !state.downloading
+                        ) {
+                            Text("Select all")
+                        }
+                        TextButton(
+                            onClick = { selected.clear() },
+                            enabled = selectedResults.isNotEmpty() && !state.downloading
+                        ) {
+                            Text("Clear")
+                        }
+                        Text(
+                            "${state.results.size} shown - ${selectedResults.size} selected",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            maxLines = 1
+                        )
+                    }
+                    if (state.results.isEmpty()) {
+                        Box(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .heightIn(min = 144.dp),
+                            contentAlignment = Alignment.Center
+                        ) {
+                            if (state.searching || state.downloading) {
+                                LoadingIndicator(contentDescription = state.message)
+                            } else {
+                                Text("Search by composer, title, style, or channel.", color = MaterialTheme.colorScheme.onSurfaceVariant)
+                            }
+                        }
+                    } else {
+                        LazyVerticalGrid(
+                            columns = GridCells.Fixed(columns),
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .weight(1f, fill = true),
+                            horizontalArrangement = Arrangement.spacedBy(10.dp),
+                            verticalArrangement = Arrangement.spacedBy(2.dp)
+                        ) {
+                            gridItems(state.results, key = { it.id }) { result ->
+                                KuhmannResultRow(
+                                    result = result,
+                                    checked = selected[result.id] == true,
+                                    imported = result.id in state.lastImportedIds,
+                                    enabled = !state.downloading,
+                                    onCheckedChange = { selected[result.id] = it }
+                                )
+                            }
+                        }
+                    }
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.End,
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        TextButton(onClick = onDismiss) { Text("Close") }
+                        Spacer(Modifier.width(8.dp))
+                        Button(
+                            onClick = {
+                                service.searchKuhmannMidi(
+                                    query = query,
+                                    format = selectedFormat,
+                                    pianoOnly = pianoOnly,
+                                    channel = channelText.toIntOrNull(),
+                                    limit = limitText.toIntOrNull() ?: 50
+                                )
+                            },
+                            enabled = !state.searching && !state.downloading
+                        ) {
+                            Text(if (state.searching) "Searching..." else "Search")
+                        }
+                        Spacer(Modifier.width(8.dp))
+                        Button(
+                            onClick = { service.downloadKuhmannMidi(selectedResults) },
+                            enabled = selectedResults.isNotEmpty() && !state.searching && !state.downloading
+                        ) {
+                            Text(if (state.downloading) "Downloading..." else "Download ${selectedResults.size}")
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun KuhmannSearchFilters(
+    includeType0: Boolean,
+    includeType1: Boolean,
+    pianoOnly: Boolean,
+    onIncludeType0Change: (Boolean) -> Unit,
+    onIncludeType1Change: (Boolean) -> Unit,
+    onPianoOnlyChange: (Boolean) -> Unit,
+    modifier: Modifier = Modifier
+) {
+    Surface(
+        modifier = modifier,
+        shape = RoundedCornerShape(6.dp),
+        color = MaterialTheme.colorScheme.surfaceVariant
+    ) {
+        Column(
+            modifier = Modifier.padding(horizontal = 10.dp, vertical = 8.dp),
+            verticalArrangement = Arrangement.spacedBy(6.dp)
+        ) {
+            Text(
+                "Search filters",
+                style = MaterialTheme.typography.labelLarge,
+                fontWeight = FontWeight.SemiBold,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+            Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                KuhmannFilterButton("MIDI Type 0", includeType0, { onIncludeType0Change(!includeType0) }, Modifier.weight(1f))
+                KuhmannFilterButton("MIDI Type 1", includeType1, { onIncludeType1Change(!includeType1) }, Modifier.weight(1f))
+                KuhmannFilterButton("Piano only", pianoOnly, { onPianoOnlyChange(!pianoOnly) }, Modifier.weight(1f))
+            }
+        }
+    }
+}
+
+@Composable
+private fun KuhmannFilterButton(
+    label: String,
+    selected: Boolean,
+    onClick: () -> Unit,
+    modifier: Modifier = Modifier
+) {
+    val colors = if (selected) {
+        ButtonDefaults.filledTonalButtonColors(
+            containerColor = MaterialTheme.colorScheme.primary,
+            contentColor = MaterialTheme.colorScheme.onPrimary
+        )
+    } else {
+        ButtonDefaults.filledTonalButtonColors(
+            containerColor = MaterialTheme.colorScheme.surface,
+            contentColor = MaterialTheme.colorScheme.onSurface
+        )
+    }
+    FilledTonalButton(
+        onClick = onClick,
+        modifier = modifier.height(44.dp),
+        colors = colors,
+        contentPadding = PaddingValues(horizontal = 6.dp)
+    ) {
+        if (selected) {
+            Icon(Icons.Default.Check, contentDescription = null, modifier = Modifier.size(16.dp))
+            Spacer(Modifier.width(4.dp))
+        }
+        Text(label, maxLines = 1, overflow = TextOverflow.Ellipsis, style = MaterialTheme.typography.labelSmall)
+    }
+}
+
+private fun selectedKuhmannFormat(includeType0: Boolean, includeType1: Boolean): Int? =
+    when {
+        includeType0 && !includeType1 -> 0
+        includeType1 && !includeType0 -> 1
+        else -> null
+    }
+
+@Composable
+private fun KuhmannSmallNumberField(
+    label: String,
+    value: String,
+    onValueChange: (String) -> Unit,
+    modifier: Modifier = Modifier
+) {
+    OutlinedTextField(
+        value = value,
+        onValueChange = { text -> onValueChange(text.filter { it.isDigit() }.take(3)) },
+        modifier = modifier,
+        singleLine = true,
+        label = { Text(label) }
+    )
+}
+
+@Composable
+private fun KuhmannResultRow(
+    result: KuhmannMidiResult,
+    checked: Boolean,
+    imported: Boolean,
+    enabled: Boolean,
+    onCheckedChange: (Boolean) -> Unit
+) {
+    val rowEnabled = enabled && !imported
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clickable(enabled = rowEnabled) { onCheckedChange(!checked) }
+            .padding(horizontal = 2.dp, vertical = 1.dp),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(6.dp)
+    ) {
+        if (imported) {
+            Surface(
+                modifier = Modifier.size(34.dp),
+                shape = CircleShape,
+                color = Color(0xFF2E7D32)
+            ) {
+                Box(contentAlignment = Alignment.Center) {
+                    Icon(
+                        Icons.Default.Check,
+                        contentDescription = "Downloaded",
+                        modifier = Modifier.size(22.dp),
+                        tint = Color.White
+                    )
+                }
+            }
+        } else {
+            Checkbox(
+                checked = checked,
+                onCheckedChange = onCheckedChange,
+                enabled = enabled,
+                modifier = Modifier.size(34.dp)
+            )
+        }
+        Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(0.dp)) {
+            Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                Text(
+                    result.title,
+                    modifier = Modifier.weight(1f),
+                    style = MaterialTheme.typography.bodyMedium,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis
+                )
+            }
+            Text(
+                result.folder,
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis
+            )
+            Text(
+                listOfNotNull(
+                    result.midiType.ifBlank { result.midiFormat?.let { "Type $it" } },
+                    result.fileSize.takeIf { it > 0L }?.formatFileSize(),
+                    result.channels.takeIf { it.isNotEmpty() }?.joinToString(prefix = "ch ")
+                ).joinToString(" - "),
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis
+            )
+        }
+    }
+}
+
+@Composable
 private fun AddFilesToPlaylistDialog(
     playlist: MidiPlaylist,
     files: List<MidiLibraryItem>,
@@ -2958,6 +3455,12 @@ private fun MidiLibraryItem.matchesPlaylistFileSearch(query: String): Boolean {
         .split(Regex("\\s+"))
         .filter { it.isNotBlank() }
         .all { it in searchable }
+}
+
+private fun Long.formatFileSize(): String {
+    if (this < 1024L) return "$this B"
+    if (this < 1024L * 1024L) return "${this / 1024L} KB"
+    return String.format(java.util.Locale.US, "%.1f MB", this / (1024.0 * 1024.0))
 }
 
 @Composable

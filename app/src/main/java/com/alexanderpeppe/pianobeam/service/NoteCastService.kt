@@ -49,6 +49,8 @@ import com.alexanderpeppe.pianobeam.data.AppSettings
 import com.alexanderpeppe.pianobeam.data.AppUiState
 import com.alexanderpeppe.pianobeam.data.BleMidiDeviceItem
 import com.alexanderpeppe.pianobeam.data.ConnectionUiState
+import com.alexanderpeppe.pianobeam.data.KuhmannMidiResult
+import com.alexanderpeppe.pianobeam.data.KuhmannSearchUiState
 import com.alexanderpeppe.pianobeam.data.MidiChannelControl
 import com.alexanderpeppe.pianobeam.data.MidiLibraryItem
 import com.alexanderpeppe.pianobeam.data.MidiRepository
@@ -75,7 +77,13 @@ import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import org.json.JSONObject
 import java.io.IOException
+import java.io.InputStream
+import java.net.HttpURLConnection
+import java.net.URL
+import java.net.URLEncoder
+import java.security.MessageDigest
 import java.util.UUID
 import java.util.concurrent.atomic.AtomicLong
 import kotlin.math.min
@@ -90,7 +98,12 @@ class NoteCastService : Service() {
         private const val ACTION_NEXT = "com.alexanderpeppe.pianobeam.NEXT"
         private const val ACTION_STOP = "com.alexanderpeppe.pianobeam.STOP"
         private const val ACTION_PANIC = "com.alexanderpeppe.pianobeam.PANIC"
+        private const val ACTION_DEBUG_SCAN = "com.alexanderpeppe.pianobeam.DEBUG_SCAN"
+        private const val ACTION_DEBUG_DIAGNOSTICS = "com.alexanderpeppe.pianobeam.DEBUG_DIAGNOSTICS"
         private const val LOG_TAG = "NoteCastBle"
+        private const val KUHMANN_SEARCH_URL = "https://www.alexanderpeppe.com/kuhmann_midi_search.php"
+        private const val KUHMANN_SEARCH_MAX_LIMIT = 100
+        private const val KUHMANN_MAX_DOWNLOAD_BYTES = 5 * 1024 * 1024
         private const val SCAN_WINDOW_MS = 12_000L
         private const val AUTO_RECONNECT_SCAN_WINDOW_MS = 4_500L
         private const val RECENT_BLE_SCAN_TTL_MS = 60_000L
@@ -145,6 +158,8 @@ class NoteCastService : Service() {
     private val midiDevicesByConnectionId = linkedMapOf<String, MidiDeviceInfo>()
     private var scanCallback: ScanCallback? = null
     private var scanTimeoutJob: Job? = null
+    private var kuhmannSearchJob: Job? = null
+    private var kuhmannDownloadJob: Job? = null
     private var scanAutoConnectKnownDevices = false
     private var scanPreferredReconnectAddress: String? = null
     private var scanFallbackReconnectAddress: String? = null
@@ -268,6 +283,11 @@ class NoteCastService : Service() {
             ACTION_NEXT -> skipToNext()
             ACTION_STOP -> stopPlayback(userRequested = true)
             ACTION_PANIC -> panic()
+            ACTION_DEBUG_SCAN -> {
+                logEvent("ADB requested BLE MIDI scan.")
+                startBleScan()
+            }
+            ACTION_DEBUG_DIAGNOSTICS -> logEvent("ADB diagnostics:\n${connectionDiagnostics()}")
         }
         return if (_state.value.playback.isActive) START_STICKY else START_NOT_STICKY
     }
@@ -286,6 +306,8 @@ class NoteCastService : Service() {
         playbackGeneration.incrementAndGet()
         playbackJob?.cancel()
         recordingCountdownJob?.cancel()
+        kuhmannSearchJob?.cancel()
+        kuhmannDownloadJob?.cancel()
         connectionMonitorJob?.cancel()
         connectionVerificationJob?.cancel()
         reconnectJob?.cancel()
@@ -328,6 +350,128 @@ class NoteCastService : Service() {
                     else -> "Could not import the selected MIDI file${if (failed == 1) "" else "s"}."
                 }
                 reloadLibrary(message)
+            }
+        }
+    }
+
+    fun searchKuhmannMidi(query: String, format: Int?, pianoOnly: Boolean, channel: Int?, limit: Int) {
+        val cleanQuery = query.trim()
+        val cleanChannel = channel?.coerceIn(1, 16)
+        val cleanLimit = limit.coerceIn(1, 100)
+        if (cleanQuery.isBlank() && cleanChannel == null) {
+            _state.update {
+                it.copy(
+                    kuhmann = it.kuhmann.copy(
+                        query = cleanQuery,
+                        format = format,
+                        pianoOnly = pianoOnly,
+                        channel = cleanChannel,
+                        limit = cleanLimit,
+                        message = "Enter a search term or channel."
+                    )
+                )
+            }
+            return
+        }
+        kuhmannSearchJob?.cancel()
+        _state.update {
+            it.copy(
+                kuhmann = it.kuhmann.copy(
+                    searching = true,
+                    query = cleanQuery,
+                    format = format,
+                    pianoOnly = pianoOnly,
+                    channel = cleanChannel,
+                    limit = cleanLimit,
+                    message = "Searching Kuhmann MIDI..."
+                )
+            )
+        }
+        kuhmannSearchJob = serviceScope.launch(Dispatchers.IO) {
+            runCatching {
+                fetchKuhmannSearchResults(cleanQuery, format, pianoOnly, cleanChannel, cleanLimit)
+            }.onSuccess { response ->
+                withContext(Dispatchers.Main) {
+                    val message = if (response.results.isEmpty()) {
+                        "No Kuhmann MIDI files matched."
+                    } else {
+                        "Found ${response.results.size} of ${response.count} Kuhmann MIDI file${if (response.count == 1) "" else "s"}."
+                    }
+                    _state.update {
+                        it.copy(
+                            kuhmann = it.kuhmann.copy(
+                                searching = false,
+                                results = response.results,
+                                message = message,
+                                lastImportedIds = emptyList()
+                            ),
+                            lastMessage = message
+                        )
+                    }
+                }
+            }.onFailure { t ->
+                if (t is CancellationException) throw t
+                withContext(Dispatchers.Main) {
+                    val message = "Kuhmann search failed: ${t.message ?: "unknown error"}"
+                    _state.update {
+                        it.copy(
+                            kuhmann = it.kuhmann.copy(searching = false, message = message),
+                            lastMessage = message
+                        )
+                    }
+                }
+            }
+        }
+    }
+
+    fun downloadKuhmannMidi(results: List<KuhmannMidiResult>) {
+        val uniqueResults = results.distinctBy { it.id }.filter { it.url.isNotBlank() }
+        if (uniqueResults.isEmpty()) return
+        kuhmannDownloadJob?.cancel()
+        _state.update {
+            it.copy(
+                kuhmann = it.kuhmann.copy(
+                    downloading = true,
+                    message = "Downloading ${uniqueResults.size} Kuhmann MIDI file${if (uniqueResults.size == 1) "" else "s"}..."
+                )
+            )
+        }
+        kuhmannDownloadJob = serviceScope.launch(Dispatchers.IO) {
+            var imported = 0
+            var failed = 0
+            val importedIds = mutableListOf<Int>()
+            uniqueResults.forEach { result ->
+                ensureActive()
+                runCatching {
+                    val bytes = downloadKuhmannBytes(result)
+                    repository.importMidiBytes(
+                        bytes = bytes,
+                        displayName = result.filename.ifBlank { "${result.title}.mid" },
+                        notePrefix = "Kuhmann MIDI: ${result.folder}"
+                    )
+                    imported++
+                    importedIds += result.id
+                }.onFailure { t ->
+                    failed++
+                    logEvent("Kuhmann MIDI download failed id=${result.id} title=${result.title}: ${t.message ?: t::class.java.simpleName}")
+                }
+            }
+            withContext(Dispatchers.Main) {
+                val message = when {
+                    imported > 0 && failed == 0 -> "Downloaded $imported Kuhmann MIDI file${if (imported == 1) "" else "s"}."
+                    imported > 0 -> "Downloaded $imported Kuhmann MIDI file${if (imported == 1) "" else "s"}; $failed failed."
+                    else -> "Could not download the selected Kuhmann MIDI file${if (failed == 1) "" else "s"}."
+                }
+                reloadLibrary(message)
+                _state.update {
+                    it.copy(
+                        kuhmann = it.kuhmann.copy(
+                            downloading = false,
+                            message = message,
+                            lastImportedIds = importedIds
+                        )
+                    )
+                }
             }
         }
     }
@@ -2072,6 +2216,139 @@ class NoteCastService : Service() {
     private fun stopPlaybackIfUsing(itemId: String) {
         if (_state.value.playback.currentItemId == itemId && _state.value.playback.isActive) stopPlayback(userRequested = true)
     }
+
+    private data class KuhmannSearchResponse(val count: Int, val results: List<KuhmannMidiResult>)
+
+    private fun fetchKuhmannSearchResults(query: String, format: Int?, pianoOnly: Boolean, channel: Int?, limit: Int): KuhmannSearchResponse {
+        val requestLimit = if (pianoOnly) KUHMANN_SEARCH_MAX_LIMIT else limit
+        val params = buildList {
+            if (query.isNotBlank()) add("q=${query.urlEncoded()}")
+            if (format != null) add("format=$format")
+            if (channel != null) add("channel=$channel")
+            add("limit=$requestLimit")
+        }
+        val response = httpGetText(URL("$KUHMANN_SEARCH_URL?${params.joinToString("&")}"))
+        val root = JSONObject(response)
+        if (!root.optBoolean("ok", false)) {
+            throw IOException(root.optString("error", "Search request was not accepted."))
+        }
+        val resultsArray = root.optJSONArray("results")
+        val results = buildList {
+            if (resultsArray == null) return@buildList
+            for (index in 0 until resultsArray.length()) {
+                val obj = resultsArray.optJSONObject(index) ?: continue
+                val id = obj.optInt("id", -1)
+                val url = obj.optString("url")
+                val title = obj.optString("title", obj.optString("filename", "Kuhmann MIDI"))
+                if (id < 0 || url.isBlank()) continue
+                val channelsArray = obj.optJSONArray("channels")
+                val channels = buildList {
+                    if (channelsArray != null) {
+                        for (channelIndex in 0 until channelsArray.length()) {
+                            val value = channelsArray.optInt(channelIndex, -1)
+                            if (value in 1..16) add(value)
+                        }
+                    }
+                }
+                add(
+                    KuhmannMidiResult(
+                        id = id,
+                        title = title,
+                        folder = obj.optString("folder"),
+                        filename = obj.optString("filename", "$title.mid"),
+                        url = url,
+                        midiType = obj.optString("midi_type"),
+                        midiFormat = if (obj.has("midi_format") && !obj.isNull("midi_format")) obj.optInt("midi_format") else null,
+                        channelCount = obj.optInt("channel_count", channels.size),
+                        channels = channels,
+                        fileSize = obj.optLong("file_size", 0L),
+                        sha256 = obj.optString("sha256")
+                    )
+                )
+            }
+        }
+        val filteredResults = if (pianoOnly) {
+            results.filter { it.isPianoOnlyCandidate() }.take(limit)
+        } else {
+            results
+        }
+        val count = if (pianoOnly) filteredResults.size else root.optInt("count", filteredResults.size)
+        return KuhmannSearchResponse(count = count, results = filteredResults)
+    }
+
+    private fun KuhmannMidiResult.isPianoOnlyCandidate(): Boolean {
+        val cleanChannels = channels.distinct().sorted()
+        return channelCount <= 1 && (cleanChannels.isEmpty() || cleanChannels == listOf(1))
+    }
+
+    private fun downloadKuhmannBytes(result: KuhmannMidiResult): ByteArray {
+        val url = URL(result.url)
+        if (url.protocol != "https" || !url.host.endsWith("alexanderpeppe.com")) {
+            throw IOException("Unexpected download host.")
+        }
+        val connection = (url.openConnection() as HttpURLConnection).apply {
+            connectTimeout = 12_000
+            readTimeout = 30_000
+            instanceFollowRedirects = true
+            setRequestProperty("Accept", "audio/midi, audio/x-midi, application/octet-stream")
+            setRequestProperty("User-Agent", "APS NoteCast/${_state.value.kuhmann.query.ifBlank { "kuhmann" }}")
+        }
+        return try {
+            val status = connection.responseCode
+            if (status !in 200..299) throw IOException("HTTP $status")
+            val contentLength = connection.contentLengthLong
+            if (contentLength > KUHMANN_MAX_DOWNLOAD_BYTES) throw IOException("File is too large.")
+            val bytes = connection.inputStream.use { it.readLimitedBytes(KUHMANN_MAX_DOWNLOAD_BYTES) }
+            if (bytes.size < 4 || bytes.copyOfRange(0, 4).toString(Charsets.US_ASCII) != "MThd") {
+                throw IOException("Downloaded file is not a MIDI file.")
+            }
+            val expectedSha = result.sha256.trim().lowercase()
+            if (expectedSha.isNotBlank() && bytes.sha256Hex() != expectedSha) {
+                throw IOException("Checksum did not match.")
+            }
+            bytes
+        } finally {
+            connection.disconnect()
+        }
+    }
+
+    private fun httpGetText(url: URL): String {
+        val connection = (url.openConnection() as HttpURLConnection).apply {
+            connectTimeout = 12_000
+            readTimeout = 20_000
+            instanceFollowRedirects = true
+            setRequestProperty("Accept", "application/json")
+            setRequestProperty("User-Agent", "APS NoteCast")
+        }
+        return try {
+            val status = connection.responseCode
+            if (status !in 200..299) throw IOException("HTTP $status")
+            connection.inputStream.use { input ->
+                input.readLimitedBytes(KUHMANN_MAX_DOWNLOAD_BYTES).toString(Charsets.UTF_8)
+            }
+        } finally {
+            connection.disconnect()
+        }
+    }
+
+    private fun InputStream.readLimitedBytes(maxBytes: Int): ByteArray {
+        val buffer = ByteArray(8 * 1024)
+        val out = java.io.ByteArrayOutputStream()
+        while (true) {
+            val read = read(buffer)
+            if (read < 0) break
+            if (out.size() + read > maxBytes) throw IOException("Response is too large.")
+            out.write(buffer, 0, read)
+        }
+        return out.toByteArray()
+    }
+
+    private fun ByteArray.sha256Hex(): String =
+        MessageDigest.getInstance("SHA-256")
+            .digest(this)
+            .joinToString("") { "%02x".format(it.toInt() and 0xff) }
+
+    private fun String.urlEncoded(): String = URLEncoder.encode(this, Charsets.UTF_8.name())
 
     private fun reloadLibrary(message: String = _state.value.lastMessage) {
         AppEventLog.append(message)

@@ -104,24 +104,31 @@ class MidiRepository(private val context: Context) {
     @Synchronized
     fun importMidi(uri: Uri): MidiLibraryItem {
         val displayName = queryDisplayName(uri) ?: "Imported MIDI ${System.currentTimeMillis()}.mid"
+        context.contentResolver.openInputStream(uri).use { input ->
+            requireNotNull(input) { "Could not open $displayName" }
+            return importMidiBytes(input.readBytes(), displayName)
+        }
+    }
+
+    @Synchronized
+    fun importMidiBytes(bytes: ByteArray, displayName: String, notePrefix: String = ""): MidiLibraryItem {
+        val cleanDisplayName = displayName.ifBlank { "Imported MIDI ${System.currentTimeMillis()}.mid" }.ensureMidiExtension()
         val id = UUID.randomUUID().toString()
         val storedName = "$id.mid"
         val outFile = File(midiDir, storedName)
-
-        context.contentResolver.openInputStream(uri).use { input ->
-            requireNotNull(input) { "Could not open $displayName" }
-            outFile.outputStream().use { output -> input.copyTo(output) }
-        }
-
-        val parseResult = runCatching { MidiFileParser.parse(outFile.readBytes(), displayName) }
-        val title = parseResult.getOrNull()?.title?.takeIf { it.isNotBlank() } ?: displayName.removeMidiExtension()
+        outFile.writeBytes(bytes)
+        val parseResult = runCatching { MidiFileParser.parse(bytes, cleanDisplayName) }
+        val title = parseResult.getOrNull()?.title?.takeIf { it.isNotBlank() } ?: cleanDisplayName.removeMidiExtension()
         val durationUs = parseResult.getOrNull()?.durationUs ?: 0L
-        val notes = parseResult.exceptionOrNull()?.message?.let { "Imported, but parse check reported: $it" } ?: ""
+        val parseNote = parseResult.exceptionOrNull()?.message?.let { "Imported, but parse check reported: $it" }
+        val notes = listOf(notePrefix.trim(), parseNote)
+            .filterNot { it.isNullOrBlank() }
+            .joinToString("; ")
 
         val item = MidiLibraryItem(
             id = id,
             title = title,
-            originalName = displayName,
+            originalName = cleanDisplayName,
             storedFileName = storedName,
             durationUs = durationUs,
             importedAtMs = System.currentTimeMillis(),
