@@ -175,6 +175,20 @@ class MidiRepository(private val context: Context) {
     }
 
     @Synchronized
+    fun deleteFiles(itemIds: List<String>) {
+        val idsToDelete = itemIds.filter { it.isNotBlank() }.toSet()
+        if (idsToDelete.isEmpty()) return
+        val snapshot = load()
+        snapshot.files
+            .filter { it.id in idsToDelete }
+            .forEach { File(midiDir, it.storedFileName).delete() }
+        val playlists = snapshot.playlists.map { playlist ->
+            playlist.copy(itemIds = playlist.itemIds.filterNot { it in idsToDelete })
+        }
+        save(snapshot.copy(files = snapshot.files.filterNot { it.id in idsToDelete }, playlists = playlists))
+    }
+
+    @Synchronized
     fun renameFile(itemId: String, title: String) {
         val cleanTitle = title.trim().ifBlank { "Untitled MIDI" }
         val snapshot = load()
@@ -193,6 +207,21 @@ class MidiRepository(private val context: Context) {
             createdAtMs = System.currentTimeMillis()
         )
         val snapshot = load()
+        save(snapshot.copy(playlists = snapshot.playlists + playlist))
+        return playlist
+    }
+
+    @Synchronized
+    fun createPlaylist(name: String, itemIds: List<String>): MidiPlaylist {
+        val cleanName = name.trim().ifBlank { "Untitled Playlist" }
+        val snapshot = load()
+        val validIds = snapshot.files.map { it.id }.toSet()
+        val playlist = MidiPlaylist(
+            id = UUID.randomUUID().toString(),
+            name = cleanName,
+            itemIds = itemIds.filter { it in validIds },
+            createdAtMs = System.currentTimeMillis()
+        )
         save(snapshot.copy(playlists = snapshot.playlists + playlist))
         return playlist
     }

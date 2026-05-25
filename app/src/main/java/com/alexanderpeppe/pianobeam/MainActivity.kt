@@ -779,6 +779,7 @@ private fun LibraryPane(
         service.importMidiFiles(uris)
     }
     var showPlaylistDialog by rememberSaveable { mutableStateOf(false) }
+    var showSelectedPlaylistDialog by rememberSaveable { mutableStateOf(false) }
     var showRecordDialog by rememberSaveable { mutableStateOf(false) }
     var showKuhmannDialog by rememberSaveable { mutableStateOf(false) }
     var addFilesPlaylistId by rememberSaveable { mutableStateOf<String?>(null) }
@@ -786,18 +787,28 @@ private fun LibraryPane(
     var renamePlaylistId by rememberSaveable { mutableStateOf<String?>(null) }
     var deleteFileId by rememberSaveable { mutableStateOf<String?>(null) }
     var deletePlaylistId by rememberSaveable { mutableStateOf<String?>(null) }
+    var confirmDeleteSelected by rememberSaveable { mutableStateOf(false) }
+    var selectedFileIds by rememberSaveable { mutableStateOf(emptyList<String>()) }
     val expandedPlaylists = remember { mutableStateMapOf<String, Boolean>() }
     val playlistBounds = remember { mutableStateMapOf<String, Rect>() }
-    var draggingFile by remember { mutableStateOf<MidiLibraryItem?>(null) }
+    var draggingFiles by remember { mutableStateOf(emptyList<MidiLibraryItem>()) }
     var dragPosition by remember { mutableStateOf<Offset?>(null) }
     var paneOrigin by remember { mutableStateOf(Offset.Zero) }
     var listBounds by remember { mutableStateOf<Rect?>(null) }
     val listState = rememberLazyListState()
     val density = LocalDensity.current
     val filesById = remember(state.files) { state.files.associateBy { it.id } }
+    val selectedFileIdSet = remember(selectedFileIds) { selectedFileIds.toSet() }
+    val selectedFileItems = remember(state.files, selectedFileIdSet) { state.files.filter { it.id in selectedFileIdSet } }
+    val selectionActive = selectedFileItems.isNotEmpty()
 
-    LaunchedEffect(draggingFile) {
-        if (draggingFile == null) return@LaunchedEffect
+    LaunchedEffect(state.files) {
+        val validIds = state.files.map { it.id }.toSet()
+        selectedFileIds = selectedFileIds.filter { it in validIds }
+    }
+
+    LaunchedEffect(draggingFiles.isNotEmpty()) {
+        if (draggingFiles.isEmpty()) return@LaunchedEffect
         while (true) {
             val bounds = listBounds
             val position = dragPosition
@@ -821,14 +832,22 @@ private fun LibraryPane(
         }
     }
 
-    fun finishDrag() {
-        val file = draggingFile
-        val position = dragPosition
-        if (file != null && position != null) {
-            val targetPlaylist = playlistBounds.entries.firstOrNull { it.value.contains(position) }?.key
-            if (targetPlaylist != null) service.addToPlaylist(targetPlaylist, file.id)
+    fun toggleFileSelection(itemId: String) {
+        selectedFileIds = if (itemId in selectedFileIdSet) {
+            selectedFileIds.filterNot { it == itemId }
+        } else {
+            selectedFileIds + itemId
         }
-        draggingFile = null
+    }
+
+    fun finishDrag() {
+        val files = draggingFiles
+        val position = dragPosition
+        if (files.isNotEmpty() && position != null) {
+            val targetPlaylist = playlistBounds.entries.firstOrNull { it.value.contains(position) }?.key
+            if (targetPlaylist != null) service.addToPlaylist(targetPlaylist, files.map { it.id })
+        }
+        draggingFiles = emptyList()
         dragPosition = null
     }
 
@@ -919,11 +938,14 @@ private fun LibraryPane(
                         MidiFileRow(
                             item = item,
                             selected = selectedKind == "file" && selectedId == item.id,
+                            multiSelected = item.id in selectedFileIdSet,
+                            selectionActive = selectionActive,
                             connected = state.connection.connected,
                             preparing = state.playback.isPreparing && state.playback.currentItemId == item.id,
                             playing = state.playback.isPlaying && state.playback.currentItemId == item.id,
                             paused = state.playback.isPaused && state.playback.currentItemId == item.id,
                             onSelect = { onSelectFile(item.id) },
+                            onToggleSelected = { toggleFileSelection(item.id) },
                             onPlay = {
                                 onSelectFile(item.id)
                                 service.playFile(item.id)
@@ -935,13 +957,17 @@ private fun LibraryPane(
                             onShare = { onShareMidi(item.id) },
                             onDelete = { deleteFileId = item.id },
                             onDragStart = { file, rootOffset ->
-                                draggingFile = file
+                                draggingFiles = if (file.id in selectedFileIdSet && selectedFileItems.isNotEmpty()) {
+                                    selectedFileItems
+                                } else {
+                                    listOf(file)
+                                }
                                 dragPosition = rootOffset
                             },
                             onDrag = { delta -> dragPosition = (dragPosition ?: Offset.Zero) + delta },
                             onDragEnd = ::finishDrag,
                             onDragCancel = {
-                                draggingFile = null
+                                draggingFiles = emptyList()
                                 dragPosition = null
                             }
                         )
@@ -949,13 +975,26 @@ private fun LibraryPane(
                 }
             }
 
-            draggingFile?.let { file ->
+            if (selectionActive) {
+                MidiSelectionToolbar(
+                    count = selectedFileItems.size,
+                    onCreatePlaylist = { showSelectedPlaylistDialog = true },
+                    onDelete = { confirmDeleteSelected = true },
+                    onClear = { selectedFileIds = emptyList() },
+                    modifier = Modifier
+                        .align(Alignment.BottomCenter)
+                        .padding(10.dp)
+                        .fillMaxWidth()
+                )
+            }
+
+            if (draggingFiles.isNotEmpty()) {
                 val position = dragPosition ?: Offset.Zero
                 val previewWidth = with(density) {
                     ((listBounds?.width ?: 420f) - 20f).coerceIn(280f, 520f).toDp()
                 }
                 DraggedMidiFilePreview(
-                    item = file,
+                    items = draggingFiles,
                     modifier = Modifier
                         .width(previewWidth)
                         .graphicsLayer {
@@ -976,6 +1015,18 @@ private fun LibraryPane(
             onCreate = {
                 service.createPlaylist(it)
                 showPlaylistDialog = false
+            }
+        )
+    }
+
+    if (showSelectedPlaylistDialog) {
+        AddPlaylistDialog(
+            title = "Playlist from selection",
+            onDismiss = { showSelectedPlaylistDialog = false },
+            onCreate = {
+                service.createPlaylist(it, selectedFileIds)
+                selectedFileIds = emptyList()
+                showSelectedPlaylistDialog = false
             }
         )
     }
@@ -1067,6 +1118,20 @@ private fun LibraryPane(
                 }
             )
         } ?: run { deletePlaylistId = null }
+    }
+
+    if (confirmDeleteSelected) {
+        ConfirmDialog(
+            title = "Delete selected MIDI?",
+            message = "Remove ${selectedFileItems.size} MIDI file${if (selectedFileItems.size == 1) "" else "s"} from APS NoteCast? They will also be removed from playlists.",
+            confirmLabel = "Delete",
+            onDismiss = { confirmDeleteSelected = false },
+            onConfirm = {
+                service.deleteMidiFiles(selectedFileIds)
+                selectedFileIds = emptyList()
+                confirmDeleteSelected = false
+            }
+        )
     }
 }
 
@@ -1488,14 +1553,61 @@ private fun ReadingMusicOverlay(
 }
 
 @Composable
+private fun MidiSelectionToolbar(
+    count: Int,
+    onCreatePlaylist: () -> Unit,
+    onDelete: () -> Unit,
+    onClear: () -> Unit,
+    modifier: Modifier = Modifier
+) {
+    Surface(
+        modifier = modifier,
+        shape = RoundedCornerShape(4.dp),
+        color = MaterialTheme.colorScheme.primaryContainer
+    ) {
+        Row(
+            modifier = Modifier.padding(horizontal = 10.dp, vertical = 7.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(6.dp)
+        ) {
+            Icon(Icons.Default.Check, contentDescription = null, modifier = Modifier.size(20.dp), tint = MaterialTheme.colorScheme.onPrimaryContainer)
+            Text(
+                "$count selected",
+                modifier = Modifier.weight(1f),
+                style = MaterialTheme.typography.bodyMedium,
+                fontWeight = FontWeight.SemiBold,
+                color = MaterialTheme.colorScheme.onPrimaryContainer,
+                maxLines = 1
+            )
+            TextButton(onClick = onCreatePlaylist) {
+                Icon(Icons.Default.CreateNewFolder, contentDescription = null, modifier = Modifier.size(18.dp))
+                Spacer(Modifier.width(4.dp))
+                Text("Playlist")
+            }
+            TextButton(onClick = onDelete) {
+                Icon(Icons.Default.Delete, contentDescription = null, modifier = Modifier.size(18.dp))
+                Spacer(Modifier.width(4.dp))
+                Text("Delete")
+            }
+            IconButton(onClick = onClear, modifier = Modifier.size(36.dp)) {
+                Icon(Icons.Default.Close, contentDescription = "Clear selection")
+            }
+        }
+    }
+}
+
+@Composable
 private fun MidiFileRow(
     item: MidiLibraryItem,
     selected: Boolean,
+    multiSelected: Boolean,
+    selectionActive: Boolean,
     connected: Boolean,
     preparing: Boolean,
     playing: Boolean,
     paused: Boolean,
     onSelect: () -> Unit,
+    onToggleSelected: () -> Unit,
     onPlay: () -> Unit,
     onPause: () -> Unit,
     onResume: () -> Unit,
@@ -1510,7 +1622,11 @@ private fun MidiFileRow(
 ) {
     var coordinates by remember { mutableStateOf<LayoutCoordinates?>(null) }
     var showMenu by remember { mutableStateOf(false) }
-    val containerColor = if (selected) MaterialTheme.colorScheme.secondaryContainer else MaterialTheme.colorScheme.surfaceVariant
+    val containerColor = when {
+        multiSelected -> MaterialTheme.colorScheme.primaryContainer
+        selected -> MaterialTheme.colorScheme.secondaryContainer
+        else -> MaterialTheme.colorScheme.surfaceVariant
+    }
     Surface(
         modifier = Modifier
             .fillMaxWidth()
@@ -1524,7 +1640,22 @@ private fun MidiFileRow(
             modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp),
             verticalAlignment = Alignment.CenterVertically
         ) {
-            Icon(Icons.Default.MusicNote, contentDescription = null, modifier = Modifier.size(24.dp))
+            Box(
+                modifier = Modifier
+                    .size(40.dp)
+                    .clickable(onClick = onToggleSelected),
+                contentAlignment = Alignment.Center
+            ) {
+                if (selectionActive || multiSelected) {
+                    Checkbox(
+                        checked = multiSelected,
+                        onCheckedChange = { onToggleSelected() },
+                        modifier = Modifier.size(32.dp)
+                    )
+                } else {
+                    Icon(Icons.Default.MusicNote, contentDescription = "Select ${item.title}", modifier = Modifier.size(24.dp))
+                }
+            }
             Spacer(Modifier.width(10.dp))
             Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(1.dp)) {
                 Text(item.title, fontWeight = FontWeight.SemiBold, maxLines = 1, overflow = TextOverflow.Ellipsis)
@@ -1608,7 +1739,9 @@ private fun MidiFileRow(
 }
 
 @Composable
-private fun DraggedMidiFilePreview(item: MidiLibraryItem, modifier: Modifier = Modifier) {
+private fun DraggedMidiFilePreview(items: List<MidiLibraryItem>, modifier: Modifier = Modifier) {
+    val firstItem = items.first()
+    val multiple = items.size > 1
     Surface(
         modifier = modifier,
         shape = RoundedCornerShape(4.dp),
@@ -1623,9 +1756,18 @@ private fun DraggedMidiFilePreview(item: MidiLibraryItem, modifier: Modifier = M
             Icon(Icons.Default.MusicNote, contentDescription = null, modifier = Modifier.size(24.dp))
             Spacer(Modifier.width(10.dp))
             Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(1.dp)) {
-                Text(item.title, fontWeight = FontWeight.SemiBold, maxLines = 1, overflow = TextOverflow.Ellipsis)
                 Text(
-                    "${item.durationUs.formatDuration()} - ${item.originalName}",
+                    if (multiple) "${items.size} MIDI files" else firstItem.title,
+                    fontWeight = FontWeight.SemiBold,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis
+                )
+                Text(
+                    if (multiple) {
+                        items.take(2).joinToString { it.title } + if (items.size > 2) "..." else ""
+                    } else {
+                        "${firstItem.durationUs.formatDuration()} - ${firstItem.originalName}"
+                    },
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                     maxLines = 1,
@@ -1642,13 +1784,13 @@ private fun DraggedMidiFilePreview(item: MidiLibraryItem, modifier: Modifier = M
                     horizontalArrangement = Arrangement.spacedBy(4.dp)
                 ) {
                     Icon(
-                        Icons.Default.ContentCopy,
+                        Icons.Default.Add,
                         contentDescription = null,
                         modifier = Modifier.size(16.dp),
                         tint = MaterialTheme.colorScheme.onPrimaryContainer
                     )
                     Text(
-                        "Copy",
+                        "Add",
                         style = MaterialTheme.typography.labelSmall,
                         fontWeight = FontWeight.SemiBold,
                         color = MaterialTheme.colorScheme.onPrimaryContainer,
@@ -3521,6 +3663,7 @@ private fun ConfirmDialog(
 
 @Composable
 private fun AddPlaylistDialog(
+    title: String = "New playlist",
     onDismiss: () -> Unit,
     onCreate: (String) -> Unit
 ) {
@@ -3528,7 +3671,7 @@ private fun AddPlaylistDialog(
     AlertDialog(
         onDismissRequest = onDismiss,
         icon = { Icon(Icons.Default.CreateNewFolder, contentDescription = null) },
-        title = { Text("New playlist") },
+        title = { Text(title) },
         text = {
             OutlinedTextField(
                 value = name,

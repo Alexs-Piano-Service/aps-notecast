@@ -482,6 +482,14 @@ class NoteCastService : Service() {
         reloadLibrary("Removed MIDI file.")
     }
 
+    fun deleteMidiFiles(itemIds: List<String>) {
+        val cleanIds = itemIds.filter { it.isNotBlank() }.distinct()
+        if (cleanIds.isEmpty()) return
+        if (cleanIds.any { _state.value.playback.currentItemId == it }) stopPlayback(userRequested = true)
+        repository.deleteFiles(cleanIds)
+        reloadLibrary("Removed ${cleanIds.size} MIDI file${if (cleanIds.size == 1) "" else "s"}.")
+    }
+
     fun renameMidiFile(itemId: String, title: String) {
         repository.renameFile(itemId, title)
         reloadLibrary("Renamed MIDI file.")
@@ -490,6 +498,12 @@ class NoteCastService : Service() {
     fun createPlaylist(name: String) {
         repository.createPlaylist(name)
         reloadLibrary("Created playlist.")
+    }
+
+    fun createPlaylist(name: String, itemIds: List<String>) {
+        repository.createPlaylist(name, itemIds)
+        val count = itemIds.distinct().size
+        reloadLibrary("Created playlist with $count MIDI file${if (count == 1) "" else "s"}.")
     }
 
     fun deletePlaylist(playlistId: String) {
