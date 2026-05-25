@@ -101,6 +101,12 @@ fun SettingsDialog(
                             checked = settings.shufflePlaylistsByDefault,
                             onCheckedChange = { onSettingsChange(settings.copy(shufflePlaylistsByDefault = it)) }
                         )
+                        SwitchRow(
+                            title = "App controls piano volume",
+                            subtitle = "The volume slider changes note strength for player pianos",
+                            checked = settings.appControlsVolume,
+                            onCheckedChange = { onSettingsChange(settings.copy(appControlsVolume = it)) }
+                        )
                     }
                 }
 

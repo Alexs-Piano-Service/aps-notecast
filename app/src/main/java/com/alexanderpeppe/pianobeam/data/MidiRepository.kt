@@ -111,14 +111,24 @@ class MidiRepository(private val context: Context) {
     }
 
     @Synchronized
-    fun importMidiBytes(bytes: ByteArray, displayName: String, notePrefix: String = ""): MidiLibraryItem {
+    fun importMidiBytes(
+        bytes: ByteArray,
+        displayName: String,
+        notePrefix: String = "",
+        preferredTitle: String? = null
+    ): MidiLibraryItem {
         val cleanDisplayName = displayName.ifBlank { "Imported MIDI ${System.currentTimeMillis()}.mid" }.ensureMidiExtension()
         val id = UUID.randomUUID().toString()
         val storedName = "$id.mid"
         val outFile = File(midiDir, storedName)
         outFile.writeBytes(bytes)
         val parseResult = runCatching { MidiFileParser.parse(bytes, cleanDisplayName) }
-        val title = parseResult.getOrNull()?.title?.takeIf { it.isNotBlank() } ?: cleanDisplayName.removeMidiExtension()
+        val title = preferredTitle
+            ?.trim()
+            ?.takeIf { it.isNotBlank() }
+            ?.removeMidiExtension()
+            ?: parseResult.getOrNull()?.title?.takeIf { it.isNotBlank() }
+            ?: cleanDisplayName.removeMidiExtension()
         val durationUs = parseResult.getOrNull()?.durationUs ?: 0L
         val parseNote = parseResult.exceptionOrNull()?.message?.let { "Imported, but parse check reported: $it" }
         val notes = listOf(notePrefix.trim(), parseNote)

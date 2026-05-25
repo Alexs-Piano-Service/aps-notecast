@@ -93,13 +93,13 @@ class NoteCastService : Service() {
     companion object {
         private const val CHANNEL_ID = "pianobeam_playback"
         private const val NOTIFICATION_ID = 440
-        private const val ACTION_PLAY_PAUSE = "com.alexanderpeppe.pianobeam.PLAY_PAUSE"
-        private const val ACTION_PREVIOUS = "com.alexanderpeppe.pianobeam.PREVIOUS"
-        private const val ACTION_NEXT = "com.alexanderpeppe.pianobeam.NEXT"
-        private const val ACTION_STOP = "com.alexanderpeppe.pianobeam.STOP"
-        private const val ACTION_PANIC = "com.alexanderpeppe.pianobeam.PANIC"
-        private const val ACTION_DEBUG_SCAN = "com.alexanderpeppe.pianobeam.DEBUG_SCAN"
-        private const val ACTION_DEBUG_DIAGNOSTICS = "com.alexanderpeppe.pianobeam.DEBUG_DIAGNOSTICS"
+        private const val ACTION_PLAY_PAUSE = "com.alexanderpeppe.notecast.PLAY_PAUSE"
+        private const val ACTION_PREVIOUS = "com.alexanderpeppe.notecast.PREVIOUS"
+        private const val ACTION_NEXT = "com.alexanderpeppe.notecast.NEXT"
+        private const val ACTION_STOP = "com.alexanderpeppe.notecast.STOP"
+        private const val ACTION_PANIC = "com.alexanderpeppe.notecast.PANIC"
+        private const val ACTION_DEBUG_SCAN = "com.alexanderpeppe.notecast.DEBUG_SCAN"
+        private const val ACTION_DEBUG_DIAGNOSTICS = "com.alexanderpeppe.notecast.DEBUG_DIAGNOSTICS"
         private const val LOG_TAG = "NoteCastBle"
         private const val KUHMANN_SEARCH_URL = "https://www.alexanderpeppe.com/kuhmann_midi_search.php"
         private const val KUHMANN_SEARCH_MAX_LIMIT = 100
@@ -240,7 +240,6 @@ class NoteCastService : Service() {
         val tempoPercent: Int,
         val transposeSemitones: Int,
         val excludeDrumChannelFromTranspose: Boolean,
-        val volumePercent: Int,
         val channelSignature: String
     )
 
@@ -447,6 +446,7 @@ class NoteCastService : Service() {
                     repository.importMidiBytes(
                         bytes = bytes,
                         displayName = result.filename.ifBlank { "${result.title}.mid" },
+                        preferredTitle = result.title,
                         notePrefix = "Kuhmann MIDI: ${result.folder}"
                     )
                     imported++
@@ -1928,7 +1928,6 @@ class NoteCastService : Service() {
                 coroutineContext.ensureActive()
                 val item = items[index]
                 val settingsSnapshot = appSettings
-                val volumeSnapshot = _state.value.volumePercent
                 withContext(Dispatchers.Main) {
                     if (!isCurrentPlayback(generation)) return@withContext
                     _state.update {
@@ -1948,7 +1947,7 @@ class NoteCastService : Service() {
                     }
                     updatePlaybackSurfaces(updateNotification = true)
                 }
-                val sequence = loadPreparedSequence(item, settingsSnapshot, volumeSnapshot)
+                val sequence = loadPreparedSequence(item, settingsSnapshot)
                 coroutineContext.ensureActive()
                 withContext(Dispatchers.Main) {
                     if (!isCurrentPlayback(generation)) return@withContext
@@ -2032,8 +2031,7 @@ class NoteCastService : Service() {
 
     private suspend fun loadPreparedSequence(
         item: MidiLibraryItem,
-        settings: AppSettings,
-        volumePercent: Int
+        settings: AppSettings
     ): MidiFileParser.MidiSequence = withContext(Dispatchers.IO) {
         val file = repository.fileFor(item)
         val key = PreparedSequenceCacheKey(
@@ -2045,7 +2043,6 @@ class NoteCastService : Service() {
             tempoPercent = settings.tempoPercent.coerceIn(50, 150),
             transposeSemitones = settings.transposeSemitones,
             excludeDrumChannelFromTranspose = settings.excludeDrumChannelFromTranspose,
-            volumePercent = volumePercent.coerceIn(0, 100),
             channelSignature = settings.channelControls.cacheSignature()
         )
         synchronized(sequenceCacheLock) { preparedSequenceCache[key] }?.let { cached ->
@@ -2053,7 +2050,7 @@ class NoteCastService : Service() {
         }
 
         val parsed = MidiFileParser.parse(file.readBytes(), item.title)
-        val prepared = prepareSequence(parsed, settings, volumePercent)
+        val prepared = prepareSequence(parsed, settings)
         synchronized(sequenceCacheLock) {
             preparedSequenceCache[key] = prepared
         }
@@ -2076,12 +2073,11 @@ class NoteCastService : Service() {
 
     private fun prepareSequence(
         sequence: MidiFileParser.MidiSequence,
-        settings: AppSettings,
-        volumePercent: Int
+        settings: AppSettings
     ): MidiFileParser.MidiSequence {
         val tempoPercent = settings.tempoPercent.coerceIn(50, 150)
         val adjustedEvents = sequence.events.mapNotNull { event ->
-            transformMidiData(event.data, settings, volumePercent)?.let { data ->
+            transformMidiData(event.data, settings)?.let { data ->
                 event.copy(
                     timeUs = scaleForTempo(event.timeUs, tempoPercent),
                     data = data
@@ -2097,7 +2093,7 @@ class NoteCastService : Service() {
     private fun scaleForTempo(timeUs: Long, tempoPercent: Int): Long =
         ((timeUs.coerceAtLeast(0L) * 100L) / tempoPercent.coerceIn(50, 150)).coerceAtLeast(0L)
 
-    private fun transformMidiData(data: ByteArray, settings: AppSettings, volumePercent: Int): ByteArray? {
+    private fun transformMidiData(data: ByteArray, settings: AppSettings): ByteArray? {
         if (data.isEmpty()) return null
         val status = data[0].toInt() and 0xFF
         if (status !in 0x80..0xEF) return data
@@ -2121,10 +2117,37 @@ class NoteCastService : Service() {
                 .toByte()
         }
 
-        if (messageType == 0xB0 && copy.size > 2 && (copy[1].toInt() and 0xFF) == 7) {
-            copy[2] = scaledMidiVolume(copy[2].toInt() and 0xFF, volumePercent, control.volumePercent).toByte()
-        }
         return copy
+    }
+
+    private fun applyLiveVolume(data: ByteArray): ByteArray? {
+        if (data.isEmpty()) return null
+        val status = data[0].toInt() and 0xFF
+        if (status !in 0x80..0xEF) return data
+        val messageType = status and 0xF0
+        if (messageType != 0x90 && messageType != 0xB0) return data
+        val channelNumber = (status and 0x0F) + 1
+        val control = appSettings.channelControls.channelControl(channelNumber)
+        val masterPercent = _state.value.volumePercent
+
+        if (messageType == 0xB0 && data.size > 2 && (data[1].toInt() and 0xFF) == 7) {
+            val copy = data.copyOf()
+            copy[2] = scaledMidiVolume(copy[2].toInt() and 0xFF, masterPercent, control.volumePercent).toByte()
+            return copy
+        }
+        if (
+            appSettings.appControlsVolume &&
+            messageType == 0x90 &&
+            data.size > 2 &&
+            (data[2].toInt() and 0xFF) > 0
+        ) {
+            val scaled = scaledMidiVelocity(data[2].toInt() and 0xFF, masterPercent, control.volumePercent)
+            if (scaled <= 0) return null
+            val copy = data.copyOf()
+            copy[2] = scaled.toByte()
+            return copy
+        }
+        return data
     }
 
     private suspend fun playSequence(sequence: MidiFileParser.MidiSequence, item: MidiLibraryItem) {
@@ -2194,7 +2217,10 @@ class NoteCastService : Service() {
                 }
                 val targetNs = startNs + event.timeUs * 1_000L + pauseOffsetNs
                 val port = midiInputPort ?: throw IOException("MIDI connection was lost")
-                port.send(event.data, 0, event.data.size, targetNs)
+                val data = applyLiveVolume(event.data)
+                if (data != null) {
+                    port.send(data, 0, data.size, targetNs)
+                }
 
                 val nowNs = System.nanoTime()
                 if (nowNs - lastProgressPostNs > PROGRESS_POST_INTERVAL_NS) {
@@ -3363,6 +3389,14 @@ class NoteCastService : Service() {
             ) ?: MidiChannelControl(channel = channel)
         }
 
+    private fun List<MidiChannelControl>.channelControl(channel: Int): MidiChannelControl =
+        firstOrNull { it.channel == channel }?.let { control ->
+            control.copy(
+                channel = channel,
+                volumePercent = control.volumePercent.coerceIn(0, 100)
+            )
+        } ?: MidiChannelControl(channel = channel)
+
     private fun List<MidiChannelControl>.cacheSignature(): String =
         normalizedControls().values.joinToString("|") {
             "${it.channel}:${it.muted}:${it.solo}:${it.volumePercent.coerceIn(0, 100)}"
@@ -3373,6 +3407,13 @@ class NoteCastService : Service() {
             masterPercent.coerceIn(0, 100) *
             channelPercent.coerceIn(0, 100)
         return (scaled / 10_000).coerceIn(0, 127)
+    }
+
+    private fun scaledMidiVelocity(rawValue: Int, masterPercent: Int, channelPercent: Int): Int {
+        val raw = rawValue.coerceIn(1, 127)
+        if (masterPercent <= 0 || channelPercent <= 0) return 0
+        val scaled = scaledMidiVolume(raw, masterPercent, channelPercent)
+        return scaled.coerceIn(1, 127)
     }
 
     @SuppressLint("WakelockTimeout")

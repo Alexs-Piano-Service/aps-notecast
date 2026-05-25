@@ -46,6 +46,7 @@ class AppSettingsStore(context: Context) {
             .putString(KEY_PLAYBACK_ADVANCE_MODE, cleanSettings.playbackAdvanceMode.preferenceValue)
             .putString(KEY_REPEAT_MODE, cleanSettings.repeatMode.preferenceValue)
             .putBoolean(KEY_SHUFFLE_PLAYLISTS, cleanSettings.shufflePlaylistsByDefault)
+            .putBoolean(KEY_APP_CONTROLS_VOLUME, cleanSettings.appControlsVolume)
             .putInt(KEY_TEMPO_PERCENT, cleanSettings.tempoPercent)
             .putInt(KEY_TRANSPOSE_SEMITONES, cleanSettings.transposeSemitones)
             .putBoolean(KEY_EXCLUDE_DRUM_CHANNEL, cleanSettings.excludeDrumChannelFromTranspose)
@@ -76,6 +77,7 @@ class AppSettingsStore(context: Context) {
             playbackAdvanceMode = PlaybackAdvanceMode.fromPreference(preferences.getString(KEY_PLAYBACK_ADVANCE_MODE, null)),
             repeatMode = RepeatMode.fromPreference(preferences.getString(KEY_REPEAT_MODE, null)),
             shufflePlaylistsByDefault = preferences.getBoolean(KEY_SHUFFLE_PLAYLISTS, false),
+            appControlsVolume = preferences.getBoolean(KEY_APP_CONTROLS_VOLUME, true),
             tempoPercent = preferences.getInt(KEY_TEMPO_PERCENT, 100).coerceIn(50, 150),
             transposeSemitones = preferences.getInt(KEY_TRANSPOSE_SEMITONES, 0).coerceIn(-12, 12),
             excludeDrumChannelFromTranspose = preferences.getBoolean(KEY_EXCLUDE_DRUM_CHANNEL, true),
@@ -116,6 +118,7 @@ class AppSettingsStore(context: Context) {
         private const val KEY_PLAYBACK_ADVANCE_MODE = "playback_advance_mode"
         private const val KEY_REPEAT_MODE = "repeat_mode"
         private const val KEY_SHUFFLE_PLAYLISTS = "shuffle_playlists"
+        private const val KEY_APP_CONTROLS_VOLUME = "app_controls_volume"
         private const val KEY_TEMPO_PERCENT = "tempo_percent"
         private const val KEY_TRANSPOSE_SEMITONES = "transpose_semitones"
         private const val KEY_EXCLUDE_DRUM_CHANNEL = "exclude_drum_channel"

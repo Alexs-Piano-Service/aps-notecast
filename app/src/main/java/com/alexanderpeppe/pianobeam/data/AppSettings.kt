@@ -49,6 +49,7 @@ data class AppSettings(
     val playbackAdvanceMode: PlaybackAdvanceMode = PlaybackAdvanceMode.StopAfterPlaylist,
     val repeatMode: RepeatMode = RepeatMode.Off,
     val shufflePlaylistsByDefault: Boolean = false,
+    val appControlsVolume: Boolean = true,
     val tempoPercent: Int = 100,
     val transposeSemitones: Int = 0,
     val excludeDrumChannelFromTranspose: Boolean = true,

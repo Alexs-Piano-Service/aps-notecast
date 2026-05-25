@@ -309,16 +309,10 @@ class MainActivity : ComponentActivity() {
 private fun LoadingScreen() {
     Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
         Column(horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.spacedBy(12.dp)) {
-            Surface(shape = CircleShape, color = MaterialTheme.colorScheme.surfaceVariant) {
-                Image(
-                    painter = painterResource(R.drawable.logo_icon),
-                    contentDescription = "APS NoteCast logo",
-                    modifier = Modifier
-                        .size(86.dp)
-                        .padding(12.dp),
-                    contentScale = ContentScale.Fit
-                )
-            }
+            LoadingIcon(
+                modifier = Modifier.size(86.dp),
+                contentDescription = "APS NoteCast logo"
+            )
             CircularProgressIndicator()
             Text("Starting APS NoteCast")
         }
@@ -326,13 +320,38 @@ private fun LoadingScreen() {
 }
 
 @Composable
+private fun LoadingIcon(
+    modifier: Modifier = Modifier,
+    contentDescription: String? = null
+) {
+    Image(
+        painter = painterResource(R.drawable.loading_icon),
+        contentDescription = contentDescription,
+        modifier = modifier,
+        contentScale = ContentScale.Fit
+    )
+}
+
+@Composable
+private fun AboutIcon(
+    modifier: Modifier = Modifier,
+    contentDescription: String? = null
+) {
+    Image(
+        painter = painterResource(R.drawable.about_icon),
+        contentDescription = contentDescription,
+        modifier = modifier,
+        contentScale = ContentScale.Fit
+    )
+}
+
+@Composable
 private fun BrandMark(
     modifier: Modifier = Modifier,
     contentDescription: String? = null
 ) {
-    val darkTheme = MaterialTheme.colorScheme.background.luminance() < 0.5f
     Image(
-        painter = painterResource(if (darkTheme) R.drawable.logo_mark_white else R.drawable.logo_mark_dark),
+        painter = painterResource(R.drawable.app_header_logo),
         contentDescription = contentDescription,
         modifier = modifier,
         contentScale = ContentScale.Fit
@@ -343,7 +362,7 @@ private fun BrandMark(
 private fun PrimaryLogoBanner(modifier: Modifier = Modifier) {
     val darkTheme = MaterialTheme.colorScheme.background.luminance() < 0.5f
     Image(
-        painter = painterResource(if (darkTheme) R.drawable.logo_primary_white else R.drawable.logo_primary_dark),
+        painter = painterResource(if (darkTheme) R.drawable.about_logo_dark else R.drawable.about_logo_light),
         contentDescription = "Alex's Piano Service logo",
         modifier = modifier
             .fillMaxWidth()
@@ -456,7 +475,7 @@ private fun NoteCastApp(
                         Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
                             BrandMark(
                                 modifier = Modifier
-                                    .size(40.dp)
+                                    .size(48.dp)
                                     .clickable { showAppInfo = true },
                                 contentDescription = "APS NoteCast"
                             )
@@ -1226,7 +1245,7 @@ private fun AppInfoDialog(onDismiss: () -> Unit) {
     val uriHandler = LocalUriHandler.current
     AlertDialog(
         onDismissRequest = onDismiss,
-        icon = { BrandMark(modifier = Modifier.size(56.dp), contentDescription = "APS NoteCast") },
+        icon = { AboutIcon(modifier = Modifier.size(96.dp), contentDescription = "APS NoteCast") },
         title = {
             Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
                 Text("APS NoteCast")

@@ -125,8 +125,26 @@ Install a debug build:
 
 ```bash
 adb install -r app/build/outputs/apk/debug/app-debug.apk
-adb shell am start -n com.alexanderpeppe.pianobeam/.MainActivity
+adb shell am start -n com.alexanderpeppe.notecast/com.alexanderpeppe.pianobeam.MainActivity
 ```
+
+Build a signed release Android App Bundle for Google Play:
+
+```bash
+scripts/build-release-bundle.sh
+```
+
+The release signing script reads `APS_NOTECAST_KEYSTORE`, `APS_NOTECAST_KEY_ALIAS`,
+and `APS_NOTECAST_KEYSTORE_PASSWORD` from `~/.aps-notecast-signing.env` by default.
+Set `APS_NOTECAST_SIGNING_ENV=/path/to/signing.env` to use another local signing
+file. The signed bundle is written to:
+
+```text
+app/build/outputs/bundle/release/aps-notecast-release-signed.aab
+```
+
+In VS Code, run **Build signed release App Bundle** from **Terminal > Run Build
+Task**.
 
 ## Project Structure
 
