@@ -243,9 +243,14 @@ class NoteCastService : Service() {
         val channelSignature: String
     )
 
+    private data class PreparedPlaybackData(
+        val sequence: MidiFileParser.MidiSequence,
+        val channels: List<Int>
+    )
+
     private val sequenceCacheLock = Any()
-    private val preparedSequenceCache = object : LinkedHashMap<PreparedSequenceCacheKey, MidiFileParser.MidiSequence>(8, 0.75f, true) {
-        override fun removeEldestEntry(eldest: MutableMap.MutableEntry<PreparedSequenceCacheKey, MidiFileParser.MidiSequence>?): Boolean =
+    private val preparedSequenceCache = object : LinkedHashMap<PreparedSequenceCacheKey, PreparedPlaybackData>(8, 0.75f, true) {
+        override fun removeEldestEntry(eldest: MutableMap.MutableEntry<PreparedSequenceCacheKey, PreparedPlaybackData>?): Boolean =
             size > 4
     }
 
@@ -322,7 +327,17 @@ class NoteCastService : Service() {
     }
 
     fun applySettings(settings: AppSettings) {
+        val previousSettings = appSettings
         appSettings = settings
+        val volumeBehaviorChanged = previousSettings.appControlsVolume != settings.appControlsVolume
+        val channelVolumesChanged = previousSettings.channelControls.volumeSignature() != settings.channelControls.volumeSignature()
+        val muteSoloChanged = previousSettings.channelControls.muteSoloSignature() != settings.channelControls.muteSoloSignature()
+        if (_state.value.connection.connected && (volumeBehaviorChanged || channelVolumesChanged || muteSoloChanged)) {
+            serviceScope.launch(Dispatchers.IO) {
+                if (muteSoloChanged) sendPanicMessages()
+                sendVolumeMessages(_state.value.volumePercent)
+            }
+        }
     }
 
     fun setAutoReconnectPausedForDevicePicker(paused: Boolean) {
@@ -357,7 +372,7 @@ class NoteCastService : Service() {
         val cleanQuery = query.trim()
         val cleanChannel = channel?.coerceIn(1, 16)
         val cleanLimit = limit.coerceIn(1, 100)
-        if (cleanQuery.isBlank() && cleanChannel == null) {
+        if (cleanQuery.isBlank()) {
             _state.update {
                 it.copy(
                     kuhmann = it.kuhmann.copy(
@@ -366,7 +381,7 @@ class NoteCastService : Service() {
                         pianoOnly = pianoOnly,
                         channel = cleanChannel,
                         limit = cleanLimit,
-                        message = "Enter a search term or channel."
+                        message = "Enter a search term."
                     )
                 )
             }
@@ -514,6 +529,11 @@ class NoteCastService : Service() {
     fun renamePlaylist(playlistId: String, name: String) {
         repository.renamePlaylist(playlistId, name)
         reloadLibrary("Renamed playlist.")
+    }
+
+    fun setPlaylistColor(playlistId: String, colorHex: String?) {
+        repository.setPlaylistColor(playlistId, colorHex)
+        reloadLibrary("Updated playlist color.")
     }
 
     fun duplicatePlaylist(playlistId: String) {
@@ -939,7 +959,7 @@ class NoteCastService : Service() {
         if (wasActive) sendPanicMessages()
         closeMidiConnection()
         if (wasActive) {
-            _state.update { it.copy(playback = PlaybackUiState()) }
+            _state.update { it.copy(playback = PlaybackUiState(), playbackChannels = emptyList()) }
             updatePlaybackSurfaces(updateNotification = true)
             stopForegroundIfNeeded()
             releaseWakeLock()
@@ -1324,6 +1344,7 @@ class NoteCastService : Service() {
                 it.copy(
                     connection = rememberedConnection(message = "$name opened, but Android did not finish attaching the BLE MIDI link. Power-cycle the adapter, then scan or connect again."),
                     playback = PlaybackUiState(),
+                    playbackChannels = emptyList(),
                     lastMessage = "$name BLE MIDI attach did not finish."
                 )
             }
@@ -1547,6 +1568,7 @@ class NoteCastService : Service() {
             it.copy(
                 connection = rememberedConnection(message = "$message Reconnecting for ${timeoutSeconds}s..."),
                 playback = PlaybackUiState(),
+                playbackChannels = emptyList(),
                 lastMessage = "$deviceName connection lost."
             )
         }
@@ -1840,6 +1862,7 @@ class NoteCastService : Service() {
                 _state.update {
                     it.copy(
                         playback = PlaybackUiState(),
+                        playbackChannels = emptyList(),
                         lastMessage = if (userRequested) "Playback stopped." else it.lastMessage
                     )
                 }
@@ -1866,6 +1889,7 @@ class NoteCastService : Service() {
                 _state.update {
                     it.copy(
                         playback = PlaybackUiState(),
+                        playbackChannels = emptyList(),
                         lastMessage = "Panic sent: sustain off, all notes off, all sound off."
                     )
                 }
@@ -1902,6 +1926,7 @@ class NoteCastService : Service() {
                     totalTracks = items.size,
                     durationUs = firstItem.durationUs
                 ),
+                playbackChannels = emptyList(),
                 lastMessage = if (replacingActivePlayback) "Switching to ${firstItem.title}..." else "Preparing ${firstItem.title}..."
             )
         }
@@ -1942,12 +1967,14 @@ class NoteCastService : Service() {
                                 progressUs = 0L,
                                 durationUs = item.durationUs
                             ),
+                            playbackChannels = emptyList(),
                             lastMessage = "Preparing ${item.title}..."
                         )
                     }
                     updatePlaybackSurfaces(updateNotification = true)
                 }
-                val sequence = loadPreparedSequence(item, settingsSnapshot)
+                val playbackData = loadPreparedSequence(item, settingsSnapshot)
+                val sequence = playbackData.sequence
                 coroutineContext.ensureActive()
                 withContext(Dispatchers.Main) {
                     if (!isCurrentPlayback(generation)) return@withContext
@@ -1963,6 +1990,7 @@ class NoteCastService : Service() {
                                 progressUs = 0L,
                                 durationUs = sequence.durationUs
                             ),
+                            playbackChannels = playbackData.channels,
                             lastMessage = "Playing ${item.title}"
                         )
                     }
@@ -1997,6 +2025,7 @@ class NoteCastService : Service() {
                     _state.update {
                         it.copy(
                             playback = PlaybackUiState(mode = PlaybackMode.Error, error = t.message ?: "Playback failed"),
+                            playbackChannels = emptyList(),
                             lastMessage = "Playback error: ${t.message ?: "unknown error"}"
                         )
                     }
@@ -2012,6 +2041,7 @@ class NoteCastService : Service() {
                     _state.update {
                         it.copy(
                             playback = PlaybackUiState(),
+                            playbackChannels = emptyList(),
                             lastMessage = if (playlistName == null) "Playback finished." else "Playlist finished."
                         )
                     }
@@ -2032,7 +2062,7 @@ class NoteCastService : Service() {
     private suspend fun loadPreparedSequence(
         item: MidiLibraryItem,
         settings: AppSettings
-    ): MidiFileParser.MidiSequence = withContext(Dispatchers.IO) {
+    ): PreparedPlaybackData = withContext(Dispatchers.IO) {
         val file = repository.fileFor(item)
         val key = PreparedSequenceCacheKey(
             itemId = item.id,
@@ -2051,10 +2081,14 @@ class NoteCastService : Service() {
 
         val parsed = MidiFileParser.parse(file.readBytes(), item.title)
         val prepared = prepareSequence(parsed, settings)
+        val playbackData = PreparedPlaybackData(
+            sequence = prepared,
+            channels = parsed.channelNumbers()
+        )
         synchronized(sequenceCacheLock) {
-            preparedSequenceCache[key] = prepared
+            preparedSequenceCache[key] = playbackData
         }
-        prepared
+        playbackData
     }
 
     private fun nextTrackIndex(
@@ -2098,10 +2132,6 @@ class NoteCastService : Service() {
         val status = data[0].toInt() and 0xFF
         if (status !in 0x80..0xEF) return data
         val channelNumber = (status and 0x0F) + 1
-        val controls = settings.channelControls.normalizedControls()
-        val control = controls[channelNumber] ?: MidiChannelControl(channel = channelNumber)
-        val soloActive = controls.values.any { it.solo }
-        if (control.muted || (soloActive && !control.solo)) return null
 
         val copy = data.copyOf()
         val messageType = status and 0xF0
@@ -2124,13 +2154,16 @@ class NoteCastService : Service() {
         if (data.isEmpty()) return null
         val status = data[0].toInt() and 0xFF
         if (status !in 0x80..0xEF) return data
-        val messageType = status and 0xF0
-        if (messageType != 0x90 && messageType != 0xB0) return data
         val channelNumber = (status and 0x0F) + 1
         val control = appSettings.channelControls.channelControl(channelNumber)
+        val soloActive = appSettings.channelControls.any { it.solo }
+        if (control.muted || (soloActive && !control.solo)) return null
+
+        val messageType = status and 0xF0
+        if (messageType != 0x90 && messageType != 0xB0) return data
         val masterPercent = _state.value.volumePercent
 
-        if (messageType == 0xB0 && data.size > 2 && (data[1].toInt() and 0xFF) == 7) {
+        if (!appSettings.appControlsVolume && messageType == 0xB0 && data.size > 2 && (data[1].toInt() and 0xFF) == 7) {
             val copy = data.copyOf()
             copy[2] = scaledMidiVolume(copy[2].toInt() and 0xFF, masterPercent, control.volumePercent).toByte()
             return copy
@@ -2318,7 +2351,8 @@ class NoteCastService : Service() {
 
     private fun KuhmannMidiResult.isPianoOnlyCandidate(): Boolean {
         val cleanChannels = channels.distinct().sorted()
-        return channelCount <= 1 && (cleanChannels.isEmpty() || cleanChannels == listOf(1))
+        val reportedCount = if (channelCount > 0) channelCount else cleanChannels.size
+        return reportedCount <= 3 && (cleanChannels.isEmpty() || cleanChannels.all { it in 1..3 })
     }
 
     private fun downloadKuhmannBytes(result: KuhmannMidiResult): ByteArray {
@@ -3363,16 +3397,22 @@ class NoteCastService : Service() {
     }
 
     private fun sendVolumeMessages(percent: Int) {
+        if (appSettings.appControlsVolume) return
         val connection = _state.value.connection
         if (!connection.connected) return
         if (!isAndroidMidiConnectionId(connection.address) && !isBluetoothEnabled()) return
         val port = midiInputPort ?: return
         val controls = appSettings.channelControls.normalizedControls()
+        val soloActive = controls.values.any { it.solo }
         val now = System.nanoTime()
         try {
             for (channel in 0..15) {
                 val control = controls[channel + 1] ?: MidiChannelControl(channel = channel + 1)
-                val value = scaledMidiVolume(127, percent, control.volumePercent).toByte()
+                val value = if (control.muted || (soloActive && !control.solo)) {
+                    0
+                } else {
+                    scaledMidiVolume(127, percent, control.volumePercent)
+                }.toByte()
                 val status = (0xB0 or channel).toByte()
                 port.send(byteArrayOf(status, 7, value), 0, 3, now)
             }
@@ -3380,6 +3420,12 @@ class NoteCastService : Service() {
         } catch (_: Throwable) {
         }
     }
+
+    private fun MidiFileParser.MidiSequence.channelNumbers(): List<Int> =
+        events.mapNotNull { event ->
+            val status = event.data.firstOrNull()?.toInt()?.and(0xFF) ?: return@mapNotNull null
+            if (status in 0x80..0xEF) (status and 0x0F) + 1 else null
+        }.distinct().sorted()
 
     private fun List<MidiChannelControl>.normalizedControls(): Map<Int, MidiChannelControl> =
         (1..16).associateWith { channel ->
@@ -3400,6 +3446,16 @@ class NoteCastService : Service() {
     private fun List<MidiChannelControl>.cacheSignature(): String =
         normalizedControls().values.joinToString("|") {
             "${it.channel}:${it.muted}:${it.solo}:${it.volumePercent.coerceIn(0, 100)}"
+        }
+
+    private fun List<MidiChannelControl>.volumeSignature(): String =
+        normalizedControls().values.joinToString("|") {
+            "${it.channel}:${it.volumePercent.coerceIn(0, 100)}"
+        }
+
+    private fun List<MidiChannelControl>.muteSoloSignature(): String =
+        normalizedControls().values.joinToString("|") {
+            "${it.channel}:${it.muted}:${it.solo}"
         }
 
     private fun scaledMidiVolume(rawValue: Int, masterPercent: Int, channelPercent: Int): Int {

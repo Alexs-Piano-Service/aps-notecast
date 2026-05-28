@@ -4,6 +4,8 @@ All notable changes to APS NoteCast are documented here.
 
 ## Unreleased
 
+## 0.1.4
+
 ### Added
 
 - BLE MIDI connection monitoring that updates the UI when a device is lost.
@@ -22,6 +24,7 @@ All notable changes to APS NoteCast are documented here.
 - App info branding for Alex's Piano Service LLC, address, and website.
 - Apache 2.0 license, notice, contributing guide, security policy, and expanded README.
 - Android locale declarations for APS MIDI Prep Tool languages plus Bulgarian.
+- App-wide font size setting.
 
 ### Changed
 
@@ -29,6 +32,7 @@ All notable changes to APS NoteCast are documented here.
 - The record action uses a redder visual treatment.
 - The connection pill has more balanced visual padding.
 - The main screen keeps advanced MIDI controls in settings to stay compact.
+- Startup splash styling now uses the NoteCast loading mark instead of the launcher preview.
 
 ### Fixed
 

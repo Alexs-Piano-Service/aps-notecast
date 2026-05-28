@@ -1,0 +1,1 @@
+Adds the Kuhmann Piano Only/Ensemble search modes, a full volume mixer with per-channel mute, playlist color coding, playlist search for larger libraries, generic Portuguese locale support, app-wide font size, and smoother startup splash styling.

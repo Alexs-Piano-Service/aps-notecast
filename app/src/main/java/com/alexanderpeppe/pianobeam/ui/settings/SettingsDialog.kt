@@ -63,6 +63,15 @@ fun SettingsDialog(
             ) {
                 item {
                     SettingSection("Appearance") {
+                        SliderRow(
+                            title = "Text zoom",
+                            valueLabel = "${settings.fontScalePercent}%",
+                            value = settings.fontScalePercent.toFloat(),
+                            range = 80f..110f,
+                            steps = 5,
+                            onValueChange = { onSettingsChange(settings.copy(fontScalePercent = it.roundToInt())) }
+                        )
+                        CompactDivider()
                         AppThemeMode.values().forEach { mode ->
                             RadioRow(
                                 title = mode.title,

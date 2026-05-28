@@ -165,6 +165,7 @@ APS NoteCast declares Android locale support for the APS MIDI Prep Tool language
 - French
 - German
 - Italian
+- Portuguese
 - Portuguese (Brazil)
 - Dutch
 - Polish

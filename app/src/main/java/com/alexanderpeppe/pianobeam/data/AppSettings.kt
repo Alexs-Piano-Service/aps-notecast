@@ -42,6 +42,7 @@ data class MidiChannelControl(
 
 data class AppSettings(
     val themeMode: AppThemeMode = AppThemeMode.System,
+    val fontScalePercent: Int = 100,
     val autoReconnectEnabled: Boolean = true,
     val scanOnLaunch: Boolean = false,
     val reconnectIntervalSeconds: Int = 8,

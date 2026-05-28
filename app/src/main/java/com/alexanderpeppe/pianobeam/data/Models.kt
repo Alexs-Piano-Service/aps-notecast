@@ -16,7 +16,8 @@ data class MidiPlaylist(
     val id: String,
     val name: String,
     val itemIds: List<String>,
-    val createdAtMs: Long
+    val createdAtMs: Long,
+    val colorHex: String? = null
 )
 
 data class LibrarySnapshot(
@@ -54,8 +55,8 @@ data class KuhmannSearchUiState(
     val searching: Boolean = false,
     val downloading: Boolean = false,
     val query: String = "",
-    val format: Int? = 0,
-    val pianoOnly: Boolean = false,
+    val format: Int? = null,
+    val pianoOnly: Boolean = true,
     val channel: Int? = null,
     val limit: Int = 50,
     val results: List<KuhmannMidiResult> = emptyList(),
@@ -118,6 +119,7 @@ data class AppUiState(
     val bleDevices: List<BleMidiDeviceItem> = emptyList(),
     val connection: ConnectionUiState = ConnectionUiState(),
     val playback: PlaybackUiState = PlaybackUiState(),
+    val playbackChannels: List<Int> = emptyList(),
     val recording: RecordingUiState = RecordingUiState(),
     val kuhmann: KuhmannSearchUiState = KuhmannSearchUiState(),
     val volumePercent: Int = 88,

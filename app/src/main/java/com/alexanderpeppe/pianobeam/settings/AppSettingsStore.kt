@@ -30,6 +30,7 @@ class AppSettingsStore(context: Context) {
 
     fun updateSettings(settings: AppSettings) {
         val cleanSettings = settings.copy(
+            fontScalePercent = settings.fontScalePercent.coerceIn(80, 110),
             reconnectIntervalSeconds = settings.reconnectIntervalSeconds.coerceIn(3, 60),
             reconnectTimeoutSeconds = settings.reconnectTimeoutSeconds.coerceIn(10, 180),
             tempoPercent = settings.tempoPercent.coerceIn(50, 150),
@@ -39,6 +40,7 @@ class AppSettingsStore(context: Context) {
         )
         preferences.edit()
             .putString(KEY_THEME_MODE, cleanSettings.themeMode.preferenceValue)
+            .putInt(KEY_FONT_SCALE_PERCENT, cleanSettings.fontScalePercent)
             .putBoolean(KEY_AUTO_RECONNECT, cleanSettings.autoReconnectEnabled)
             .putBoolean(KEY_SCAN_ON_LAUNCH, cleanSettings.scanOnLaunch)
             .putInt(KEY_RECONNECT_INTERVAL_SECONDS, cleanSettings.reconnectIntervalSeconds)
@@ -70,6 +72,7 @@ class AppSettingsStore(context: Context) {
     private fun loadSettings(): AppSettings =
         AppSettings(
             themeMode = AppThemeMode.fromPreference(preferences.getString(KEY_THEME_MODE, null)),
+            fontScalePercent = preferences.getInt(KEY_FONT_SCALE_PERCENT, 100).coerceIn(80, 110),
             autoReconnectEnabled = preferences.getBoolean(KEY_AUTO_RECONNECT, true),
             scanOnLaunch = preferences.getBoolean(KEY_SCAN_ON_LAUNCH, false),
             reconnectIntervalSeconds = preferences.getInt(KEY_RECONNECT_INTERVAL_SECONDS, 8).coerceIn(3, 60),
@@ -111,6 +114,7 @@ class AppSettingsStore(context: Context) {
     companion object {
         private const val PREFERENCES_NAME = "pianobeam_settings"
         private const val KEY_THEME_MODE = "theme_mode"
+        private const val KEY_FONT_SCALE_PERCENT = "font_scale_percent"
         private const val KEY_AUTO_RECONNECT = "auto_reconnect"
         private const val KEY_SCAN_ON_LAUNCH = "scan_on_launch"
         private const val KEY_RECONNECT_INTERVAL_SECONDS = "reconnect_interval_seconds"

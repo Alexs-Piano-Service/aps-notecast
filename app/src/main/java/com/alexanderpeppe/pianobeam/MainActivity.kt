@@ -109,6 +109,7 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
@@ -141,6 +142,7 @@ import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalUriHandler
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.unit.Density
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
@@ -151,6 +153,7 @@ import com.alexanderpeppe.pianobeam.data.AppThemeMode
 import com.alexanderpeppe.pianobeam.data.BleMidiDeviceItem
 import com.alexanderpeppe.pianobeam.data.KuhmannMidiResult
 import com.alexanderpeppe.pianobeam.data.KuhmannSearchUiState
+import com.alexanderpeppe.pianobeam.data.MidiChannelControl
 import com.alexanderpeppe.pianobeam.data.MidiLibraryItem
 import com.alexanderpeppe.pianobeam.data.MidiPlaylist
 import com.alexanderpeppe.pianobeam.data.PlaybackMode
@@ -197,71 +200,80 @@ class MainActivity : ComponentActivity() {
             val appSettings by settingsStore.settings.collectAsState()
 
             NoteCastTheme(themeMode = appSettings.themeMode) {
-                var permissionsGranted by remember { mutableStateOf(hasAllRuntimePermissions()) }
-                val permissionLauncher = rememberLauncherForActivityResult(
-                    ActivityResultContracts.RequestMultiplePermissions()
-                ) {
-                    permissionsGranted = hasAllRuntimePermissions()
-                    service?.refreshKnownDevices()
+                val baseDensity = LocalDensity.current
+                val appDensity = remember(baseDensity, appSettings.fontScalePercent) {
+                    Density(
+                        density = baseDensity.density,
+                        fontScale = baseDensity.fontScale * (appSettings.fontScalePercent.coerceIn(80, 110) / 100f)
+                    )
                 }
-                val enableBluetoothLauncher = rememberLauncherForActivityResult(
-                    ActivityResultContracts.StartActivityForResult()
-                ) {
-                    service?.refreshKnownDevices()
-                }
-                val pairingSettingsLauncher = rememberLauncherForActivityResult(
-                    ActivityResultContracts.StartActivityForResult()
-                ) {
-                    service?.refreshKnownDevices()
-                    if (appSettings.autoReconnectEnabled) service?.autoReconnectIfPossible()
-                }
-                val appSettingsLauncher = rememberLauncherForActivityResult(
-                    ActivityResultContracts.StartActivityForResult()
-                ) {}
+                CompositionLocalProvider(LocalDensity provides appDensity) {
+                    var permissionsGranted by remember { mutableStateOf(hasAllRuntimePermissions()) }
+                    val permissionLauncher = rememberLauncherForActivityResult(
+                        ActivityResultContracts.RequestMultiplePermissions()
+                    ) {
+                        permissionsGranted = hasAllRuntimePermissions()
+                        service?.refreshKnownDevices()
+                    }
+                    val enableBluetoothLauncher = rememberLauncherForActivityResult(
+                        ActivityResultContracts.StartActivityForResult()
+                    ) {
+                        service?.refreshKnownDevices()
+                    }
+                    val pairingSettingsLauncher = rememberLauncherForActivityResult(
+                        ActivityResultContracts.StartActivityForResult()
+                    ) {
+                        service?.refreshKnownDevices()
+                        if (appSettings.autoReconnectEnabled) service?.autoReconnectIfPossible()
+                    }
+                    val appSettingsLauncher = rememberLauncherForActivityResult(
+                        ActivityResultContracts.StartActivityForResult()
+                    ) {}
 
-                Surface(modifier = Modifier.fillMaxSize(), color = MaterialTheme.colorScheme.background) {
-                    val currentService = service
-                    if (currentService == null) {
-                        LoadingScreen()
-                    } else {
-                        NoteCastApp(
-                            service = currentService,
-                            permissionsGranted = permissionsGranted,
-                            settings = appSettings,
-                            onSettingsChange = settingsStore::updateSettings,
-                            onRequestPermissions = {
-                                permissionLauncher.launch(runtimePermissionsToRequest())
-                            },
-                            onRequestBluetoothEnable = {
-                                if (!permissionsGranted) {
+                    Surface(modifier = Modifier.fillMaxSize(), color = MaterialTheme.colorScheme.background) {
+                        val currentService = service
+                        if (currentService == null) {
+                            LoadingScreen()
+                        } else {
+                            NoteCastApp(
+                                service = currentService,
+                                permissionsGranted = permissionsGranted,
+                                settings = appSettings,
+                                onSettingsChange = settingsStore::updateSettings,
+                                onRequestPermissions = {
                                     permissionLauncher.launch(runtimePermissionsToRequest())
-                                } else {
-                                    enableBluetoothLauncher.launch(Intent(BluetoothAdapter.ACTION_REQUEST_ENABLE))
-                                }
-                            },
-                            onOpenBluetoothPairing = {
-                                if (!permissionsGranted) {
-                                    permissionLauncher.launch(runtimePermissionsToRequest())
-                                } else {
+                                },
+                                onRequestBluetoothEnable = {
+                                    if (!permissionsGranted) {
+                                        permissionLauncher.launch(runtimePermissionsToRequest())
+                                    } else {
+                                        enableBluetoothLauncher.launch(Intent(BluetoothAdapter.ACTION_REQUEST_ENABLE))
+                                    }
+                                },
+                                onOpenBluetoothPairing = {
+                                    if (!permissionsGranted) {
+                                        permissionLauncher.launch(runtimePermissionsToRequest())
+                                    } else {
+                                        runCatching {
+                                            pairingSettingsLauncher.launch(Intent(BLUETOOTH_PAIRING_SETTINGS_ACTION))
+                                        }.onFailure {
+                                            pairingSettingsLauncher.launch(Intent(Settings.ACTION_BLUETOOTH_SETTINGS))
+                                        }
+                                    }
+                                },
+                                onOpenBatterySettings = {
                                     runCatching {
-                                        pairingSettingsLauncher.launch(Intent(BLUETOOTH_PAIRING_SETTINGS_ACTION))
+                                        appSettingsLauncher.launch(
+                                            Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS).apply {
+                                                data = Uri.parse("package:$packageName")
+                                            }
+                                        )
                                     }.onFailure {
-                                        pairingSettingsLauncher.launch(Intent(Settings.ACTION_BLUETOOTH_SETTINGS))
+                                        appSettingsLauncher.launch(Intent(Settings.ACTION_SETTINGS))
                                     }
                                 }
-                            },
-                            onOpenBatterySettings = {
-                                runCatching {
-                                    appSettingsLauncher.launch(
-                                        Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS).apply {
-                                            data = Uri.parse("package:$packageName")
-                                        }
-                                    )
-                                }.onFailure {
-                                    appSettingsLauncher.launch(Intent(Settings.ACTION_SETTINGS))
-                                }
-                            }
-                        )
+                            )
+                        }
                     }
                 }
             }
@@ -576,7 +588,9 @@ private fun NoteCastApp(
                         else -> selectedId?.let { service.playFile(it) }
                     }
                 },
-                service = service
+                service = service,
+                settings = settings,
+                onSettingsChange = onSettingsChange
             )
         }
     ) { innerPadding ->
@@ -805,9 +819,11 @@ private fun LibraryPane(
     var addFilesPlaylistId by rememberSaveable { mutableStateOf<String?>(null) }
     var renameFileId by rememberSaveable { mutableStateOf<String?>(null) }
     var renamePlaylistId by rememberSaveable { mutableStateOf<String?>(null) }
+    var colorPlaylistId by rememberSaveable { mutableStateOf<String?>(null) }
     var deleteFileId by rememberSaveable { mutableStateOf<String?>(null) }
     var deletePlaylistId by rememberSaveable { mutableStateOf<String?>(null) }
     var confirmDeleteSelected by rememberSaveable { mutableStateOf(false) }
+    var playlistQuery by rememberSaveable { mutableStateOf("") }
     var selectedFileIds by rememberSaveable { mutableStateOf(emptyList<String>()) }
     val expandedPlaylists = remember { mutableStateMapOf<String, Boolean>() }
     val playlistBounds = remember { mutableStateMapOf<String, Rect>() }
@@ -821,10 +837,24 @@ private fun LibraryPane(
     val selectedFileIdSet = remember(selectedFileIds) { selectedFileIds.toSet() }
     val selectedFileItems = remember(state.files, selectedFileIdSet) { state.files.filter { it.id in selectedFileIdSet } }
     val selectionActive = selectedFileItems.isNotEmpty()
+    val showPlaylistSearch = state.playlists.size > 10
+    val visiblePlaylists = remember(state.playlists, playlistQuery, filesById, showPlaylistSearch) {
+        if (!showPlaylistSearch || playlistQuery.isBlank()) {
+            state.playlists
+        } else {
+            state.playlists.filter { playlist -> playlist.matchesPlaylistSearch(playlistQuery, filesById) }
+        }
+    }
 
     LaunchedEffect(state.files) {
         val validIds = state.files.map { it.id }.toSet()
         selectedFileIds = selectedFileIds.filter { it in validIds }
+    }
+
+    LaunchedEffect(showPlaylistSearch, playlistQuery, visiblePlaylists) {
+        if (!showPlaylistSearch) playlistQuery = ""
+        val visibleIds = visiblePlaylists.map { it.id }.toSet()
+        playlistBounds.keys.filterNot { it in visibleIds }.forEach { playlistBounds.remove(it) }
     }
 
     LaunchedEffect(draggingFiles.isNotEmpty()) {
@@ -913,7 +943,27 @@ private fun LibraryPane(
 
                 if (state.playlists.isNotEmpty()) {
                     item { SectionLabel("Playlists") }
-                    items(state.playlists, key = { it.id }) { playlist ->
+                    if (showPlaylistSearch) {
+                        item {
+                            PlaylistSearchField(
+                                query = playlistQuery,
+                                onQueryChange = { playlistQuery = it },
+                                playlistCount = state.playlists.size,
+                                visibleCount = visiblePlaylists.size
+                            )
+                        }
+                    }
+                    if (visiblePlaylists.isEmpty()) {
+                        item {
+                            Text(
+                                "No matching playlists.",
+                                style = MaterialTheme.typography.bodyMedium,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                modifier = Modifier.padding(horizontal = 4.dp, vertical = 8.dp)
+                            )
+                        }
+                    }
+                    items(visiblePlaylists, key = { it.id }) { playlist ->
                         DisposableEffect(playlist.id) {
                             onDispose { playlistBounds.remove(playlist.id) }
                         }
@@ -941,6 +991,7 @@ private fun LibraryPane(
                                 service.playPlaylist(playlist.id, shuffled = true)
                             },
                             onRename = { renamePlaylistId = playlist.id },
+                            onColor = { colorPlaylistId = playlist.id },
                             onClone = { service.duplicatePlaylist(playlist.id) },
                             onDelete = { deletePlaylistId = playlist.id },
                             onRemove = { index -> service.removeFromPlaylist(playlist.id, index) },
@@ -1108,6 +1159,19 @@ private fun LibraryPane(
                 }
             )
         } ?: run { renamePlaylistId = null }
+    }
+
+    colorPlaylistId?.let { playlistId ->
+        state.playlists.firstOrNull { it.id == playlistId }?.let { playlist ->
+            PlaylistColorDialog(
+                playlist = playlist,
+                onDismiss = { colorPlaylistId = null },
+                onSelectColor = { colorHex ->
+                    service.setPlaylistColor(playlist.id, colorHex)
+                    colorPlaylistId = null
+                }
+            )
+        } ?: run { colorPlaylistId = null }
     }
 
     deleteFileId?.let { itemId ->
@@ -1459,6 +1523,37 @@ private fun SectionLabel(text: String) {
         fontWeight = FontWeight.Bold,
         color = MaterialTheme.colorScheme.onSurfaceVariant,
         modifier = Modifier.padding(top = 6.dp, start = 4.dp)
+    )
+}
+
+@Composable
+private fun PlaylistSearchField(
+    query: String,
+    onQueryChange: (String) -> Unit,
+    playlistCount: Int,
+    visibleCount: Int
+) {
+    OutlinedTextField(
+        value = query,
+        onValueChange = onQueryChange,
+        modifier = Modifier.fillMaxWidth(),
+        singleLine = true,
+        label = { Text("Search playlists") },
+        leadingIcon = { Icon(Icons.Default.Search, contentDescription = null) },
+        trailingIcon = {
+            if (query.isNotEmpty()) {
+                IconButton(onClick = { onQueryChange("") }) {
+                    Icon(Icons.Default.Close, contentDescription = "Clear playlist search")
+                }
+            } else {
+                Text(
+                    "$visibleCount/$playlistCount",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier.padding(end = 12.dp)
+                )
+            }
+        }
     )
 }
 
@@ -1865,15 +1960,18 @@ private fun PlaylistFolder(
     onPlaySequential: () -> Unit,
     onPlayShuffle: () -> Unit,
     onRename: () -> Unit,
+    onColor: () -> Unit,
     onClone: () -> Unit,
     onDelete: () -> Unit,
     onRemove: (Int) -> Unit,
     onMove: (Int, Int) -> Unit,
     modifier: Modifier = Modifier
 ) {
+    val playlistColor = playlist.colorHex.toPlaylistColor()
     val color = when {
         highlighted -> MaterialTheme.colorScheme.tertiaryContainer
         selected -> MaterialTheme.colorScheme.secondaryContainer
+        playlistColor != null -> playlistColor.copy(alpha = 0.20f)
         else -> MaterialTheme.colorScheme.surfaceVariant
     }
     var showMenu by remember { mutableStateOf(false) }
@@ -1888,6 +1986,16 @@ private fun PlaylistFolder(
             Row(verticalAlignment = Alignment.CenterVertically) {
                 IconButton(onClick = onToggle, modifier = Modifier.size(34.dp)) {
                     Icon(if (expanded) Icons.Default.ExpandMore else Icons.AutoMirrored.Filled.KeyboardArrowRight, contentDescription = "Toggle playlist")
+                }
+                playlistColor?.let { color ->
+                    Surface(
+                        modifier = Modifier
+                            .width(7.dp)
+                            .height(38.dp),
+                        shape = RoundedCornerShape(3.dp),
+                        color = color
+                    ) {}
+                    Spacer(Modifier.width(8.dp))
                 }
                 Icon(if (expanded) Icons.Default.FolderOpen else Icons.Default.Folder, contentDescription = null)
                 Spacer(Modifier.width(8.dp))
@@ -1938,6 +2046,14 @@ private fun PlaylistFolder(
                             onClick = {
                                 showMenu = false
                                 onRename()
+                            }
+                        )
+                        DropdownMenuItem(
+                            text = { Text("Color") },
+                            leadingIcon = { Icon(Icons.Default.FiberManualRecord, contentDescription = null) },
+                            onClick = {
+                                showMenu = false
+                                onColor()
                             }
                         )
                         DropdownMenuItem(
@@ -2165,7 +2281,9 @@ private fun TransportBar(
     selectedKind: String,
     selectedId: String?,
     onPlaySelection: () -> Unit,
-    service: NoteCastService
+    service: NoteCastService,
+    settings: AppSettings,
+    onSettingsChange: (AppSettings) -> Unit
 ) {
     val playback = state.playback
     val selectedTitle = when (selectedKind) {
@@ -2192,6 +2310,8 @@ private fun TransportBar(
                         service = service,
                         onPlaySelection = onPlaySelection,
                         hasSelection = selectedId != null,
+                        settings = settings,
+                        onSettingsChange = onSettingsChange,
                         modifier = Modifier.fillMaxWidth()
                     )
                 }
@@ -2211,6 +2331,8 @@ private fun TransportBar(
                         service = service,
                         onPlaySelection = onPlaySelection,
                         hasSelection = selectedId != null,
+                        settings = settings,
+                        onSettingsChange = onSettingsChange,
                         stackVolume = true,
                         modifier = Modifier.weight(1f)
                     )
@@ -2295,6 +2417,8 @@ private fun TransportControls(
     service: NoteCastService,
     onPlaySelection: () -> Unit,
     hasSelection: Boolean,
+    settings: AppSettings,
+    onSettingsChange: (AppSettings) -> Unit,
     stackVolume: Boolean = false,
     modifier: Modifier = Modifier
 ) {
@@ -2313,6 +2437,8 @@ private fun TransportControls(
             VolumeControl(
                 state = state,
                 service = service,
+                settings = settings,
+                onSettingsChange = onSettingsChange,
                 modifier = Modifier.fillMaxWidth()
             )
         }
@@ -2327,6 +2453,8 @@ private fun TransportControls(
             VolumeControl(
                 state = state,
                 service = service,
+                settings = settings,
+                onSettingsChange = onSettingsChange,
                 modifier = Modifier.weight(1f)
             )
         }
@@ -2376,8 +2504,11 @@ private fun TransportButtons(
 private fun VolumeControl(
     state: AppUiState,
     service: NoteCastService,
+    settings: AppSettings,
+    onSettingsChange: (AppSettings) -> Unit,
     modifier: Modifier = Modifier
 ) {
+    var showMixer by rememberSaveable { mutableStateOf(false) }
     Row(modifier, verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
         Icon(Icons.AutoMirrored.Filled.VolumeUp, contentDescription = null, modifier = Modifier.size(20.dp))
         Slider(
@@ -2387,7 +2518,234 @@ private fun VolumeControl(
             enabled = state.connection.connected,
             modifier = Modifier.weight(1f)
         )
+        IconButton(onClick = { showMixer = true }, modifier = Modifier.size(40.dp)) {
+            Icon(Icons.Default.GraphicEq, contentDescription = "Open volume mixer")
+        }
     }
+    if (showMixer) {
+        VolumeMixerDialog(
+            state = state,
+            service = service,
+            settings = settings,
+            onSettingsChange = onSettingsChange,
+            onDismiss = { showMixer = false }
+        )
+    }
+}
+
+private data class MixerChannelGroup(
+    val label: String,
+    val channels: List<Int>,
+    val detail: String
+)
+
+@Composable
+private fun VolumeMixerDialog(
+    state: AppUiState,
+    service: NoteCastService,
+    settings: AppSettings,
+    onSettingsChange: (AppSettings) -> Unit,
+    onDismiss: () -> Unit
+) {
+    val groups = remember(state.playback.isActive, state.playbackChannels) {
+        mixerChannelGroups(if (state.playback.isActive) state.playbackChannels else emptyList())
+    }
+    Dialog(
+        onDismissRequest = onDismiss,
+        properties = DialogProperties(usePlatformDefaultWidth = false)
+    ) {
+        Surface(
+            modifier = Modifier
+                .fillMaxSize()
+                .padding(12.dp),
+            shape = RoundedCornerShape(8.dp),
+            color = MaterialTheme.colorScheme.surface,
+            tonalElevation = 6.dp
+        ) {
+            Column(
+                modifier = Modifier.padding(16.dp),
+                verticalArrangement = Arrangement.spacedBy(12.dp)
+            ) {
+                Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                    Icon(Icons.Default.GraphicEq, contentDescription = null)
+                    Column(Modifier.weight(1f)) {
+                        Text("Volume mixer", style = MaterialTheme.typography.headlineSmall, maxLines = 1)
+                        Text(
+                            if (settings.appControlsVolume) "Velocity" else "Control changes",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            maxLines = 1
+                        )
+                    }
+                    IconButton(onClick = onDismiss, modifier = Modifier.size(40.dp)) {
+                        Icon(Icons.Default.Close, contentDescription = "Close")
+                    }
+                }
+                LazyColumn(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .weight(1f),
+                    verticalArrangement = Arrangement.spacedBy(10.dp)
+                ) {
+                    item {
+                        MixerMainVolumeRow(
+                            volumePercent = state.volumePercent,
+                            enabled = state.connection.connected,
+                            onVolumeChange = service::setVolume
+                        )
+                    }
+                    if (groups.isEmpty()) {
+                        item {
+                            Text(
+                                "No mixable channels in this MIDI file.",
+                                style = MaterialTheme.typography.bodyMedium,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                modifier = Modifier.padding(vertical = 10.dp)
+                            )
+                        }
+                    } else {
+                        items(groups, key = { it.label }) { group ->
+                            MixerChannelRow(
+                                group = group,
+                                settings = settings,
+                                onSettingsChange = onSettingsChange
+                            )
+                        }
+                    }
+                }
+                Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End) {
+                    Button(onClick = onDismiss) {
+                        Text("Done")
+                    }
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun MixerMainVolumeRow(
+    volumePercent: Int,
+    enabled: Boolean,
+    onVolumeChange: (Int) -> Unit
+) {
+    Surface(
+        modifier = Modifier.fillMaxWidth(),
+        shape = RoundedCornerShape(6.dp),
+        color = MaterialTheme.colorScheme.primaryContainer
+    ) {
+        Column(Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Text(
+                    "Main volume",
+                    modifier = Modifier.weight(1f),
+                    style = MaterialTheme.typography.titleMedium,
+                    fontWeight = FontWeight.Bold,
+                    color = MaterialTheme.colorScheme.onPrimaryContainer
+                )
+                Text(
+                    "${volumePercent.coerceIn(0, 100)}%",
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = MaterialTheme.colorScheme.onPrimaryContainer
+                )
+            }
+            Slider(
+                value = volumePercent.coerceIn(0, 100).toFloat(),
+                onValueChange = { onVolumeChange(it.roundToInt().coerceIn(0, 100)) },
+                valueRange = 0f..100f,
+                enabled = enabled,
+                modifier = Modifier.fillMaxWidth()
+            )
+        }
+    }
+}
+
+@Composable
+private fun MixerChannelRow(
+    group: MixerChannelGroup,
+    settings: AppSettings,
+    onSettingsChange: (AppSettings) -> Unit
+) {
+    val controls = group.channels.map { settings.channelControls.controlForChannel(it) }
+    val volumePercent = controls.map { it.volumePercent.coerceIn(0, 100) }.average().roundToInt().coerceIn(0, 100)
+    val muted = controls.all { it.muted }
+    Surface(
+        modifier = Modifier.fillMaxWidth(),
+        shape = RoundedCornerShape(6.dp),
+        color = MaterialTheme.colorScheme.surfaceVariant
+    ) {
+        Column(Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+            Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                Column(Modifier.weight(1f)) {
+                    Text(group.label, style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
+                    Text(group.detail, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                }
+                Text("${volumePercent}%", style = MaterialTheme.typography.bodyMedium)
+                Checkbox(
+                    checked = muted,
+                    onCheckedChange = { checked ->
+                        onSettingsChange(
+                            settings.copy(
+                                channelControls = settings.channelControls.updateChannels(group.channels) {
+                                    it.copy(muted = checked)
+                                }
+                            )
+                        )
+                    }
+                )
+                Text("Mute", style = MaterialTheme.typography.bodySmall)
+            }
+            Slider(
+                value = volumePercent.toFloat(),
+                onValueChange = { value ->
+                    val cleanValue = value.roundToInt().coerceIn(0, 100)
+                    onSettingsChange(
+                        settings.copy(
+                            channelControls = settings.channelControls.updateChannels(group.channels) {
+                                it.copy(volumePercent = cleanValue)
+                            }
+                        )
+                    )
+                },
+                valueRange = 0f..100f,
+                modifier = Modifier.fillMaxWidth()
+            )
+        }
+    }
+}
+
+private fun mixerChannelGroups(channels: List<Int>): List<MixerChannelGroup> {
+    val present = channels.filter { it in 1..16 }.toSet()
+    return buildList {
+        if (present.isEmpty() || present.any { it == 1 || it == 2 }) {
+            add(MixerChannelGroup("Piano", listOf(1, 2), "Channels 1 and 2"))
+        }
+        present
+            .filterNot { it in 1..3 }
+            .sorted()
+            .forEach { channel ->
+                add(MixerChannelGroup("Channel $channel", listOf(channel), "Channel $channel"))
+            }
+    }
+}
+
+private fun List<MidiChannelControl>.controlForChannel(channel: Int): MidiChannelControl =
+    firstOrNull { it.channel == channel }?.let { control ->
+        control.copy(
+            channel = channel,
+            volumePercent = control.volumePercent.coerceIn(0, 100)
+        )
+    } ?: MidiChannelControl(channel = channel)
+
+private fun List<MidiChannelControl>.updateChannels(
+    channels: List<Int>,
+    transform: (MidiChannelControl) -> MidiChannelControl
+): List<MidiChannelControl> {
+    val byChannel = associateBy { it.channel }.toMutableMap()
+    channels.filter { it in 1..16 }.forEach { channel ->
+        byChannel[channel] = transform(byChannel[channel] ?: MidiChannelControl(channel = channel)).copy(channel = channel)
+    }
+    return (1..16).map { channel -> byChannel[channel] ?: MidiChannelControl(channel = channel) }
 }
 
 @Composable
@@ -3048,10 +3406,7 @@ private fun KuhmannMidiDialog(
     onDismiss: () -> Unit
 ) {
     var query by rememberSaveable { mutableStateOf(state.query) }
-    var channelText by rememberSaveable { mutableStateOf(state.channel?.toString() ?: "") }
     var limitText by rememberSaveable { mutableStateOf(state.limit.toString()) }
-    var includeType0 by rememberSaveable { mutableStateOf(state.format != 1) }
-    var includeType1 by rememberSaveable { mutableStateOf(state.format == null || state.format == 1) }
     var pianoOnly by rememberSaveable { mutableStateOf(state.pianoOnly) }
     val selected = remember { mutableStateMapOf<Int, Boolean>() }
     LaunchedEffect(state.results) {
@@ -3061,7 +3416,6 @@ private fun KuhmannMidiDialog(
         state.lastImportedIds.forEach { selected.remove(it) }
     }
     val selectedResults = state.results.filter { selected[it.id] == true && it.id !in state.lastImportedIds }
-    val selectedFormat = selectedKuhmannFormat(includeType0, includeType1)
     Dialog(
         onDismissRequest = onDismiss,
         properties = DialogProperties(usePlatformDefaultWidth = false)
@@ -3132,38 +3486,20 @@ private fun KuhmannMidiDialog(
                     if (compactControls) {
                         Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
                             KuhmannSearchFilters(
-                                includeType0 = includeType0,
-                                includeType1 = includeType1,
                                 pianoOnly = pianoOnly,
-                                onIncludeType0Change = { checked ->
-                                    if (checked || includeType1) includeType0 = checked
-                                },
-                                onIncludeType1Change = { checked ->
-                                    if (checked || includeType0) includeType1 = checked
-                                },
                                 onPianoOnlyChange = { pianoOnly = it }
                             )
                             Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                                KuhmannSmallNumberField("Channel", channelText, { channelText = it }, Modifier.weight(1f))
                                 KuhmannSmallNumberField("Limit", limitText, { limitText = it }, Modifier.weight(1f))
                             }
                         }
                     } else {
                         Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                             KuhmannSearchFilters(
-                                includeType0 = includeType0,
-                                includeType1 = includeType1,
                                 pianoOnly = pianoOnly,
-                                onIncludeType0Change = { checked ->
-                                    if (checked || includeType1) includeType0 = checked
-                                },
-                                onIncludeType1Change = { checked ->
-                                    if (checked || includeType0) includeType1 = checked
-                                },
                                 onPianoOnlyChange = { pianoOnly = it },
                                 modifier = Modifier.weight(1f)
                             )
-                            KuhmannSmallNumberField("Channel", channelText, { channelText = it }, Modifier.width(104.dp))
                             KuhmannSmallNumberField("Limit", limitText, { limitText = it }, Modifier.width(92.dp))
                         }
                     }
@@ -3201,7 +3537,7 @@ private fun KuhmannMidiDialog(
                             if (state.searching || state.downloading) {
                                 LoadingIndicator(contentDescription = state.message)
                             } else {
-                                Text("Search by composer, title, style, or channel.", color = MaterialTheme.colorScheme.onSurfaceVariant)
+                                Text("Search by composer, title, or style.", color = MaterialTheme.colorScheme.onSurfaceVariant)
                             }
                         }
                     } else {
@@ -3235,9 +3571,9 @@ private fun KuhmannMidiDialog(
                             onClick = {
                                 service.searchKuhmannMidi(
                                     query = query,
-                                    format = selectedFormat,
+                                    format = null,
                                     pianoOnly = pianoOnly,
-                                    channel = channelText.toIntOrNull(),
+                                    channel = null,
                                     limit = limitText.toIntOrNull() ?: 50
                                 )
                             },
@@ -3261,11 +3597,7 @@ private fun KuhmannMidiDialog(
 
 @Composable
 private fun KuhmannSearchFilters(
-    includeType0: Boolean,
-    includeType1: Boolean,
     pianoOnly: Boolean,
-    onIncludeType0Change: (Boolean) -> Unit,
-    onIncludeType1Change: (Boolean) -> Unit,
     onPianoOnlyChange: (Boolean) -> Unit,
     modifier: Modifier = Modifier
 ) {
@@ -3279,15 +3611,14 @@ private fun KuhmannSearchFilters(
             verticalArrangement = Arrangement.spacedBy(6.dp)
         ) {
             Text(
-                "Search filters",
+                "Search mode",
                 style = MaterialTheme.typography.labelLarge,
                 fontWeight = FontWeight.SemiBold,
                 color = MaterialTheme.colorScheme.onSurfaceVariant
             )
             Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                KuhmannFilterButton("MIDI Type 0", includeType0, { onIncludeType0Change(!includeType0) }, Modifier.weight(1f))
-                KuhmannFilterButton("MIDI Type 1", includeType1, { onIncludeType1Change(!includeType1) }, Modifier.weight(1f))
-                KuhmannFilterButton("Piano only", pianoOnly, { onPianoOnlyChange(!pianoOnly) }, Modifier.weight(1f))
+                KuhmannFilterButton("Piano Only", pianoOnly, { onPianoOnlyChange(true) }, Modifier.weight(1f))
+                KuhmannFilterButton("Ensemble", !pianoOnly, { onPianoOnlyChange(false) }, Modifier.weight(1f))
             }
         }
     }
@@ -3324,13 +3655,6 @@ private fun KuhmannFilterButton(
         Text(label, maxLines = 1, overflow = TextOverflow.Ellipsis, style = MaterialTheme.typography.labelSmall)
     }
 }
-
-private fun selectedKuhmannFormat(includeType0: Boolean, includeType1: Boolean): Int? =
-    when {
-        includeType0 && !includeType1 -> 0
-        includeType1 && !includeType0 -> 1
-        else -> null
-    }
 
 @Composable
 private fun KuhmannSmallNumberField(
@@ -3407,7 +3731,6 @@ private fun KuhmannResultRow(
             )
             Text(
                 listOfNotNull(
-                    result.midiType.ifBlank { result.midiFormat?.let { "Type $it" } },
                     result.fileSize.takeIf { it > 0L }?.formatFileSize(),
                     result.channels.takeIf { it.isNotEmpty() }?.joinToString(prefix = "ch ")
                 ).joinToString(" - "),
@@ -3629,11 +3952,125 @@ private fun MidiLibraryItem.matchesPlaylistFileSearch(query: String): Boolean {
         .all { it in searchable }
 }
 
+private fun MidiPlaylist.matchesPlaylistSearch(query: String, filesById: Map<String, MidiLibraryItem>): Boolean {
+    val trackTitles = itemIds.mapNotNull { filesById[it]?.title }.joinToString(" ")
+    val searchable = "$name $trackTitles".lowercase()
+    return query
+        .lowercase()
+        .split(Regex("\\s+"))
+        .filter { it.isNotBlank() }
+        .all { it in searchable }
+}
+
 private fun Long.formatFileSize(): String {
     if (this < 1024L) return "$this B"
     if (this < 1024L * 1024L) return "${this / 1024L} KB"
     return String.format(java.util.Locale.US, "%.1f MB", this / (1024.0 * 1024.0))
 }
+
+private data class PlaylistColorOption(val label: String, val hex: String)
+
+private val playlistColorOptions = listOf(
+    PlaylistColorOption("Red", "#D64545"),
+    PlaylistColorOption("Amber", "#C48A21"),
+    PlaylistColorOption("Green", "#2E7D58"),
+    PlaylistColorOption("Teal", "#148C8C"),
+    PlaylistColorOption("Blue", "#3B6EA8"),
+    PlaylistColorOption("Violet", "#7655A6"),
+    PlaylistColorOption("Pink", "#B84F7D"),
+    PlaylistColorOption("Gray", "#68707A")
+)
+
+@Composable
+private fun PlaylistColorDialog(
+    playlist: MidiPlaylist,
+    onDismiss: () -> Unit,
+    onSelectColor: (String?) -> Unit
+) {
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        icon = { Icon(Icons.Default.FiberManualRecord, contentDescription = null) },
+        title = { Text("Playlist color") },
+        text = {
+            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                Text(
+                    playlist.name,
+                    style = MaterialTheme.typography.bodyMedium,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis
+                )
+                LazyVerticalGrid(
+                    columns = GridCells.Fixed(2),
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .heightIn(max = 260.dp),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    verticalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    item {
+                        PlaylistColorChoice(
+                            label = "No color",
+                            color = null,
+                            selected = playlist.colorHex.isNullOrBlank(),
+                            onClick = { onSelectColor(null) }
+                        )
+                    }
+                    gridItems(playlistColorOptions, key = { it.hex }) { option ->
+                        PlaylistColorChoice(
+                            label = option.label,
+                            color = option.hex.toPlaylistColor(),
+                            selected = playlist.colorHex.equals(option.hex, ignoreCase = true),
+                            onClick = { onSelectColor(option.hex) }
+                        )
+                    }
+                }
+            }
+        },
+        confirmButton = {
+            TextButton(onClick = onDismiss) { Text("Cancel") }
+        }
+    )
+}
+
+@Composable
+private fun PlaylistColorChoice(
+    label: String,
+    color: Color?,
+    selected: Boolean,
+    onClick: () -> Unit
+) {
+    Surface(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clickable(onClick = onClick),
+        shape = RoundedCornerShape(6.dp),
+        color = if (selected) MaterialTheme.colorScheme.secondaryContainer else MaterialTheme.colorScheme.surfaceVariant
+    ) {
+        Row(
+            modifier = Modifier.padding(horizontal = 10.dp, vertical = 9.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(8.dp)
+        ) {
+            Surface(
+                modifier = Modifier.size(20.dp),
+                shape = CircleShape,
+                color = color ?: MaterialTheme.colorScheme.outline
+            ) {
+                if (color == null) {
+                    Box(contentAlignment = Alignment.Center) {
+                        Icon(Icons.Default.Close, contentDescription = null, modifier = Modifier.size(14.dp))
+                    }
+                }
+            }
+            Text(label, maxLines = 1, overflow = TextOverflow.Ellipsis, style = MaterialTheme.typography.bodyMedium)
+        }
+    }
+}
+
+private fun String?.toPlaylistColor(): Color? =
+    this?.takeIf { it.matches(Regex("^#[0-9A-Fa-f]{6}$")) }?.let { hex ->
+        runCatching { Color(android.graphics.Color.parseColor(hex)) }.getOrNull()
+    }
 
 @Composable
 private fun RenameDialog(

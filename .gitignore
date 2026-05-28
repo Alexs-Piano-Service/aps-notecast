@@ -1,9 +1,25 @@
+# Gradle / Android build output
 .gradle/
-.idea/
 build/
-local.properties
-.DS_Store
-captures/
+app/build/
 .externalNativeBuild/
 .cxx/
-app/build/
+captures/
+
+# Local machine configuration
+local.properties
+.DS_Store
+
+# IDE local state
+.idea/
+*.iml
+.vscode/*
+!.vscode/tasks.json
+!.vscode/extensions.json
+
+# Release signing secrets and local signing config
+*.jks
+*.keystore
+key.properties
+.aps-notecast-signing.env
+*-signing.env

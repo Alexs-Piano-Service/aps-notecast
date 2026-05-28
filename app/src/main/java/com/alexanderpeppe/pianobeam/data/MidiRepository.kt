@@ -65,7 +65,8 @@ class MidiRepository(private val context: Context) {
             id = DEMO_PLAYLIST_ID,
             name = "Sample Playlist: Two Chopin Pieces",
             itemIds = demoIds,
-            createdAtMs = 0L
+            createdAtMs = 0L,
+            colorHex = snapshot.playlists.firstOrNull { it.id == DEMO_PLAYLIST_ID }?.colorHex
         )
         val playlists = snapshot.playlists.filterNot { it.id == DEMO_PLAYLIST_ID } + samplePlaylist
         save(snapshot.copy(files = files, playlists = playlists))
@@ -252,6 +253,15 @@ class MidiRepository(private val context: Context) {
     }
 
     @Synchronized
+    fun setPlaylistColor(playlistId: String, colorHex: String?) {
+        val cleanColor = colorHex?.trim()?.takeIf { it.matches(Regex("^#[0-9A-Fa-f]{6}$")) }
+        val snapshot = load()
+        save(snapshot.copy(playlists = snapshot.playlists.map { playlist ->
+            if (playlist.id == playlistId) playlist.copy(colorHex = cleanColor) else playlist
+        }))
+    }
+
+    @Synchronized
     fun duplicatePlaylist(playlistId: String): MidiPlaylist? {
         val snapshot = load()
         val source = snapshot.playlists.firstOrNull { it.id == playlistId } ?: return null
@@ -343,6 +353,7 @@ class MidiRepository(private val context: Context) {
                     put("id", playlist.id)
                     put("name", playlist.name)
                     put("createdAtMs", playlist.createdAtMs)
+                    playlist.colorHex?.takeIf { it.isNotBlank() }?.let { put("colorHex", it) }
                     put("itemIds", JSONArray().also { ids ->
                         playlist.itemIds.forEach { ids.put(it) }
                     })
@@ -404,6 +415,7 @@ class MidiRepository(private val context: Context) {
                     put("id", playlist.id)
                     put("name", playlist.name)
                     put("createdAtMs", playlist.createdAtMs)
+                    playlist.colorHex?.takeIf { it.isNotBlank() }?.let { put("colorHex", it) }
                     put("itemIds", JSONArray().also { ids -> playlist.itemIds.forEach { ids.put(it) } })
                 })
             }
@@ -440,7 +452,8 @@ class MidiRepository(private val context: Context) {
                     id = obj.optString("id"),
                     name = obj.optString("name", "Playlist"),
                     itemIds = ids,
-                    createdAtMs = obj.optLong("createdAtMs", 0L)
+                    createdAtMs = obj.optLong("createdAtMs", 0L),
+                    colorHex = obj.optString("colorHex").takeIf { it.matches(Regex("^#[0-9A-Fa-f]{6}$")) }
                 )
             )
         }
