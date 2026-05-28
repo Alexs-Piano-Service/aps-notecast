@@ -116,6 +116,7 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateMapOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
@@ -1821,6 +1822,7 @@ private fun DraggedMidiFilePreview(items: List<MidiLibraryItem>, modifier: Modif
     }
 }
 
+@Composable
 private fun Modifier.dragFile(
     item: MidiLibraryItem,
     coordinates: LayoutCoordinates?,
@@ -1828,15 +1830,24 @@ private fun Modifier.dragFile(
     onDrag: (Offset) -> Unit,
     onDragEnd: () -> Unit,
     onDragCancel: () -> Unit
-): Modifier = pointerInput(item.id, coordinates) {
-    detectDragGesturesAfterLongPress(
-        onDragStart = { localOffset ->
-            onDragStart(item, coordinates?.localToRoot(localOffset) ?: Offset.Zero)
-        },
-        onDrag = { _, dragAmount -> onDrag(dragAmount) },
-        onDragEnd = onDragEnd,
-        onDragCancel = onDragCancel
-    )
+): Modifier {
+    val currentItem by rememberUpdatedState(item)
+    val currentCoordinates by rememberUpdatedState(coordinates)
+    val currentOnDragStart by rememberUpdatedState(onDragStart)
+    val currentOnDrag by rememberUpdatedState(onDrag)
+    val currentOnDragEnd by rememberUpdatedState(onDragEnd)
+    val currentOnDragCancel by rememberUpdatedState(onDragCancel)
+
+    return pointerInput(item.id) {
+        detectDragGesturesAfterLongPress(
+            onDragStart = { localOffset ->
+                currentOnDragStart(currentItem, currentCoordinates?.localToRoot(localOffset) ?: Offset.Zero)
+            },
+            onDrag = { _, dragAmount -> currentOnDrag(dragAmount) },
+            onDragEnd = { currentOnDragEnd() },
+            onDragCancel = { currentOnDragCancel() }
+        )
+    }
 }
 
 @Composable
