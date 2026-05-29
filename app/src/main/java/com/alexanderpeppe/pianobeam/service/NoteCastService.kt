@@ -62,6 +62,7 @@ import com.alexanderpeppe.pianobeam.data.RepeatMode
 import com.alexanderpeppe.pianobeam.data.formatClockTime
 import com.alexanderpeppe.pianobeam.midi.MidiFileParser
 import com.alexanderpeppe.pianobeam.midi.MidiFileWriter
+import com.alexanderpeppe.pianobeam.net.ApsNetworkStatus
 import com.alexanderpeppe.pianobeam.reporting.AppEventLog
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
@@ -387,6 +388,24 @@ class NoteCastService : Service() {
             }
             return
         }
+        if (!ApsNetworkStatus.canReachInternet(this)) {
+            val message = ApsNetworkStatus.userMessage(this)
+            _state.update {
+                it.copy(
+                    kuhmann = it.kuhmann.copy(
+                        searching = false,
+                        query = cleanQuery,
+                        format = format,
+                        pianoOnly = pianoOnly,
+                        channel = cleanChannel,
+                        limit = cleanLimit,
+                        message = message
+                    ),
+                    lastMessage = message
+                )
+            }
+            return
+        }
         kuhmannSearchJob?.cancel()
         _state.update {
             it.copy(
@@ -426,7 +445,7 @@ class NoteCastService : Service() {
             }.onFailure { t ->
                 if (t is CancellationException) throw t
                 withContext(Dispatchers.Main) {
-                    val message = "Kuhmann search failed: ${t.message ?: "unknown error"}"
+                    val message = ApsNetworkStatus.userMessage(this@NoteCastService, t)
                     _state.update {
                         it.copy(
                             kuhmann = it.kuhmann.copy(searching = false, message = message),
@@ -441,6 +460,16 @@ class NoteCastService : Service() {
     fun downloadKuhmannMidi(results: List<KuhmannMidiResult>) {
         val uniqueResults = results.distinctBy { it.id }.filter { it.url.isNotBlank() }
         if (uniqueResults.isEmpty()) return
+        if (!ApsNetworkStatus.canReachInternet(this)) {
+            val message = ApsNetworkStatus.userMessage(this)
+            _state.update {
+                it.copy(
+                    kuhmann = it.kuhmann.copy(downloading = false, message = message),
+                    lastMessage = message
+                )
+            }
+            return
+        }
         kuhmannDownloadJob?.cancel()
         _state.update {
             it.copy(
@@ -453,6 +482,7 @@ class NoteCastService : Service() {
         kuhmannDownloadJob = serviceScope.launch(Dispatchers.IO) {
             var imported = 0
             var failed = 0
+            var networkFailure = false
             val importedIds = mutableListOf<Int>()
             uniqueResults.forEach { result ->
                 ensureActive()
@@ -468,6 +498,7 @@ class NoteCastService : Service() {
                     importedIds += result.id
                 }.onFailure { t ->
                     failed++
+                    if (ApsNetworkStatus.isLikelyNetworkFailure(t)) networkFailure = true
                     logEvent("Kuhmann MIDI download failed id=${result.id} title=${result.title}: ${t.message ?: t::class.java.simpleName}")
                 }
             }
@@ -475,6 +506,7 @@ class NoteCastService : Service() {
                 val message = when {
                     imported > 0 && failed == 0 -> "Downloaded $imported Kuhmann MIDI file${if (imported == 1) "" else "s"}."
                     imported > 0 -> "Downloaded $imported Kuhmann MIDI file${if (imported == 1) "" else "s"}; $failed failed."
+                    networkFailure -> ApsNetworkStatus.userMessage(this@NoteCastService)
                     else -> "Could not download the selected Kuhmann MIDI file${if (failed == 1) "" else "s"}."
                 }
                 reloadLibrary(message)

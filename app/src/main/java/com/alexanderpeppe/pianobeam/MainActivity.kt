@@ -160,6 +160,7 @@ import com.alexanderpeppe.pianobeam.data.PlaybackMode
 import com.alexanderpeppe.pianobeam.data.PlaybackUiState
 import com.alexanderpeppe.pianobeam.data.formatClockTime
 import com.alexanderpeppe.pianobeam.data.formatDuration
+import com.alexanderpeppe.pianobeam.net.ApsNetworkStatus
 import com.alexanderpeppe.pianobeam.reporting.BugReportClient
 import com.alexanderpeppe.pianobeam.reporting.BugReportInput
 import com.alexanderpeppe.pianobeam.reporting.CrashReportStore
@@ -302,14 +303,23 @@ class MainActivity : ComponentActivity() {
     }
 
     private fun runtimePermissionsToRequest(): Array<String> {
-        val permissions = bluetoothRuntimePermissions().toMutableList()
+        val permissions = startupPermissionsToVerify().toMutableList()
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
             permissions += Manifest.permission.POST_NOTIFICATIONS
         }
-        return permissions.toTypedArray()
+        return permissions.distinct().toTypedArray()
     }
 
-    private fun hasAllRuntimePermissions(): Boolean = bluetoothRuntimePermissions().all { permission ->
+    private fun startupPermissionsToVerify(): List<String> =
+        bluetoothRuntimePermissions() + networkPermissionsToVerify()
+
+    private fun networkPermissionsToVerify(): List<String> =
+        listOf(
+            Manifest.permission.INTERNET,
+            Manifest.permission.ACCESS_NETWORK_STATE
+        )
+
+    private fun hasAllRuntimePermissions(): Boolean = startupPermissionsToVerify().all { permission ->
         ContextCompat.checkSelfPermission(this, permission) == PackageManager.PERMISSION_GRANTED
     }
 
@@ -699,7 +709,14 @@ private fun NoteCastApp(
             onDismissRequest = { diagnosticsText = null },
             icon = { Icon(Icons.Default.Bluetooth, contentDescription = null) },
             title = { Text("Connection diagnostics") },
-            text = { Text(diagnostics) },
+            text = {
+                Text(
+                    diagnostics,
+                    modifier = Modifier
+                        .heightIn(max = 360.dp)
+                        .verticalScroll(rememberScrollState())
+                )
+            },
             confirmButton = {
                 TextButton(onClick = { diagnosticsText = null }) { Text("Done") }
             }
@@ -1318,7 +1335,12 @@ private fun AppInfoDialog(onDismiss: () -> Unit) {
             }
         },
         text = {
-            Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+            Column(
+                modifier = Modifier
+                    .heightIn(max = 360.dp)
+                    .verticalScroll(rememberScrollState()),
+                verticalArrangement = Arrangement.spacedBy(12.dp)
+            ) {
                 InfoLine("Version", BuildConfig.VERSION_NAME)
                 InfoLine("Built for", "BLE MIDI playback to WIDI and compatible player-piano adapters")
                 InfoLine("Library", "Import MIDI files, use the bundled Chopin demo, create playlists, or record BLE MIDI input")
@@ -1395,7 +1417,12 @@ private fun BugReportDialog(
         icon = { Icon(Icons.Default.Warning, contentDescription = null) },
         title = { Text("Report a Bug") },
         text = {
-            Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+            Column(
+                modifier = Modifier
+                    .heightIn(max = 360.dp)
+                    .verticalScroll(rememberScrollState()),
+                verticalArrangement = Arrangement.spacedBy(10.dp)
+            ) {
                 Text("Tell us what happened and what you expected instead.")
                 Text(
                     "The report includes app and Android details. Logs are optional and may include recent app events and MIDI device names.",
@@ -1490,7 +1517,7 @@ private fun BugReportDialog(
                                     "Bug report sent. Reference: ${result.reportId.take(8)}"
                                 }
                             }.onFailure { throwable ->
-                                feedback = "Could not send bug report: ${throwable.message ?: "unknown error"}"
+                                feedback = ApsNetworkStatus.userMessage(context, throwable)
                             }
                             sending = false
                         }
@@ -2907,10 +2934,20 @@ private fun DeviceConnectorContent(
     val connected = state.connection.connected
 
     if (!permissionsGranted) {
-        Button(onClick = onRequestPermissions, modifier = Modifier.fillMaxWidth()) {
-            Icon(Icons.Default.Bluetooth, contentDescription = null)
-            Spacer(Modifier.width(8.dp))
-            Text("Grant Bluetooth access")
+        Surface(shape = RoundedCornerShape(4.dp), color = MaterialTheme.colorScheme.tertiaryContainer) {
+            Column(Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                Text("App access needed", fontWeight = FontWeight.SemiBold)
+                Text(
+                    "APS NoteCast needs Bluetooth, location, and internet access to find MIDI devices and contact Alex's Piano Service.",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onTertiaryContainer
+                )
+                Button(onClick = onRequestPermissions, modifier = Modifier.fillMaxWidth()) {
+                    Icon(Icons.Default.Bluetooth, contentDescription = null)
+                    Spacer(Modifier.width(8.dp))
+                    Text("Grant app access")
+                }
+            }
         }
         return
     }
