@@ -31,7 +31,6 @@ import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
-import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
@@ -42,9 +41,10 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
-import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.lazy.grid.GridCells
+import androidx.compose.foundation.lazy.grid.GridItemSpan
 import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
+import androidx.compose.foundation.lazy.grid.rememberLazyGridState
 import androidx.compose.foundation.lazy.grid.items as gridItems
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -156,8 +156,10 @@ import com.alexanderpeppe.pianobeam.data.KuhmannSearchUiState
 import com.alexanderpeppe.pianobeam.data.MidiChannelControl
 import com.alexanderpeppe.pianobeam.data.MidiLibraryItem
 import com.alexanderpeppe.pianobeam.data.MidiPlaylist
+import com.alexanderpeppe.pianobeam.data.PlaybackChannelInfo
 import com.alexanderpeppe.pianobeam.data.PlaybackMode
 import com.alexanderpeppe.pianobeam.data.PlaybackUiState
+import com.alexanderpeppe.pianobeam.data.VolumeControlMode
 import com.alexanderpeppe.pianobeam.data.formatClockTime
 import com.alexanderpeppe.pianobeam.data.formatDuration
 import com.alexanderpeppe.pianobeam.net.ApsNetworkStatus
@@ -688,6 +690,15 @@ private fun NoteCastApp(
             onSettingsChange = onSettingsChange,
             onForgetDevice = { service.forgetRememberedDevice() },
             onDiagnostics = { diagnosticsText = service.connectionDiagnostics() },
+            onPlayChromaticScale = { velocity, noteLengthMs ->
+                service.playDiagnosticChromaticScale(velocity, noteLengthMs)
+            },
+            onStopChromaticScale = {
+                service.stopDiagnosticChromaticScale()
+            },
+            onSustainPedalChange = { pressed ->
+                service.setPianoTestSustainPedal(pressed)
+            },
             onBackupLibrary = { backupLauncher.launch("aps-notecast-library-backup.json") },
             onRestoreLibrary = { restoreLauncher.launch(arrayOf("application/json", "text/*", "*/*")) },
             onDismiss = { showSettings = false }
@@ -748,67 +759,21 @@ private fun AdaptiveHome(
             .padding(contentPadding)
     ) {
         val wide = maxWidth >= 780.dp
-        if (wide) {
-            Row(
-                modifier = Modifier
-                    .fillMaxSize()
-                    .padding(18.dp),
-                horizontalArrangement = Arrangement.spacedBy(18.dp)
-            ) {
-                LibraryPane(
-                    state = state,
-                    service = service,
-                    selectedKind = selectedKind,
-                    selectedId = selectedId,
-                    onSelectFile = onSelectFile,
-                    onSelectPlaylist = onSelectPlaylist,
-                    onOpenConnection = onOpenConnection,
-                    onExportMidi = onExportMidi,
-                    onShareMidi = onShareMidi,
-                    settings = settings,
-                    modifier = Modifier
-                        .weight(1.35f)
-                        .fillMaxHeight()
-                )
-                Column(
-                    modifier = Modifier
-                        .weight(0.85f)
-                        .fillMaxHeight(),
-                    verticalArrangement = Arrangement.spacedBy(14.dp)
-                ) {
-                    DevicePanel(
-                        state = state,
-                        service = service,
-                        permissionsGranted = permissionsGranted,
-                        onRequestPermissions = onRequestPermissions,
-                        onRequestBluetoothEnable = onRequestBluetoothEnable,
-                        onOpenBluetoothPairing = onOpenBluetoothPairing,
-                        modifier = Modifier.fillMaxWidth()
-                    )
-                    PlayerPanel(
-                        state = state,
-                        service = service,
-                        modifier = Modifier.fillMaxWidth()
-                    )
-                }
-            }
-        } else {
-            LibraryPane(
-                state = state,
-                service = service,
-                selectedKind = selectedKind,
-                selectedId = selectedId,
-                onSelectFile = onSelectFile,
-                onSelectPlaylist = onSelectPlaylist,
-                onOpenConnection = onOpenConnection,
-                onExportMidi = onExportMidi,
-                onShareMidi = onShareMidi,
-                settings = settings,
-                modifier = Modifier
-                    .fillMaxSize()
-                    .padding(horizontal = 12.dp, vertical = 10.dp)
-            )
-        }
+        LibraryPane(
+            state = state,
+            service = service,
+            selectedKind = selectedKind,
+            selectedId = selectedId,
+            onSelectFile = onSelectFile,
+            onSelectPlaylist = onSelectPlaylist,
+            onOpenConnection = onOpenConnection,
+            onExportMidi = onExportMidi,
+            onShareMidi = onShareMidi,
+            settings = settings,
+            modifier = Modifier
+                .fillMaxSize()
+                .padding(horizontal = if (wide) 18.dp else 12.dp, vertical = if (wide) 14.dp else 10.dp)
+        )
     }
 }
 
@@ -848,7 +813,7 @@ private fun LibraryPane(
     var dragPosition by remember { mutableStateOf<Offset?>(null) }
     var paneOrigin by remember { mutableStateOf(Offset.Zero) }
     var listBounds by remember { mutableStateOf<Rect?>(null) }
-    val listState = rememberLazyListState()
+    val gridState = rememberLazyGridState()
     val density = LocalDensity.current
     val filesById = remember(state.files) { state.files.associateBy { it.id } }
     val selectedFileIdSet = remember(selectedFileIds) { selectedFileIds.toSet() }
@@ -893,7 +858,7 @@ private fun LibraryPane(
                     }
                     else -> 0f
                 }
-                if (scrollDelta != 0f) listState.scrollBy(scrollDelta)
+                if (scrollDelta != 0f) gridState.scrollBy(scrollDelta)
             }
             delay(16L)
         }
@@ -929,15 +894,17 @@ private fun LibraryPane(
                 .fillMaxSize()
                 .onGloballyPositioned { paneOrigin = it.localToRoot(Offset.Zero) }
         ) {
-            LazyColumn(
-                state = listState,
+            LazyVerticalGrid(
+                columns = GridCells.Adaptive(minSize = 320.dp),
+                state = gridState,
                 modifier = Modifier
                     .fillMaxSize()
                     .onGloballyPositioned { listBounds = it.boundsInRoot() },
                 contentPadding = PaddingValues(10.dp),
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
                 verticalArrangement = Arrangement.spacedBy(6.dp)
             ) {
-                item {
+                item(span = { GridItemSpan(maxLineSpan) }) {
                     LibraryHero(
                         fileCount = state.files.size,
                         playlistCount = state.playlists.size,
@@ -950,7 +917,7 @@ private fun LibraryPane(
                 }
 
                 if (state.files.isEmpty() && state.playlists.isEmpty()) {
-                    item {
+                    item(span = { GridItemSpan(maxLineSpan) }) {
                         EmptyLibraryCard(
                             onImport = { importLauncher.launch(arrayOf("audio/midi", "audio/x-midi", "application/octet-stream", "*/*")) },
                             onCreatePlaylist = { showPlaylistDialog = true }
@@ -959,9 +926,9 @@ private fun LibraryPane(
                 }
 
                 if (state.playlists.isNotEmpty()) {
-                    item { SectionLabel("Playlists") }
+                    item(span = { GridItemSpan(maxLineSpan) }) { SectionLabel("Playlists") }
                     if (showPlaylistSearch) {
-                        item {
+                        item(span = { GridItemSpan(maxLineSpan) }) {
                             PlaylistSearchField(
                                 query = playlistQuery,
                                 onQueryChange = { playlistQuery = it },
@@ -971,7 +938,7 @@ private fun LibraryPane(
                         }
                     }
                     if (visiblePlaylists.isEmpty()) {
-                        item {
+                        item(span = { GridItemSpan(maxLineSpan) }) {
                             Text(
                                 "No matching playlists.",
                                 style = MaterialTheme.typography.bodyMedium,
@@ -980,7 +947,7 @@ private fun LibraryPane(
                             )
                         }
                     }
-                    items(visiblePlaylists, key = { it.id }) { playlist ->
+                    gridItems(visiblePlaylists, key = { it.id }) { playlist ->
                         DisposableEffect(playlist.id) {
                             onDispose { playlistBounds.remove(playlist.id) }
                         }
@@ -1021,8 +988,8 @@ private fun LibraryPane(
                 }
 
                 if (state.files.isNotEmpty()) {
-                    item { SectionLabel("MIDI files") }
-                    items(state.files, key = { it.id }) { item ->
+                    item(span = { GridItemSpan(maxLineSpan) }) { SectionLabel("MIDI files") }
+                    gridItems(state.files, key = { it.id }) { item ->
                         MidiFileRow(
                             item = item,
                             selected = selectedKind == "file" && selectedId == item.id,
@@ -1131,6 +1098,7 @@ private fun LibraryPane(
     if (showKuhmannDialog) {
         KuhmannMidiDialog(
             state = state.kuhmann,
+            playback = state.playback,
             service = service,
             onDismiss = { showKuhmannDialog = false }
         )
@@ -2598,7 +2566,10 @@ private fun VolumeMixerDialog(
                     Column(Modifier.weight(1f)) {
                         Text("Volume mixer", style = MaterialTheme.typography.headlineSmall, maxLines = 1)
                         Text(
-                            if (settings.appControlsVolume) "Velocity" else "Control changes",
+                            when (settings.volumeControlMode) {
+                                VolumeControlMode.LegacyVolumeScaling -> "Legacy volume scaling"
+                                VolumeControlMode.StandardMidiVolume -> "Standard MIDI volume (CC7)"
+                            },
                             style = MaterialTheme.typography.bodySmall,
                             color = MaterialTheme.colorScheme.onSurfaceVariant,
                             maxLines = 1
@@ -2704,8 +2675,20 @@ private fun MixerChannelRow(
         Column(Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
             Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                 Column(Modifier.weight(1f)) {
-                    Text(group.label, style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
-                    Text(group.detail, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    Text(
+                        group.label,
+                        style = MaterialTheme.typography.titleMedium,
+                        fontWeight = FontWeight.Bold,
+                        maxLines = 2,
+                        overflow = TextOverflow.Ellipsis
+                    )
+                    Text(
+                        group.detail,
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis
+                    )
                 }
                 Text("${volumePercent}%", style = MaterialTheme.typography.bodyMedium)
                 Checkbox(
@@ -2741,20 +2724,36 @@ private fun MixerChannelRow(
     }
 }
 
-private fun mixerChannelGroups(channels: List<Int>): List<MixerChannelGroup> {
-    val present = channels.filter { it in 1..16 }.toSet()
+private fun mixerChannelGroups(channels: List<PlaybackChannelInfo>): List<MixerChannelGroup> {
+    val present = channels
+        .filter { it.channel in 1..16 }
+        .distinctBy { it.channel }
+        .sortedBy { it.channel }
     return buildList {
-        if (present.isEmpty() || present.any { it == 1 || it == 2 }) {
-            add(MixerChannelGroup("Piano", listOf(1, 2), "Channels 1 and 2"))
-        }
         present
-            .filterNot { it in 1..3 }
-            .sorted()
+            .filter { !it.label.isNullOrBlank() }
+            .groupBy { it.label.orEmpty().trim() }
+            .forEach { (label, channelInfos) ->
+                val groupChannels = channelInfos.map { it.channel }
+                add(MixerChannelGroup(label, groupChannels, groupChannels.channelDetail()))
+            }
+        val unlabeledChannels = present
+            .filter { it.label.isNullOrBlank() }
+            .map { it.channel }
+        val pianoChannels = unlabeledChannels.filter { it == 1 || it == 2 }
+        if (pianoChannels.isNotEmpty()) {
+            add(MixerChannelGroup("Piano", pianoChannels, pianoChannels.channelDetail()))
+        }
+        unlabeledChannels
+            .filterNot { it == 1 || it == 2 }
             .forEach { channel ->
                 add(MixerChannelGroup("Channel $channel", listOf(channel), "Channel $channel"))
             }
     }
 }
+
+private fun List<Int>.channelDetail(): String =
+    if (size == 1) "Channel ${first()}" else "Channels ${joinToString(" and ")}"
 
 private fun List<MidiChannelControl>.controlForChannel(channel: Int): MidiChannelControl =
     firstOrNull { it.channel == channel }?.let { control ->
@@ -3439,12 +3438,14 @@ private fun sameDeviceTarget(left: String?, right: String?): Boolean {
 @Composable
 private fun KuhmannMidiDialog(
     state: KuhmannSearchUiState,
+    playback: PlaybackUiState,
     service: NoteCastService,
     onDismiss: () -> Unit
 ) {
     var query by rememberSaveable { mutableStateOf(state.query) }
     var limitText by rememberSaveable { mutableStateOf(state.limit.toString()) }
     var pianoOnly by rememberSaveable { mutableStateOf(state.pianoOnly) }
+    var showLimitControl by rememberSaveable { mutableStateOf(false) }
     val selected = remember { mutableStateMapOf<Int, Boolean>() }
     LaunchedEffect(state.results) {
         selected.clear()
@@ -3453,6 +3454,18 @@ private fun KuhmannMidiDialog(
         state.lastImportedIds.forEach { selected.remove(it) }
     }
     val selectedResults = state.results.filter { selected[it.id] == true && it.id !in state.lastImportedIds }
+    val limitLabel = limitText.toIntOrNull()?.coerceIn(1, 999)?.toString() ?: "50"
+    val searchAction = {
+        service.searchKuhmannMidi(
+            query = query,
+            format = null,
+            pianoOnly = pianoOnly,
+            channel = null,
+            limit = limitText.toIntOrNull() ?: 50
+        )
+    }
+    val downloadAction = { service.downloadKuhmannMidi(selectedResults) }
+
     Dialog(
         onDismissRequest = onDismiss,
         properties = DialogProperties(usePlatformDefaultWidth = false)
@@ -3524,20 +3537,33 @@ private fun KuhmannMidiDialog(
                         Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
                             KuhmannSearchFilters(
                                 pianoOnly = pianoOnly,
-                                onPianoOnlyChange = { pianoOnly = it }
+                                onPianoOnlyChange = { pianoOnly = it },
+                                modifier = Modifier.fillMaxWidth()
                             )
-                            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                                KuhmannSmallNumberField("Limit", limitText, { limitText = it }, Modifier.weight(1f))
+                            TextButton(onClick = { showLimitControl = !showLimitControl }) {
+                                Text(if (showLimitControl) "Hide limit" else "Limit: $limitLabel")
+                            }
+                            if (showLimitControl) {
+                                KuhmannSmallNumberField("Result limit", limitText, { limitText = it }, Modifier.fillMaxWidth())
                             }
                         }
                     } else {
-                        Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                            KuhmannSearchFilters(
-                                pianoOnly = pianoOnly,
-                                onPianoOnlyChange = { pianoOnly = it },
-                                modifier = Modifier.weight(1f)
-                            )
-                            KuhmannSmallNumberField("Limit", limitText, { limitText = it }, Modifier.width(92.dp))
+                        Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                            Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                                KuhmannSearchFilters(
+                                    pianoOnly = pianoOnly,
+                                    onPianoOnlyChange = { pianoOnly = it },
+                                    modifier = Modifier.weight(1f)
+                                )
+                                TextButton(onClick = { showLimitControl = !showLimitControl }) {
+                                    Text(if (showLimitControl) "Hide limit" else "Limit: $limitLabel")
+                                }
+                            }
+                            if (showLimitControl) {
+                                Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End) {
+                                    KuhmannSmallNumberField("Result limit", limitText, { limitText = it }, Modifier.width(132.dp))
+                                }
+                            }
                         }
                     }
                     Row(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
@@ -3587,12 +3613,24 @@ private fun KuhmannMidiDialog(
                             verticalArrangement = Arrangement.spacedBy(2.dp)
                         ) {
                             gridItems(state.results, key = { it.id }) { result ->
+                                val isCurrentPreview = state.activePlaybackResultId == result.id ||
+                                    playback.currentItemId?.startsWith("kuhmann-preview-${result.id}-") == true
+                                val resultPlaybackMode = if (isCurrentPreview) playback.mode else PlaybackMode.Idle
                                 KuhmannResultRow(
                                     result = result,
                                     checked = selected[result.id] == true,
                                     imported = result.id in state.lastImportedIds,
                                     enabled = !state.downloading,
-                                    onCheckedChange = { selected[result.id] = it }
+                                    onCheckedChange = { selected[result.id] = it },
+                                    playbackMode = resultPlaybackMode,
+                                    onPlay = {
+                                        when (resultPlaybackMode) {
+                                            PlaybackMode.Playing -> service.pausePlayback()
+                                            PlaybackMode.Paused -> service.resumePlayback()
+                                            PlaybackMode.Preparing -> Unit
+                                            else -> service.playKuhmannMidi(result)
+                                        }
+                                    }
                                 )
                             }
                         }
@@ -3602,26 +3640,22 @@ private fun KuhmannMidiDialog(
                         horizontalArrangement = Arrangement.End,
                         verticalAlignment = Alignment.CenterVertically
                     ) {
-                        TextButton(onClick = onDismiss) { Text("Close") }
-                        Spacer(Modifier.width(8.dp))
+                        if (!compactControls) {
+                            TextButton(onClick = onDismiss) { Text("Close") }
+                            Spacer(Modifier.width(8.dp))
+                        }
                         Button(
-                            onClick = {
-                                service.searchKuhmannMidi(
-                                    query = query,
-                                    format = null,
-                                    pianoOnly = pianoOnly,
-                                    channel = null,
-                                    limit = limitText.toIntOrNull() ?: 50
-                                )
-                            },
-                            enabled = !state.searching && !state.downloading
+                            onClick = searchAction,
+                            enabled = !state.searching && !state.downloading,
+                            modifier = if (compactControls) Modifier.weight(1f) else Modifier
                         ) {
                             Text(if (state.searching) "Searching..." else "Search")
                         }
                         Spacer(Modifier.width(8.dp))
                         Button(
-                            onClick = { service.downloadKuhmannMidi(selectedResults) },
-                            enabled = selectedResults.isNotEmpty() && !state.searching && !state.downloading
+                            onClick = downloadAction,
+                            enabled = selectedResults.isNotEmpty() && !state.searching && !state.downloading,
+                            modifier = if (compactControls) Modifier.weight(1f) else Modifier
                         ) {
                             Text(if (state.downloading) "Downloading..." else "Download ${selectedResults.size}")
                         }
@@ -3715,9 +3749,12 @@ private fun KuhmannResultRow(
     checked: Boolean,
     imported: Boolean,
     enabled: Boolean,
-    onCheckedChange: (Boolean) -> Unit
+    onCheckedChange: (Boolean) -> Unit,
+    playbackMode: PlaybackMode,
+    onPlay: () -> Unit
 ) {
     val rowEnabled = enabled && !imported
+    val preparing = playbackMode == PlaybackMode.Preparing
     Row(
         modifier = Modifier
             .fillMaxWidth()
@@ -3776,6 +3813,21 @@ private fun KuhmannResultRow(
                 maxLines = 1,
                 overflow = TextOverflow.Ellipsis
             )
+        }
+        IconButton(
+            onClick = onPlay,
+            enabled = enabled && !preparing,
+            modifier = Modifier.size(38.dp)
+        ) {
+            when (playbackMode) {
+                PlaybackMode.Preparing -> LoadingIndicator(
+                    contentDescription = "Loading ${result.title}",
+                    modifier = Modifier.size(22.dp)
+                )
+                PlaybackMode.Playing -> Icon(Icons.Default.Pause, contentDescription = "Pause ${result.title}")
+                PlaybackMode.Paused -> Icon(Icons.Default.PlayArrow, contentDescription = "Resume ${result.title}")
+                else -> Icon(Icons.Default.PlayArrow, contentDescription = "Play ${result.title}")
+            }
         }
     }
 }
@@ -4024,12 +4076,21 @@ private fun PlaylistColorDialog(
     onDismiss: () -> Unit,
     onSelectColor: (String?) -> Unit
 ) {
+    var customColorText by rememberSaveable(playlist.id, playlist.colorHex) {
+        mutableStateOf(playlist.colorHex ?: "#")
+    }
+    val customColorHex = customColorText.normalizedPlaylistColorHex()
+    val customColor = customColorHex.toPlaylistColor()
+    val customColorIncomplete = customColorText != "#" && customColorHex == null
     AlertDialog(
         onDismissRequest = onDismiss,
         icon = { Icon(Icons.Default.FiberManualRecord, contentDescription = null) },
         title = { Text("Playlist color") },
         text = {
-            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+            Column(
+                modifier = Modifier.verticalScroll(rememberScrollState()),
+                verticalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
                 Text(
                     playlist.name,
                     style = MaterialTheme.typography.bodyMedium,
@@ -4059,6 +4120,31 @@ private fun PlaylistColorDialog(
                             selected = playlist.colorHex.equals(option.hex, ignoreCase = true),
                             onClick = { onSelectColor(option.hex) }
                         )
+                    }
+                }
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    Surface(
+                        modifier = Modifier.size(40.dp),
+                        shape = CircleShape,
+                        color = customColor ?: MaterialTheme.colorScheme.outline
+                    ) {}
+                    OutlinedTextField(
+                        value = customColorText,
+                        onValueChange = { customColorText = it.sanitizedPlaylistColorInput() },
+                        modifier = Modifier.weight(1f),
+                        singleLine = true,
+                        label = { Text("Custom hex") },
+                        isError = customColorIncomplete
+                    )
+                    Button(
+                        onClick = { customColorHex?.let(onSelectColor) },
+                        enabled = customColorHex != null
+                    ) {
+                        Text("Apply")
                     }
                 }
             }
@@ -4108,6 +4194,21 @@ private fun String?.toPlaylistColor(): Color? =
     this?.takeIf { it.matches(Regex("^#[0-9A-Fa-f]{6}$")) }?.let { hex ->
         runCatching { Color(android.graphics.Color.parseColor(hex)) }.getOrNull()
     }
+
+private fun String.normalizedPlaylistColorHex(): String? {
+    val hex = trim().removePrefix("#")
+    if (!hex.matches(Regex("^[0-9A-Fa-f]{6}$"))) return null
+    return "#${hex.uppercase(java.util.Locale.US)}"
+}
+
+private fun String.sanitizedPlaylistColorInput(): String {
+    val hex = trim()
+        .removePrefix("#")
+        .filter { it.isDigit() || it in 'a'..'f' || it in 'A'..'F' }
+        .take(6)
+        .uppercase(java.util.Locale.US)
+    return if (hex.isEmpty()) "#" else "#$hex"
+}
 
 @Composable
 private fun RenameDialog(

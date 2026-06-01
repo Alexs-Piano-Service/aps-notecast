@@ -9,7 +9,8 @@ object MidiFileParser {
     data class MidiSequence(
         val title: String,
         val durationUs: Long,
-        val events: List<ScheduledMidiEvent>
+        val events: List<ScheduledMidiEvent>,
+        val channelLabels: Map<Int, String> = emptyMap()
     )
 
     data class ScheduledMidiEvent(
@@ -29,6 +30,13 @@ object MidiFileParser {
         val order: Long
     )
 
+    private data class TrackInfo(
+        val trackName: String?,
+        val instrumentName: String?,
+        val channelPrefix: Int?,
+        val noteChannels: Set<Int>
+    )
+
     fun parse(bytes: ByteArray, fallbackTitle: String): MidiSequence {
         val reader = ByteReader(bytes)
         require(reader.readAscii(4) == "MThd") { "Not a Standard MIDI file" }
@@ -43,6 +51,7 @@ object MidiFileParser {
 
         val rawEvents = mutableListOf<RawMidiEvent>()
         val tempos = mutableListOf<TempoEvent>()
+        val trackInfos = mutableListOf<TrackInfo>()
         var title: String? = null
         var order = 0L
 
@@ -57,6 +66,10 @@ object MidiFileParser {
             val trackEnd = reader.position + length
             var tick = 0L
             var runningStatus = 0
+            var trackName: String? = null
+            var instrumentName: String? = null
+            var channelPrefix: Int? = null
+            val noteChannels = mutableSetOf<Int>()
 
             while (reader.position < trackEnd) {
                 tick += reader.readVariableLengthQuantity()
@@ -77,8 +90,16 @@ object MidiFileParser {
                         val metaLength = reader.readVariableLengthQuantity().toInt()
                         val data = reader.readBytes(metaLength)
                         when (metaType) {
-                            0x03 -> if (title.isNullOrBlank()) {
-                                title = data.toString(latin1).trim().takeIf { it.isNotBlank() }
+                            0x03 -> {
+                                val cleanName = cleanMetaText(data)
+                                if (trackName.isNullOrBlank()) trackName = cleanName
+                                if (title.isNullOrBlank()) title = cleanName
+                            }
+                            0x04 -> if (instrumentName.isNullOrBlank()) {
+                                instrumentName = cleanMetaText(data)
+                            }
+                            0x20 -> if (data.size == 1) {
+                                channelPrefix = ((data[0].toInt() and 0xFF) + 1).coerceIn(1, 16)
                             }
                             0x51 -> if (data.size == 3) {
                                 val usPerQuarter = ((data[0].toInt() and 0xFF) shl 16) or
@@ -106,6 +127,10 @@ object MidiFileParser {
                         val message = ByteArray(length + 1)
                         message[0] = status.toByte()
                         repeat(length) { message[it + 1] = reader.readU8().toByte() }
+                        val messageType = status and 0xF0
+                        if (messageType == 0x90 && message.size > 2 && (message[2].toInt() and 0xFF) > 0) {
+                            noteChannels += (status and 0x0F) + 1
+                        }
                         rawEvents += RawMidiEvent(tick, message, order++)
                     }
 
@@ -113,12 +138,43 @@ object MidiFileParser {
                 }
             }
             if (reader.position != trackEnd) reader.position = trackEnd
+            trackInfos += TrackInfo(
+                trackName = trackName,
+                instrumentName = instrumentName,
+                channelPrefix = channelPrefix,
+                noteChannels = noteChannels
+            )
         }
 
         val scheduled = schedule(rawEvents, tempos, division)
         val duration = scheduled.maxOfOrNull { it.timeUs } ?: 0L
         val cleanTitle = title ?: fallbackTitle.replace(Regex("\\.(mid|midi)$", RegexOption.IGNORE_CASE), "")
-        return MidiSequence(cleanTitle, duration, scheduled)
+        return MidiSequence(cleanTitle, duration, scheduled, channelLabels(trackInfos, cleanTitle))
+    }
+
+    private fun cleanMetaText(data: ByteArray): String? =
+        data.toString(latin1)
+            .replace('\u0000', ' ')
+            .trim()
+            .replace(Regex("\\s+"), " ")
+            .takeIf { it.isNotBlank() }
+
+    private fun channelLabels(trackInfos: List<TrackInfo>, title: String): Map<Int, String> {
+        val labels = mutableMapOf<Int, MutableList<String>>()
+        trackInfos.forEach { info ->
+            val label = info.instrumentName
+                ?: info.trackName?.takeUnless { it.equals(title, ignoreCase = true) }
+                ?: return@forEach
+            val channels = when {
+                info.noteChannels.isNotEmpty() -> info.noteChannels
+                info.channelPrefix != null -> setOf(info.channelPrefix)
+                else -> emptySet()
+            }
+            channels.filter { it in 1..16 }.forEach { channel ->
+                labels.getOrPut(channel) { mutableListOf() } += label
+            }
+        }
+        return labels.mapValues { (_, values) -> values.distinct().joinToString(" / ") }
     }
 
     private fun schedule(

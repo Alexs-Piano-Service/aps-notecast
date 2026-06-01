@@ -55,10 +55,12 @@ import com.alexanderpeppe.pianobeam.data.MidiChannelControl
 import com.alexanderpeppe.pianobeam.data.MidiLibraryItem
 import com.alexanderpeppe.pianobeam.data.MidiRepository
 import com.alexanderpeppe.pianobeam.data.PlaybackAdvanceMode
+import com.alexanderpeppe.pianobeam.data.PlaybackChannelInfo
 import com.alexanderpeppe.pianobeam.data.PlaybackMode
 import com.alexanderpeppe.pianobeam.data.PlaybackUiState
 import com.alexanderpeppe.pianobeam.data.RecordingUiState
 import com.alexanderpeppe.pianobeam.data.RepeatMode
+import com.alexanderpeppe.pianobeam.data.VolumeControlMode
 import com.alexanderpeppe.pianobeam.data.formatClockTime
 import com.alexanderpeppe.pianobeam.midi.MidiFileParser
 import com.alexanderpeppe.pianobeam.midi.MidiFileWriter
@@ -66,6 +68,7 @@ import com.alexanderpeppe.pianobeam.net.ApsNetworkStatus
 import com.alexanderpeppe.pianobeam.reporting.AppEventLog
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.CoroutineStart
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
@@ -113,6 +116,8 @@ class NoteCastService : Service() {
         private const val SCHEDULE_AHEAD_NS = 45_000_000L
         private const val START_DELAY_NS = 160_000_000L
         private const val PROGRESS_POST_INTERVAL_NS = 220_000_000L
+        private const val DIAGNOSTIC_FIRST_PIANO_NOTE = 21 // A0
+        private const val DIAGNOSTIC_LAST_PIANO_NOTE = 108 // C8
         private const val PREFS_NAME = "pianobeam"
         private const val PREF_LAST_DEVICE_ADDRESS = "last_device_address"
         private const val PREF_LAST_DEVICE_NAME = "last_device_name"
@@ -218,9 +223,12 @@ class NoteCastService : Service() {
     private var midiOutputPort: MidiOutputPort? = null
     private var playbackJob: Job? = null
     private var recordingCountdownJob: Job? = null
+    private var diagnosticJob: Job? = null
     private var connectionMonitorJob: Job? = null
     private var connectionVerificationJob: Job? = null
     private var reconnectJob: Job? = null
+    private val playbackItemAliasesLock = Any()
+    private val playbackItemAliases = mutableMapOf<String, String>()
     private val connectionGeneration = AtomicLong(0L)
     private val playbackGeneration = AtomicLong(0L)
     @Volatile
@@ -246,7 +254,12 @@ class NoteCastService : Service() {
 
     private data class PreparedPlaybackData(
         val sequence: MidiFileParser.MidiSequence,
-        val channels: List<Int>
+        val channels: List<PlaybackChannelInfo>
+    )
+
+    private data class ActiveMidiNote(
+        val channel: Int,
+        val note: Int
     )
 
     private val sequenceCacheLock = Any()
@@ -255,6 +268,8 @@ class NoteCastService : Service() {
             size > 4
     }
 
+    private val activePlaybackNotesLock = Any()
+    private val activePlaybackNotes = BooleanArray(16 * 128)
     private val recordingLock = Any()
     private val recordingEvents = mutableListOf<MidiFileWriter.RecordedEvent>()
     private var recordingStartedNs = 0L
@@ -311,6 +326,7 @@ class NoteCastService : Service() {
         playbackGeneration.incrementAndGet()
         playbackJob?.cancel()
         recordingCountdownJob?.cancel()
+        diagnosticJob?.cancel()
         kuhmannSearchJob?.cancel()
         kuhmannDownloadJob?.cancel()
         connectionMonitorJob?.cancel()
@@ -330,14 +346,139 @@ class NoteCastService : Service() {
     fun applySettings(settings: AppSettings) {
         val previousSettings = appSettings
         appSettings = settings
-        val volumeBehaviorChanged = previousSettings.appControlsVolume != settings.appControlsVolume
+        val volumeBehaviorChanged = previousSettings.volumeControlMode != settings.volumeControlMode
         val channelVolumesChanged = previousSettings.channelControls.volumeSignature() != settings.channelControls.volumeSignature()
         val muteSoloChanged = previousSettings.channelControls.muteSoloSignature() != settings.channelControls.muteSoloSignature()
         if (_state.value.connection.connected && (volumeBehaviorChanged || channelVolumesChanged || muteSoloChanged)) {
             serviceScope.launch(Dispatchers.IO) {
-                if (muteSoloChanged) sendPanicMessages()
+                if (muteSoloChanged) {
+                    sendPanicMessages()
+                } else {
+                    sendActiveNoteOffMessagesIfNeeded()
+                }
                 sendVolumeMessages(_state.value.volumePercent)
             }
+        }
+    }
+
+    fun playDiagnosticChromaticScale(velocity: Int, noteLengthMs: Int) {
+        if (midiInputPort == null || !_state.value.connection.connected) {
+            postMessage("Connect to a BLE MIDI device before running the piano test.")
+            return
+        }
+
+        val cleanVelocity = velocity.coerceIn(1, 127)
+        val cleanNoteLengthMs = noteLengthMs.coerceIn(50, 1_000)
+        val previousDiagnosticJob = diagnosticJob
+        val job = serviceScope.launch(Dispatchers.IO, start = CoroutineStart.LAZY) {
+            var playedAnyNote = false
+            try {
+                previousDiagnosticJob?.cancel()
+                previousDiagnosticJob?.join()
+                stopActivePlaybackForPianoTest()
+                withContext(Dispatchers.Main) {
+                    postMessage("Playing piano test scale.")
+                }
+                sendActiveNoteOffMessages(releasePedals = false)
+                delay(80L)
+                val noteOffDelayMs = 35L
+                for (note in DIAGNOSTIC_FIRST_PIANO_NOTE..DIAGNOSTIC_LAST_PIANO_NOTE) {
+                    coroutineContext.ensureActive()
+                    val port = midiInputPort ?: throw IOException("MIDI connection was lost")
+                    val noteOn = byteArrayOf(0x90.toByte(), note.toByte(), cleanVelocity.toByte())
+                    val noteOff = byteArrayOf(0x80.toByte(), note.toByte(), 0)
+                    port.send(noteOn, 0, noteOn.size, System.nanoTime())
+                    setActivePlaybackNote(channel = 0, note = note, active = true)
+                    playedAnyNote = true
+                    delay(cleanNoteLengthMs.toLong())
+                    port.send(noteOff, 0, noteOff.size, System.nanoTime())
+                    setActivePlaybackNote(channel = 0, note = note, active = false)
+                    delay(noteOffDelayMs)
+                }
+                withContext(Dispatchers.Main) {
+                    postMessage("Piano test scale finished.")
+                }
+            } catch (cancelled: CancellationException) {
+                throw cancelled
+            } catch (io: IOException) {
+                withContext(Dispatchers.Main) {
+                    handleConnectionLost("MIDI connection was lost.")
+                }
+            } catch (t: Throwable) {
+                withContext(Dispatchers.Main) {
+                    postMessage("Could not play piano test scale: ${t.message ?: "unknown error"}")
+                }
+            } finally {
+                if (playedAnyNote) sendActiveNoteOffMessages(releasePedals = false)
+                if (diagnosticJob === coroutineContext[Job]) {
+                    diagnosticJob = null
+                }
+            }
+        }
+        diagnosticJob = job
+        job.start()
+    }
+
+    fun stopDiagnosticChromaticScale() {
+        val job = diagnosticJob
+        if (job == null || !job.isActive) {
+            postMessage("No piano test is playing.")
+            return
+        }
+        diagnosticJob = null
+        serviceScope.launch(Dispatchers.IO) {
+            job.cancel()
+            job.join()
+            sendActiveNoteOffMessages(releasePedals = false)
+            withContext(Dispatchers.Main) {
+                postMessage("Piano test stopped.")
+            }
+        }
+    }
+
+    fun setPianoTestSustainPedal(pressed: Boolean) {
+        if (midiInputPort == null || !_state.value.connection.connected) {
+            postMessage("Connect to a BLE MIDI device before testing sustain.")
+            return
+        }
+        serviceScope.launch(Dispatchers.IO) {
+            val sent = sendSustainPedalMessages(pressed)
+            withContext(Dispatchers.Main) {
+                if (sent) {
+                    postMessage("Sustain pedal ${if (pressed) "on" else "off"}.")
+                } else {
+                    postMessage("Could not send sustain pedal ${if (pressed) "on" else "off"}.")
+                }
+            }
+        }
+    }
+
+    private suspend fun stopActivePlaybackForPianoTest() {
+        val existingPlaybackJob = playbackJob
+        val wasActive = _state.value.playback.isActive || existingPlaybackJob?.isActive == true
+        if (!wasActive) return
+
+        val generation = playbackGeneration.incrementAndGet()
+        playbackJob = null
+        skipRequest = 0
+        seekRequestUs = -1L
+        clearPlaybackItemAliases()
+        existingPlaybackJob?.cancel()
+        sendPanicMessages()
+        existingPlaybackJob?.join()
+        withContext(Dispatchers.Main) {
+            if (!isCurrentPlayback(generation)) return@withContext
+            _state.update {
+                it.copy(
+                    playback = PlaybackUiState(),
+                    playbackChannels = emptyList(),
+                    kuhmann = it.kuhmann.copy(activePlaybackResultId = null),
+                    lastMessage = "Playback stopped for piano test."
+                )
+            }
+            updatePlaybackSurfaces(updateNotification = true)
+            stopForegroundIfNeeded()
+            releaseWakeLock()
         }
     }
 
@@ -484,11 +625,12 @@ class NoteCastService : Service() {
             var failed = 0
             var networkFailure = false
             val importedIds = mutableListOf<Int>()
+            val importedItemsByResultId = mutableMapOf<Int, MidiLibraryItem>()
             uniqueResults.forEach { result ->
                 ensureActive()
                 runCatching {
                     val bytes = downloadKuhmannBytes(result)
-                    repository.importMidiBytes(
+                    val item = repository.importMidiBytes(
                         bytes = bytes,
                         displayName = result.filename.ifBlank { "${result.title}.mid" },
                         preferredTitle = result.title,
@@ -496,6 +638,7 @@ class NoteCastService : Service() {
                     )
                     imported++
                     importedIds += result.id
+                    importedItemsByResultId[result.id] = item
                 }.onFailure { t ->
                     failed++
                     if (ApsNetworkStatus.isLikelyNetworkFailure(t)) networkFailure = true
@@ -510,8 +653,30 @@ class NoteCastService : Service() {
                     else -> "Could not download the selected Kuhmann MIDI file${if (failed == 1) "" else "s"}."
                 }
                 reloadLibrary(message)
+                val previewItemId = _state.value.playback.currentItemId
+                val importedPlaybackItem = previewItemId
+                    ?.kuhmannPreviewResultId()
+                    ?.let { resultId -> importedItemsByResultId[resultId] }
+                if (previewItemId != null && importedPlaybackItem != null) {
+                    aliasPlaybackItemId(previewItemId, importedPlaybackItem.id)
+                }
                 _state.update {
+                    val playback = if (
+                        importedPlaybackItem != null &&
+                        it.playback.isActive &&
+                        (it.playback.currentItemId == previewItemId || it.playback.currentItemId == importedPlaybackItem.id)
+                    ) {
+                        it.playback.copy(
+                            currentItemId = importedPlaybackItem.id,
+                            currentTitle = importedPlaybackItem.title,
+                            durationUs = importedPlaybackItem.durationUs.takeIf { duration -> duration > 0L }
+                                ?: it.playback.durationUs
+                        )
+                    } else {
+                        it.playback
+                    }
                     it.copy(
+                        playback = playback,
                         kuhmann = it.kuhmann.copy(
                             downloading = false,
                             message = message,
@@ -520,6 +685,59 @@ class NoteCastService : Service() {
                     )
                 }
             }
+        }
+    }
+
+    fun playKuhmannMidi(result: KuhmannMidiResult) {
+        if (result.url.isBlank()) return
+        if (midiInputPort == null || !_state.value.connection.connected) {
+            postMessage("Connect to a BLE MIDI device before playing.")
+            return
+        }
+        if (!ApsNetworkStatus.canReachInternet(this)) {
+            val message = ApsNetworkStatus.userMessage(this)
+            _state.update {
+                it.copy(
+                    kuhmann = it.kuhmann.copy(message = message),
+                    lastMessage = message
+                )
+            }
+            return
+        }
+
+        val title = result.title.ifBlank { result.filename.ifBlank { "Kuhmann MIDI" } }
+        val temporaryItemId = "kuhmann-preview-${result.id}-${SystemClock.elapsedRealtime()}"
+        val generation = playbackGeneration.incrementAndGet()
+        val replacingActivePlayback = _state.value.playback.isActive || playbackJob?.isActive == true
+        skipRequest = 0
+        seekRequestUs = -1L
+        diagnosticJob?.cancel()
+        playbackJob?.cancel()
+        clearPlaybackItemAliases()
+        _state.update {
+            it.copy(
+                playback = PlaybackUiState(
+                    mode = PlaybackMode.Preparing,
+                    currentTitle = title,
+                    currentItemId = temporaryItemId,
+                    currentTrackNumber = 1,
+                    totalTracks = 1
+                ),
+                playbackChannels = emptyList(),
+                kuhmann = it.kuhmann.copy(
+                    message = "Preparing $title...",
+                    activePlaybackResultId = result.id
+                ),
+                lastMessage = if (replacingActivePlayback) "Switching to $title..." else "Preparing $title..."
+            )
+        }
+        updatePlaybackSurfaces(updateNotification = true)
+        playbackJob = serviceScope.launch(Dispatchers.Default) {
+            if (replacingActivePlayback) {
+                withContext(Dispatchers.IO) { sendPanicMessages() }
+                delay(120)
+            }
+            runKuhmannPreviewPlayback(result, title, temporaryItemId, generation)
         }
     }
 
@@ -986,8 +1204,11 @@ class NoteCastService : Service() {
         playbackGeneration.incrementAndGet()
         playbackJob?.cancel()
         playbackJob = null
+        diagnosticJob?.cancel()
+        diagnosticJob = null
         skipRequest = 0
         seekRequestUs = -1L
+        sendActiveNoteOffMessages()
         if (wasActive) sendPanicMessages()
         closeMidiConnection()
         if (wasActive) {
@@ -1005,6 +1226,8 @@ class NoteCastService : Service() {
         connectionVerificationJob = null
         reconnectJob?.cancel()
         reconnectJob = null
+        diagnosticJob?.cancel()
+        diagnosticJob = null
         suppressAutoReconnectAfterManualDisconnect()
         stopPlayback(userRequested = true)
         closeMidiConnection()
@@ -1594,6 +1817,7 @@ class NoteCastService : Service() {
         playbackJob = null
         skipRequest = 0
         seekRequestUs = -1L
+        clearPlaybackItemAliases()
         closeMidiConnection()
         val timeoutSeconds = appSettings.reconnectTimeoutSeconds.coerceIn(10, 180)
         _state.update {
@@ -1601,6 +1825,7 @@ class NoteCastService : Service() {
                 connection = rememberedConnection(message = "$message Reconnecting for ${timeoutSeconds}s..."),
                 playback = PlaybackUiState(),
                 playbackChannels = emptyList(),
+                kuhmann = it.kuhmann.copy(activePlaybackResultId = null),
                 lastMessage = "$deviceName connection lost."
             )
         }
@@ -1668,7 +1893,9 @@ class NoteCastService : Service() {
             )
         }
         updatePlaybackSurfaces(updateNotification = true)
-        serviceScope.launch(Dispatchers.IO) { sendPanicMessages() }
+        serviceScope.launch(Dispatchers.IO) {
+            sendActiveNoteOffMessages()
+        }
     }
 
     fun resumePlayback() {
@@ -1738,7 +1965,10 @@ class NoteCastService : Service() {
     fun setVolume(percent: Int) {
         val cleanPercent = percent.coerceIn(0, 100)
         _state.update { it.copy(volumePercent = cleanPercent) }
-        serviceScope.launch(Dispatchers.IO) { sendVolumeMessages(cleanPercent) }
+        serviceScope.launch(Dispatchers.IO) {
+            sendActiveNoteOffMessagesIfNeeded()
+            sendVolumeMessages(cleanPercent)
+        }
     }
 
     fun startRecording(title: String) {
@@ -1887,6 +2117,7 @@ class NoteCastService : Service() {
         playbackJob = null
         skipRequest = 0
         seekRequestUs = -1L
+        clearPlaybackItemAliases()
         serviceScope.launch(Dispatchers.IO) {
             if (wasActive) sendPanicMessages()
             withContext(Dispatchers.Main) {
@@ -1895,6 +2126,7 @@ class NoteCastService : Service() {
                     it.copy(
                         playback = PlaybackUiState(),
                         playbackChannels = emptyList(),
+                        kuhmann = it.kuhmann.copy(activePlaybackResultId = null),
                         lastMessage = if (userRequested) "Playback stopped." else it.lastMessage
                     )
                 }
@@ -1946,7 +2178,9 @@ class NoteCastService : Service() {
         val firstItem = items.first()
         skipRequest = 0
         seekRequestUs = -1L
+        diagnosticJob?.cancel()
         playbackJob?.cancel()
+        clearPlaybackItemAliases()
         _state.update {
             it.copy(
                 playback = PlaybackUiState(
@@ -1959,6 +2193,7 @@ class NoteCastService : Service() {
                     durationUs = firstItem.durationUs
                 ),
                 playbackChannels = emptyList(),
+                kuhmann = it.kuhmann.copy(activePlaybackResultId = null),
                 lastMessage = if (replacingActivePlayback) "Switching to ${firstItem.title}..." else "Preparing ${firstItem.title}..."
             )
         }
@@ -2086,10 +2321,166 @@ class NoteCastService : Service() {
         }
     }
 
+    private suspend fun runKuhmannPreviewPlayback(
+        result: KuhmannMidiResult,
+        title: String,
+        temporaryItemId: String,
+        generation: Long
+    ) {
+        var completedNormally = false
+        var playbackStarted = false
+        try {
+            android.os.Process.setThreadPriority(android.os.Process.THREAD_PRIORITY_URGENT_AUDIO)
+            withContext(Dispatchers.Main) {
+                acquireWakeLock()
+                startForegroundForPlayback(title)
+            }
+
+            val bytes = withContext(Dispatchers.IO) { downloadKuhmannBytes(result) }
+            coroutineContext.ensureActive()
+            val parsed = MidiFileParser.parse(bytes, result.filename.ifBlank { title })
+            val prepared = prepareSequence(parsed, appSettings)
+            val playbackData = PreparedPlaybackData(
+                sequence = prepared,
+                channels = parsed.playbackChannelInfos()
+            )
+            val item = MidiLibraryItem(
+                id = temporaryItemId,
+                title = title,
+                originalName = result.filename.ifBlank { "$title.mid" },
+                storedFileName = "",
+                durationUs = prepared.durationUs,
+                importedAtMs = System.currentTimeMillis(),
+                notes = "Kuhmann MIDI preview"
+            )
+
+            coroutineContext.ensureActive()
+            withContext(Dispatchers.Main) {
+                if (!isCurrentPlayback(generation)) return@withContext
+                _state.update {
+                    it.copy(
+                        playback = PlaybackUiState(
+                            mode = PlaybackMode.Playing,
+                            currentTitle = item.title,
+                            currentItemId = displayPlaybackItemId(item.id),
+                            currentTrackNumber = 1,
+                            totalTracks = 1,
+                            progressUs = 0L,
+                            durationUs = prepared.durationUs
+                        ),
+                        playbackChannels = playbackData.channels,
+                        kuhmann = it.kuhmann.copy(
+                            message = "Playing ${item.title}.",
+                            activePlaybackResultId = result.id
+                        ),
+                        lastMessage = "Playing ${item.title}"
+                    )
+                }
+                updatePlaybackSurfaces(updateNotification = true)
+            }
+            playbackStarted = true
+            sendVolumeMessages(_state.value.volumePercent)
+            playSequence(prepared, item)
+            sendPanicMessages()
+            delay(250)
+            completedNormally = true
+        } catch (cancelled: CancellationException) {
+            throw cancelled
+        } catch (skip: TrackSkipRequest) {
+            sendPanicMessages()
+            completedNormally = true
+        } catch (io: IOException) {
+            if (isCurrentPlayback(generation)) {
+                withContext(Dispatchers.Main) {
+                    if (playbackStarted && !ApsNetworkStatus.isLikelyNetworkFailure(io)) {
+                        handleConnectionLost("MIDI connection was lost.")
+                    } else {
+                        val message = if (ApsNetworkStatus.isLikelyNetworkFailure(io)) {
+                            ApsNetworkStatus.userMessage(this@NoteCastService, io)
+                        } else {
+                            "Could not play $title: ${io.message ?: "unknown error"}"
+                        }
+                        _state.update {
+                            it.copy(
+                                playback = PlaybackUiState(mode = PlaybackMode.Error, error = message),
+                                playbackChannels = emptyList(),
+                                kuhmann = it.kuhmann.copy(message = message, activePlaybackResultId = null),
+                                lastMessage = message
+                            )
+                        }
+                        updatePlaybackSurfaces(updateNotification = true)
+                    }
+                }
+                sendPanicMessages()
+            }
+        } catch (t: Throwable) {
+            if (isCurrentPlayback(generation)) {
+                val message = "Could not play $title: ${t.message ?: "unknown error"}"
+                withContext(Dispatchers.Main) {
+                    _state.update {
+                        it.copy(
+                            playback = PlaybackUiState(mode = PlaybackMode.Error, error = message),
+                            playbackChannels = emptyList(),
+                            kuhmann = it.kuhmann.copy(message = message, activePlaybackResultId = null),
+                            lastMessage = message
+                        )
+                    }
+                    updatePlaybackSurfaces(updateNotification = true)
+                }
+                sendPanicMessages()
+            }
+        } finally {
+            if (isCurrentPlayback(generation)) sendPanicMessages()
+            withContext(Dispatchers.Main) {
+                if (!isCurrentPlayback(generation)) return@withContext
+                if (completedNormally) {
+                    val message = "Kuhmann playback finished."
+                    _state.update {
+                        it.copy(
+                            playback = PlaybackUiState(),
+                            playbackChannels = emptyList(),
+                            kuhmann = it.kuhmann.copy(message = message, activePlaybackResultId = null),
+                            lastMessage = message
+                        )
+                    }
+                    updatePlaybackSurfaces(updateNotification = true)
+                }
+                clearPlaybackItemAliases()
+                stopForegroundIfNeeded()
+                releaseWakeLock()
+                playbackJob = null
+            }
+        }
+    }
+
     private class TrackSkipRequest(val direction: Int) : RuntimeException()
 
     private fun isCurrentPlayback(generation: Long): Boolean =
         playbackGeneration.get() == generation
+
+    private fun aliasPlaybackItemId(temporaryItemId: String, libraryItemId: String) {
+        synchronized(playbackItemAliasesLock) {
+            playbackItemAliases[temporaryItemId] = libraryItemId
+        }
+    }
+
+    private fun clearPlaybackItemAliases() {
+        synchronized(playbackItemAliasesLock) {
+            playbackItemAliases.clear()
+        }
+    }
+
+    private fun displayPlaybackItemId(itemId: String): String =
+        synchronized(playbackItemAliasesLock) {
+            playbackItemAliases[itemId] ?: itemId
+        }
+
+    private fun String.kuhmannPreviewResultId(): Int? {
+        val prefix = "kuhmann-preview-"
+        if (!startsWith(prefix)) return null
+        val idText = removePrefix(prefix).substringBefore('-', missingDelimiterValue = "")
+        return idText.toIntOrNull()
+    }
 
     private suspend fun loadPreparedSequence(
         item: MidiLibraryItem,
@@ -2115,7 +2506,7 @@ class NoteCastService : Service() {
         val prepared = prepareSequence(parsed, settings)
         val playbackData = PreparedPlaybackData(
             sequence = prepared,
-            channels = parsed.channelNumbers()
+            channels = parsed.playbackChannelInfos()
         )
         synchronized(sequenceCacheLock) {
             preparedSequenceCache[key] = playbackData
@@ -2189,31 +2580,110 @@ class NoteCastService : Service() {
         val channelNumber = (status and 0x0F) + 1
         val control = appSettings.channelControls.channelControl(channelNumber)
         val soloActive = appSettings.channelControls.any { it.solo }
-        if (control.muted || (soloActive && !control.solo)) return null
 
         val messageType = status and 0xF0
+        val controller = if (data.size > 1) data[1].toInt() and 0xFF else -1
+        val value = if (data.size > 2) data[2].toInt() and 0xFF else -1
+        val noteOffMessage = isNoteOffMessage(messageType, value)
+        val safetyControllerMessage = isSafetyControllerMessage(messageType, controller, value)
+        if (control.muted || (soloActive && !control.solo)) {
+            return if (noteOffMessage || safetyControllerMessage) data else null
+        }
         if (messageType != 0x90 && messageType != 0xB0) return data
         val masterPercent = _state.value.volumePercent
 
-        if (!appSettings.appControlsVolume && messageType == 0xB0 && data.size > 2 && (data[1].toInt() and 0xFF) == 7) {
+        if (appSettings.volumeControlMode == VolumeControlMode.StandardMidiVolume && messageType == 0xB0 && data.size > 2 && controller == 7) {
             val copy = data.copyOf()
-            copy[2] = scaledMidiVolume(copy[2].toInt() and 0xFF, masterPercent, control.volumePercent).toByte()
+            copy[2] = controlChangeVolumeValue(control, soloActive, masterPercent).toByte()
             return copy
         }
         if (
-            appSettings.appControlsVolume &&
             messageType == 0x90 &&
             data.size > 2 &&
             (data[2].toInt() and 0xFF) > 0
         ) {
-            val scaled = scaledMidiVelocity(data[2].toInt() and 0xFF, masterPercent, control.volumePercent)
+            val rawVelocity = data[2].toInt() and 0xFF
+            val scaled = if (appSettings.volumeControlMode == VolumeControlMode.LegacyVolumeScaling) {
+                scaledMidiVelocity(rawVelocity, masterPercent, control.volumePercent)
+            } else {
+                rawVelocity.coerceIn(1, 127)
+            }
             if (scaled <= 0) return null
+            val adjusted = scaledMidiVelocityMinimum(scaled)
             val copy = data.copyOf()
-            copy[2] = scaled.toByte()
+            copy[2] = adjusted.toByte()
             return copy
         }
         return data
     }
+
+    private fun isNoteOffMessage(messageType: Int, value: Int): Boolean =
+        messageType == 0x80 || (messageType == 0x90 && value == 0)
+
+    private fun isSafetyControllerMessage(messageType: Int, controller: Int, value: Int): Boolean =
+        messageType == 0xB0 && (
+            controller == 120 ||
+                controller == 121 ||
+                controller == 123 ||
+                (value == 0 && (controller == 64 || controller == 66 || controller == 67))
+            )
+
+    private fun scheduleAheadNsForEvent(data: ByteArray): Long {
+        if (data.isEmpty()) return SCHEDULE_AHEAD_NS
+        val status = data[0].toInt() and 0xFF
+        return if (status in 0x80..0xEF) 0L else SCHEDULE_AHEAD_NS
+    }
+
+    private fun trackPlaybackNoteState(data: ByteArray) {
+        if (data.size < 3) return
+        val status = data[0].toInt() and 0xFF
+        if (status !in 0x80..0xEF) return
+        val channel = status and 0x0F
+        val messageType = status and 0xF0
+        val note = data[1].toInt() and 0xFF
+        val value = data[2].toInt() and 0xFF
+        when {
+            messageType == 0x90 && value > 0 && note in 0..127 -> setActivePlaybackNote(channel, note, active = true)
+            (messageType == 0x80 || messageType == 0x90) && note in 0..127 -> setActivePlaybackNote(channel, note, active = false)
+            messageType == 0xB0 && (note == 120 || note == 123) -> clearActivePlaybackChannel(channel)
+        }
+    }
+
+    private fun setActivePlaybackNote(channel: Int, note: Int, active: Boolean) {
+        if (channel !in 0..15 || note !in 0..127) return
+        synchronized(activePlaybackNotesLock) {
+            activePlaybackNotes[channel * 128 + note] = active
+        }
+    }
+
+    private fun clearActivePlaybackChannel(channel: Int) {
+        if (channel !in 0..15) return
+        synchronized(activePlaybackNotesLock) {
+            val offset = channel * 128
+            for (note in 0..127) activePlaybackNotes[offset + note] = false
+        }
+    }
+
+    private fun clearActivePlaybackNotes() {
+        synchronized(activePlaybackNotesLock) {
+            activePlaybackNotes.fill(false)
+        }
+    }
+
+    private fun hasActivePlaybackNotes(): Boolean =
+        synchronized(activePlaybackNotesLock) {
+            activePlaybackNotes.any { it }
+        }
+
+    private fun activePlaybackNotesSnapshotAndClear(): List<ActiveMidiNote> =
+        synchronized(activePlaybackNotesLock) {
+            buildList {
+                activePlaybackNotes.forEachIndexed { index, active ->
+                    if (active) add(ActiveMidiNote(channel = index / 128, note = index % 128))
+                }
+                activePlaybackNotes.fill(false)
+            }
+        }
 
     private suspend fun playSequence(sequence: MidiFileParser.MidiSequence, item: MidiLibraryItem) {
         var startNs = System.nanoTime() + START_DELAY_NS
@@ -2238,7 +2708,7 @@ class NoteCastService : Service() {
                         playback = it.playback.copy(
                             progressUs = cleanProgressUs,
                             durationUs = sequence.durationUs,
-                            currentItemId = item.id
+                            currentItemId = displayPlaybackItemId(item.id)
                         )
                     )
                 }
@@ -2271,7 +2741,8 @@ class NoteCastService : Service() {
                         pauseStartedNs = 0L
                     }
                     val targetNs = startNs + event.timeUs * 1_000L + pauseOffsetNs
-                    val sleepNs = targetNs - SCHEDULE_AHEAD_NS - System.nanoTime()
+                    val scheduleAheadNs = scheduleAheadNsForEvent(event.data)
+                    val sleepNs = targetNs - scheduleAheadNs - System.nanoTime()
                     if (sleepNs <= 0L) break
                     delay(min(20L, (sleepNs / 1_000_000L).coerceAtLeast(1L)))
                 }
@@ -2284,7 +2755,9 @@ class NoteCastService : Service() {
                 val port = midiInputPort ?: throw IOException("MIDI connection was lost")
                 val data = applyLiveVolume(event.data)
                 if (data != null) {
-                    port.send(data, 0, data.size, targetNs)
+                    val sendTimestampNs = if (scheduleAheadNsForEvent(data) == 0L) System.nanoTime() else targetNs
+                    port.send(data, 0, data.size, sendTimestampNs)
+                    trackPlaybackNoteState(data)
                 }
 
                 val nowNs = System.nanoTime()
@@ -2293,7 +2766,13 @@ class NoteCastService : Service() {
                     val progress = event.timeUs.coerceAtMost(sequence.durationUs)
                     withContext(Dispatchers.Main) {
                         _state.update {
-                            it.copy(playback = it.playback.copy(progressUs = progress, durationUs = sequence.durationUs, currentItemId = item.id))
+                            it.copy(
+                                playback = it.playback.copy(
+                                    progressUs = progress,
+                                    durationUs = sequence.durationUs,
+                                    currentItemId = displayPlaybackItemId(item.id)
+                                )
+                            )
                         }
                         updatePlaybackSurfaces(updateNotification = false)
                     }
@@ -3405,10 +3884,20 @@ class NoteCastService : Service() {
     }
 
     private fun sendPanicMessages() {
+        sendActiveNoteOffMessages()
         val connection = _state.value.connection
-        if (!connection.connected) return
-        if (!isAndroidMidiConnectionId(connection.address) && !isBluetoothEnabled()) return
-        val port = midiInputPort ?: return
+        if (!connection.connected) {
+            clearActivePlaybackNotes()
+            return
+        }
+        if (!isAndroidMidiConnectionId(connection.address) && !isBluetoothEnabled()) {
+            clearActivePlaybackNotes()
+            return
+        }
+        val port = midiInputPort ?: run {
+            clearActivePlaybackNotes()
+            return
+        }
         val now = System.nanoTime()
         try {
             for (channel in 0..15) {
@@ -3423,13 +3912,61 @@ class NoteCastService : Service() {
                 )
                 messages.forEach { msg -> port.send(msg, 0, msg.size, now) }
             }
-            port.flush()
+        } catch (_: Throwable) {
+        } finally {
+            clearActivePlaybackNotes()
+        }
+    }
+
+    private fun sendActiveNoteOffMessages(releasePedals: Boolean = true) {
+        val activeNotes = activePlaybackNotesSnapshotAndClear()
+        if (activeNotes.isEmpty() && !releasePedals) return
+        val connection = _state.value.connection
+        if (!connection.connected) return
+        if (!isAndroidMidiConnectionId(connection.address) && !isBluetoothEnabled()) return
+        val port = midiInputPort ?: return
+        val now = System.nanoTime()
+        try {
+            if (releasePedals) {
+                for (channel in 0..15) {
+                    val status = (0xB0 or channel).toByte()
+                    port.send(byteArrayOf(status, 64, 0), 0, 3, now)
+                    port.send(byteArrayOf(status, 66, 0), 0, 3, now)
+                    port.send(byteArrayOf(status, 67, 0), 0, 3, now)
+                }
+            }
+            activeNotes.forEach { active ->
+                val status = (0x80 or active.channel).toByte()
+                port.send(byteArrayOf(status, active.note.toByte(), 0), 0, 3, now)
+            }
         } catch (_: Throwable) {
         }
     }
 
+    private fun sendActiveNoteOffMessagesIfNeeded() {
+        if (hasActivePlaybackNotes()) sendActiveNoteOffMessages()
+    }
+
+    private fun sendSustainPedalMessages(pressed: Boolean): Boolean {
+        val connection = _state.value.connection
+        if (!connection.connected) return false
+        if (!isAndroidMidiConnectionId(connection.address) && !isBluetoothEnabled()) return false
+        val port = midiInputPort ?: return false
+        val value = if (pressed) 127.toByte() else 0.toByte()
+        val now = System.nanoTime()
+        return try {
+            for (channel in 0..15) {
+                val status = (0xB0 or channel).toByte()
+                port.send(byteArrayOf(status, 64, value), 0, 3, now)
+            }
+            true
+        } catch (_: Throwable) {
+            false
+        }
+    }
+
     private fun sendVolumeMessages(percent: Int) {
-        if (appSettings.appControlsVolume) return
+        if (appSettings.volumeControlMode != VolumeControlMode.StandardMidiVolume) return
         val connection = _state.value.connection
         if (!connection.connected) return
         if (!isAndroidMidiConnectionId(connection.address) && !isBluetoothEnabled()) return
@@ -3440,24 +3977,33 @@ class NoteCastService : Service() {
         try {
             for (channel in 0..15) {
                 val control = controls[channel + 1] ?: MidiChannelControl(channel = channel + 1)
-                val value = if (control.muted || (soloActive && !control.solo)) {
-                    0
-                } else {
-                    scaledMidiVolume(127, percent, control.volumePercent)
-                }.toByte()
+                val value = controlChangeVolumeValue(control, soloActive, percent).toByte()
                 val status = (0xB0 or channel).toByte()
                 port.send(byteArrayOf(status, 7, value), 0, 3, now)
             }
-            port.flush()
         } catch (_: Throwable) {
         }
     }
 
-    private fun MidiFileParser.MidiSequence.channelNumbers(): List<Int> =
-        events.mapNotNull { event ->
-            val status = event.data.firstOrNull()?.toInt()?.and(0xFF) ?: return@mapNotNull null
-            if (status in 0x80..0xEF) (status and 0x0F) + 1 else null
+    private fun MidiFileParser.MidiSequence.playbackChannelInfos(): List<PlaybackChannelInfo> {
+        val noteChannels = events.mapNotNull { event ->
+            val data = event.data
+            if (data.size < 3) return@mapNotNull null
+            val status = data[0].toInt() and 0xFF
+            val messageType = status and 0xF0
+            val velocity = data[2].toInt() and 0xFF
+            if (messageType == 0x90 && velocity > 0) (status and 0x0F) + 1 else null
         }.distinct().sorted()
+        val channels = noteChannels.ifEmpty {
+            events.mapNotNull { event ->
+                val status = event.data.firstOrNull()?.toInt()?.and(0xFF) ?: return@mapNotNull null
+                if (status in 0x80..0xEF) (status and 0x0F) + 1 else null
+            }.distinct().sorted()
+        }
+        return channels.map { channel ->
+            PlaybackChannelInfo(channel = channel, label = channelLabels[channel])
+        }
+    }
 
     private fun List<MidiChannelControl>.normalizedControls(): Map<Int, MidiChannelControl> =
         (1..16).associateWith { channel ->
@@ -3490,6 +4036,13 @@ class NoteCastService : Service() {
             "${it.channel}:${it.muted}:${it.solo}"
         }
 
+    private fun controlChangeVolumeValue(control: MidiChannelControl, soloActive: Boolean, masterPercent: Int): Int =
+        if (control.muted || (soloActive && !control.solo)) {
+            0
+        } else {
+            scaledMidiVolume(127, masterPercent, control.volumePercent)
+        }
+
     private fun scaledMidiVolume(rawValue: Int, masterPercent: Int, channelPercent: Int): Int {
         val scaled = rawValue.coerceIn(0, 127) *
             masterPercent.coerceIn(0, 100) *
@@ -3502,6 +4055,14 @@ class NoteCastService : Service() {
         if (masterPercent <= 0 || channelPercent <= 0) return 0
         val scaled = scaledMidiVolume(raw, masterPercent, channelPercent)
         return scaled.coerceIn(1, 127)
+    }
+
+    private fun scaledMidiVelocityMinimum(rawValue: Int): Int {
+        val raw = rawValue.coerceIn(1, 127)
+        if (!appSettings.velocityScalingEnabled) return raw
+        val minimum = appSettings.minimumNoteVelocity.coerceIn(1, 127)
+        if (minimum <= 1) return raw
+        return minimum + (((raw - 1) * (127 - minimum)) + 63) / 126
     }
 
     @SuppressLint("WakelockTimeout")

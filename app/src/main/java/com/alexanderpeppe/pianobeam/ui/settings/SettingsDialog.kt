@@ -37,6 +37,7 @@ import com.alexanderpeppe.pianobeam.data.MidiChannelControl
 import com.alexanderpeppe.pianobeam.data.MidiPlaylist
 import com.alexanderpeppe.pianobeam.data.PlaybackAdvanceMode
 import com.alexanderpeppe.pianobeam.data.RepeatMode
+import com.alexanderpeppe.pianobeam.data.VolumeControlMode
 import kotlin.math.roundToInt
 
 @Composable
@@ -47,11 +48,16 @@ fun SettingsDialog(
     onSettingsChange: (AppSettings) -> Unit,
     onForgetDevice: () -> Unit,
     onDiagnostics: () -> Unit,
+    onPlayChromaticScale: (velocity: Int, noteLengthMs: Int) -> Unit,
+    onStopChromaticScale: () -> Unit,
+    onSustainPedalChange: (pressed: Boolean) -> Unit,
     onBackupLibrary: () -> Unit,
     onRestoreLibrary: () -> Unit,
     onDismiss: () -> Unit
 ) {
     var showAdvancedMidi by rememberSaveable { mutableStateOf(false) }
+    var diagnosticVelocity by rememberSaveable { mutableStateOf(64) }
+    var diagnosticNoteLengthMs by rememberSaveable { mutableStateOf(180) }
 
     AlertDialog(
         onDismissRequest = onDismiss,
@@ -110,11 +116,32 @@ fun SettingsDialog(
                             checked = settings.shufflePlaylistsByDefault,
                             onCheckedChange = { onSettingsChange(settings.copy(shufflePlaylistsByDefault = it)) }
                         )
+                        CompactDivider()
+                        RadioRow(
+                            title = "Legacy volume scaling",
+                            subtitle = "Scale note velocity for older Disklavier and PianoDisc systems",
+                            selected = settings.volumeControlMode == VolumeControlMode.LegacyVolumeScaling,
+                            onClick = { onSettingsChange(settings.copy(volumeControlMode = VolumeControlMode.LegacyVolumeScaling)) }
+                        )
+                        RadioRow(
+                            title = "Standard MIDI volume (CC7)",
+                            subtitle = "Send channel-volume control changes for newer systems",
+                            selected = settings.volumeControlMode == VolumeControlMode.StandardMidiVolume,
+                            onClick = { onSettingsChange(settings.copy(volumeControlMode = VolumeControlMode.StandardMidiVolume)) }
+                        )
                         SwitchRow(
-                            title = "App controls piano volume",
-                            subtitle = "The volume slider changes note strength for player pianos",
-                            checked = settings.appControlsVolume,
-                            onCheckedChange = { onSettingsChange(settings.copy(appControlsVolume = it)) }
+                            title = "Disklavier velocity floor",
+                            subtitle = "Raise quiet NOTE ON events to a reliable minimum",
+                            checked = settings.velocityScalingEnabled,
+                            onCheckedChange = { onSettingsChange(settings.copy(velocityScalingEnabled = it)) }
+                        )
+                        SliderRow(
+                            title = "Minimum velocity",
+                            valueLabel = settings.minimumNoteVelocity.toString(),
+                            value = settings.minimumNoteVelocity.toFloat(),
+                            range = 1f..127f,
+                            steps = 125,
+                            onValueChange = { onSettingsChange(settings.copy(minimumNoteVelocity = it.roundToInt())) }
                         )
                     }
                 }
@@ -238,12 +265,73 @@ fun SettingsDialog(
                             style = MaterialTheme.typography.bodyMedium,
                             color = MaterialTheme.colorScheme.onSurfaceVariant
                         )
-                        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                             OutlinedButton(onClick = onDiagnostics, modifier = Modifier.weight(1f)) {
-                                Text("Diagnostics")
+                                Text("Connection report")
                             }
                             OutlinedButton(onClick = onForgetDevice, modifier = Modifier.weight(1f), enabled = preferredDeviceName != null) {
                                 Text("Forget")
+                            }
+                        }
+                    }
+                }
+
+                item {
+                    SettingSection("Piano Test") {
+                        Text(
+                            "Chromatic scale: A0 to C8",
+                            style = MaterialTheme.typography.bodyMedium,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                        SliderRow(
+                            title = "Scale velocity",
+                            valueLabel = diagnosticVelocity.toString(),
+                            value = diagnosticVelocity.toFloat(),
+                            range = 1f..127f,
+                            steps = 125,
+                            onValueChange = { diagnosticVelocity = it.roundToInt().coerceIn(1, 127) }
+                        )
+                        SliderRow(
+                            title = "Note length",
+                            valueLabel = "${diagnosticNoteLengthMs}ms",
+                            value = diagnosticNoteLengthMs.toFloat(),
+                            range = 50f..1000f,
+                            steps = 18,
+                            onValueChange = {
+                                diagnosticNoteLengthMs = ((it / 10f).roundToInt() * 10).coerceIn(50, 1000)
+                            }
+                        )
+                        Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                            Button(
+                                onClick = { onPlayChromaticScale(diagnosticVelocity, diagnosticNoteLengthMs) },
+                                modifier = Modifier.weight(2f)
+                            ) {
+                                Text("Play Scale")
+                            }
+                            OutlinedButton(
+                                onClick = onStopChromaticScale,
+                                modifier = Modifier.weight(1f)
+                            ) {
+                                Text("Stop")
+                            }
+                        }
+                        Text(
+                            "Sustain pedal",
+                            style = MaterialTheme.typography.bodyMedium,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                        Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                            OutlinedButton(
+                                onClick = { onSustainPedalChange(true) },
+                                modifier = Modifier.weight(1f)
+                            ) {
+                                Text("Pedal On")
+                            }
+                            OutlinedButton(
+                                onClick = { onSustainPedalChange(false) },
+                                modifier = Modifier.weight(1f)
+                            ) {
+                                Text("Pedal Off")
                             }
                         }
                     }

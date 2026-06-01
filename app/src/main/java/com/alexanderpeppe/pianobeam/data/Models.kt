@@ -61,7 +61,8 @@ data class KuhmannSearchUiState(
     val limit: Int = 50,
     val results: List<KuhmannMidiResult> = emptyList(),
     val message: String = "Search the Kuhmann MIDI directory.",
-    val lastImportedIds: List<Int> = emptyList()
+    val lastImportedIds: List<Int> = emptyList(),
+    val activePlaybackResultId: Int? = null
 )
 
 data class ConnectionUiState(
@@ -113,13 +114,18 @@ data class RecordingUiState(
     val message: String = "Ready to record"
 )
 
+data class PlaybackChannelInfo(
+    val channel: Int,
+    val label: String? = null
+)
+
 data class AppUiState(
     val files: List<MidiLibraryItem> = emptyList(),
     val playlists: List<MidiPlaylist> = emptyList(),
     val bleDevices: List<BleMidiDeviceItem> = emptyList(),
     val connection: ConnectionUiState = ConnectionUiState(),
     val playback: PlaybackUiState = PlaybackUiState(),
-    val playbackChannels: List<Int> = emptyList(),
+    val playbackChannels: List<PlaybackChannelInfo> = emptyList(),
     val recording: RecordingUiState = RecordingUiState(),
     val kuhmann: KuhmannSearchUiState = KuhmannSearchUiState(),
     val volumePercent: Int = 88,

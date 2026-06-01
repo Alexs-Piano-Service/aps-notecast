@@ -33,6 +33,19 @@ enum class RepeatMode(val preferenceValue: String) {
     }
 }
 
+enum class VolumeControlMode(val preferenceValue: String) {
+    LegacyVolumeScaling("legacy_volume_scaling"),
+    StandardMidiVolume("standard_midi_volume");
+
+    companion object {
+        fun fromPreference(value: String?): VolumeControlMode? =
+            values().firstOrNull { it.preferenceValue == value }
+
+        fun fromLegacyPreference(appControlsVolume: Boolean): VolumeControlMode =
+            if (appControlsVolume) LegacyVolumeScaling else StandardMidiVolume
+    }
+}
+
 data class MidiChannelControl(
     val channel: Int,
     val muted: Boolean = false,
@@ -50,7 +63,9 @@ data class AppSettings(
     val playbackAdvanceMode: PlaybackAdvanceMode = PlaybackAdvanceMode.StopAfterPlaylist,
     val repeatMode: RepeatMode = RepeatMode.Off,
     val shufflePlaylistsByDefault: Boolean = false,
-    val appControlsVolume: Boolean = true,
+    val volumeControlMode: VolumeControlMode = VolumeControlMode.LegacyVolumeScaling,
+    val velocityScalingEnabled: Boolean = true,
+    val minimumNoteVelocity: Int = 32,
     val tempoPercent: Int = 100,
     val transposeSemitones: Int = 0,
     val excludeDrumChannelFromTranspose: Boolean = true,

@@ -6,6 +6,7 @@ import com.alexanderpeppe.pianobeam.data.AppThemeMode
 import com.alexanderpeppe.pianobeam.data.MidiChannelControl
 import com.alexanderpeppe.pianobeam.data.PlaybackAdvanceMode
 import com.alexanderpeppe.pianobeam.data.RepeatMode
+import com.alexanderpeppe.pianobeam.data.VolumeControlMode
 import com.alexanderpeppe.pianobeam.data.defaultChannelControls
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -33,6 +34,7 @@ class AppSettingsStore(context: Context) {
             fontScalePercent = settings.fontScalePercent.coerceIn(80, 110),
             reconnectIntervalSeconds = settings.reconnectIntervalSeconds.coerceIn(3, 60),
             reconnectTimeoutSeconds = settings.reconnectTimeoutSeconds.coerceIn(10, 180),
+            minimumNoteVelocity = settings.minimumNoteVelocity.coerceIn(1, 127),
             tempoPercent = settings.tempoPercent.coerceIn(50, 150),
             transposeSemitones = settings.transposeSemitones.coerceIn(-12, 12),
             recordingCountdownSeconds = settings.recordingCountdownSeconds.coerceIn(0, 8),
@@ -48,7 +50,10 @@ class AppSettingsStore(context: Context) {
             .putString(KEY_PLAYBACK_ADVANCE_MODE, cleanSettings.playbackAdvanceMode.preferenceValue)
             .putString(KEY_REPEAT_MODE, cleanSettings.repeatMode.preferenceValue)
             .putBoolean(KEY_SHUFFLE_PLAYLISTS, cleanSettings.shufflePlaylistsByDefault)
-            .putBoolean(KEY_APP_CONTROLS_VOLUME, cleanSettings.appControlsVolume)
+            .putString(KEY_VOLUME_CONTROL_MODE, cleanSettings.volumeControlMode.preferenceValue)
+            .putBoolean(KEY_APP_CONTROLS_VOLUME, cleanSettings.volumeControlMode == VolumeControlMode.LegacyVolumeScaling)
+            .putBoolean(KEY_VELOCITY_SCALING_ENABLED, cleanSettings.velocityScalingEnabled)
+            .putInt(KEY_MINIMUM_NOTE_VELOCITY, cleanSettings.minimumNoteVelocity)
             .putInt(KEY_TEMPO_PERCENT, cleanSettings.tempoPercent)
             .putInt(KEY_TRANSPOSE_SEMITONES, cleanSettings.transposeSemitones)
             .putBoolean(KEY_EXCLUDE_DRUM_CHANNEL, cleanSettings.excludeDrumChannelFromTranspose)
@@ -80,7 +85,10 @@ class AppSettingsStore(context: Context) {
             playbackAdvanceMode = PlaybackAdvanceMode.fromPreference(preferences.getString(KEY_PLAYBACK_ADVANCE_MODE, null)),
             repeatMode = RepeatMode.fromPreference(preferences.getString(KEY_REPEAT_MODE, null)),
             shufflePlaylistsByDefault = preferences.getBoolean(KEY_SHUFFLE_PLAYLISTS, false),
-            appControlsVolume = preferences.getBoolean(KEY_APP_CONTROLS_VOLUME, true),
+            volumeControlMode = VolumeControlMode.fromPreference(preferences.getString(KEY_VOLUME_CONTROL_MODE, null))
+                ?: VolumeControlMode.fromLegacyPreference(preferences.getBoolean(KEY_APP_CONTROLS_VOLUME, true)),
+            velocityScalingEnabled = preferences.getBoolean(KEY_VELOCITY_SCALING_ENABLED, true),
+            minimumNoteVelocity = preferences.getInt(KEY_MINIMUM_NOTE_VELOCITY, 32).coerceIn(1, 127),
             tempoPercent = preferences.getInt(KEY_TEMPO_PERCENT, 100).coerceIn(50, 150),
             transposeSemitones = preferences.getInt(KEY_TRANSPOSE_SEMITONES, 0).coerceIn(-12, 12),
             excludeDrumChannelFromTranspose = preferences.getBoolean(KEY_EXCLUDE_DRUM_CHANNEL, true),
@@ -122,7 +130,10 @@ class AppSettingsStore(context: Context) {
         private const val KEY_PLAYBACK_ADVANCE_MODE = "playback_advance_mode"
         private const val KEY_REPEAT_MODE = "repeat_mode"
         private const val KEY_SHUFFLE_PLAYLISTS = "shuffle_playlists"
+        private const val KEY_VOLUME_CONTROL_MODE = "volume_control_mode"
         private const val KEY_APP_CONTROLS_VOLUME = "app_controls_volume"
+        private const val KEY_VELOCITY_SCALING_ENABLED = "velocity_scaling_enabled"
+        private const val KEY_MINIMUM_NOTE_VELOCITY = "minimum_note_velocity"
         private const val KEY_TEMPO_PERCENT = "tempo_percent"
         private const val KEY_TRANSPOSE_SEMITONES = "transpose_semitones"
         private const val KEY_EXCLUDE_DRUM_CHANNEL = "exclude_drum_channel"
