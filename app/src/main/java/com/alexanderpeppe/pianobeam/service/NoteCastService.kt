@@ -62,6 +62,9 @@ import com.alexanderpeppe.pianobeam.data.RecordingUiState
 import com.alexanderpeppe.pianobeam.data.RepeatMode
 import com.alexanderpeppe.pianobeam.data.VolumeControlMode
 import com.alexanderpeppe.pianobeam.data.formatClockTime
+import com.alexanderpeppe.pianobeam.data.instrumentOverrideSignatureForSong
+import com.alexanderpeppe.pianobeam.data.instrumentOverridesForSong
+import com.alexanderpeppe.pianobeam.midi.GeneralMidi
 import com.alexanderpeppe.pianobeam.midi.MidiFileParser
 import com.alexanderpeppe.pianobeam.midi.MidiFileWriter
 import com.alexanderpeppe.pianobeam.net.ApsNetworkStatus
@@ -249,7 +252,8 @@ class NoteCastService : Service() {
         val tempoPercent: Int,
         val transposeSemitones: Int,
         val excludeDrumChannelFromTranspose: Boolean,
-        val channelSignature: String
+        val channelSignature: String,
+        val instrumentOverrideSignature: String
     )
 
     private data class PreparedPlaybackData(
@@ -349,12 +353,21 @@ class NoteCastService : Service() {
         val volumeBehaviorChanged = previousSettings.volumeControlMode != settings.volumeControlMode
         val channelVolumesChanged = previousSettings.channelControls.volumeSignature() != settings.channelControls.volumeSignature()
         val muteSoloChanged = previousSettings.channelControls.muteSoloSignature() != settings.channelControls.muteSoloSignature()
-        if (_state.value.connection.connected && (volumeBehaviorChanged || channelVolumesChanged || muteSoloChanged)) {
+        val activeSongId = _state.value.playback.currentItemId
+        val instrumentOverridesChanged = activeSongId != null &&
+            previousSettings.instrumentOverridesForSong(activeSongId) != settings.instrumentOverridesForSong(activeSongId)
+        if (_state.value.connection.connected && (volumeBehaviorChanged || channelVolumesChanged || muteSoloChanged || instrumentOverridesChanged)) {
             serviceScope.launch(Dispatchers.IO) {
                 if (muteSoloChanged) {
                     sendPanicMessages()
                 } else {
                     sendActiveNoteOffMessagesIfNeeded()
+                }
+                activeSongId?.takeIf { instrumentOverridesChanged }?.let { songId ->
+                    sendChangedInstrumentPrograms(
+                        previousOverrides = previousSettings.instrumentOverridesForSong(songId),
+                        currentOverrides = settings.instrumentOverridesForSong(songId)
+                    )
                 }
                 sendVolumeMessages(_state.value.volumePercent)
             }
@@ -490,20 +503,42 @@ class NoteCastService : Service() {
         if (uris.isEmpty()) return
         serviceScope.launch(Dispatchers.IO) {
             var imported = 0
+            var playlistsCreated = 0
+            val createdPlaylistNames = mutableListOf<String>()
             var failed = 0
+            var zipWithoutMidi = 0
             uris.forEach { uri ->
                 runCatching {
-                    repository.importMidi(uri)
-                    imported++
-                }.onFailure {
+                    val result = repository.importMidiOrZip(uri)
+                    imported += result.importedItems.size
+                    result.createdPlaylist?.let { playlist ->
+                        playlistsCreated++
+                        createdPlaylistNames += playlist.name
+                    }
+                }.onFailure { t ->
                     failed++
+                    if (t is MidiRepository.ZipWithoutMidiException) zipWithoutMidi++
                 }
             }
             withContext(Dispatchers.Main) {
+                val playlistTarget = if (createdPlaylistNames.size == 1) {
+                    "playlist ${createdPlaylistNames.first()}"
+                } else {
+                    "$playlistsCreated playlists"
+                }
                 val message = when {
-                    imported > 0 && failed == 0 -> "Imported $imported MIDI file${if (imported == 1) "" else "s"}."
-                    imported > 0 -> "Imported $imported MIDI file${if (imported == 1) "" else "s"}; $failed failed."
-                    else -> "Could not import the selected MIDI file${if (failed == 1) "" else "s"}."
+                    imported > 0 && failed == 0 && playlistsCreated > 0 ->
+                        "Imported $imported MIDI file${if (imported == 1) "" else "s"} into $playlistTarget."
+                    imported > 0 && failed == 0 ->
+                        "Imported $imported MIDI file${if (imported == 1) "" else "s"}."
+                    imported > 0 && playlistsCreated > 0 ->
+                        "Imported $imported MIDI file${if (imported == 1) "" else "s"} into $playlistTarget; $failed failed."
+                    imported > 0 ->
+                        "Imported $imported MIDI file${if (imported == 1) "" else "s"}; $failed failed."
+                    zipWithoutMidi > 0 && zipWithoutMidi == failed ->
+                        "ZIP files must contain at least one MIDI file."
+                    else ->
+                        "Could not import the selected MIDI file${if (failed == 1) "" else "s"}."
                 }
                 reloadLibrary(message)
             }
@@ -2339,7 +2374,7 @@ class NoteCastService : Service() {
             val bytes = withContext(Dispatchers.IO) { downloadKuhmannBytes(result) }
             coroutineContext.ensureActive()
             val parsed = MidiFileParser.parse(bytes, result.filename.ifBlank { title })
-            val prepared = prepareSequence(parsed, appSettings)
+            val prepared = prepareSequence(parsed, appSettings, instrumentOverrides = emptyMap())
             val playbackData = PreparedPlaybackData(
                 sequence = prepared,
                 channels = parsed.playbackChannelInfos()
@@ -2496,14 +2531,16 @@ class NoteCastService : Service() {
             tempoPercent = settings.tempoPercent.coerceIn(50, 150),
             transposeSemitones = settings.transposeSemitones,
             excludeDrumChannelFromTranspose = settings.excludeDrumChannelFromTranspose,
-            channelSignature = settings.channelControls.cacheSignature()
+            channelSignature = settings.channelControls.cacheSignature(),
+            instrumentOverrideSignature = settings.instrumentOverrideSignatureForSong(item.id)
         )
         synchronized(sequenceCacheLock) { preparedSequenceCache[key] }?.let { cached ->
             return@withContext cached
         }
 
         val parsed = MidiFileParser.parse(file.readBytes(), item.title)
-        val prepared = prepareSequence(parsed, settings)
+        val instrumentOverrides = settings.instrumentOverridesForSong(item.id)
+        val prepared = prepareSequence(parsed, settings, instrumentOverrides)
         val playbackData = PreparedPlaybackData(
             sequence = prepared,
             channels = parsed.playbackChannelInfos()
@@ -2530,27 +2567,57 @@ class NoteCastService : Service() {
 
     private fun prepareSequence(
         sequence: MidiFileParser.MidiSequence,
-        settings: AppSettings
+        settings: AppSettings,
+        instrumentOverrides: Map<Int, Int>
     ): MidiFileParser.MidiSequence {
         val tempoPercent = settings.tempoPercent.coerceIn(50, 150)
         val adjustedEvents = sequence.events.mapNotNull { event ->
-            transformMidiData(event.data, settings)?.let { data ->
+            transformMidiData(event.data, settings, instrumentOverrides)?.let { data ->
                 event.copy(
                     timeUs = scaleForTempo(event.timeUs, tempoPercent),
                     data = data
                 )
             }
         }
+        val cleanOverrides = instrumentOverrides.cleanInstrumentOverrides()
+        val overrideEvents = cleanOverrides.map { (channel, program) ->
+            MidiFileParser.ScheduledMidiEvent(
+                timeUs = 0L,
+                data = byteArrayOf((0xC0 or (channel - 1)).toByte(), program.toByte())
+            )
+        }
+        val eventsWithOverrides = if (cleanOverrides.isEmpty()) {
+            adjustedEvents
+        } else {
+            val zeroTimeSystemEvents = adjustedEvents.filter { event ->
+                event.timeUs == 0L && !event.data.firstStatusIsChannelMessage()
+            }
+            val remainingEvents = adjustedEvents.filterNot { event ->
+                event.timeUs == 0L && !event.data.firstStatusIsChannelMessage()
+            }
+            zeroTimeSystemEvents + overrideEvents + remainingEvents
+        }
         return sequence.copy(
             durationUs = scaleForTempo(sequence.durationUs, tempoPercent),
-            events = adjustedEvents
+            events = eventsWithOverrides
         )
     }
 
     private fun scaleForTempo(timeUs: Long, tempoPercent: Int): Long =
         ((timeUs.coerceAtLeast(0L) * 100L) / tempoPercent.coerceIn(50, 150)).coerceAtLeast(0L)
 
-    private fun transformMidiData(data: ByteArray, settings: AppSettings): ByteArray? {
+    private fun Map<Int, Int>.cleanInstrumentOverrides(): Map<Int, Int> =
+        entries
+            .filter { (channel, program) -> channel in 1..16 && program in 0..127 }
+            .associate { (channel, program) -> channel to program }
+            .toSortedMap()
+
+    private fun ByteArray.firstStatusIsChannelMessage(): Boolean {
+        val status = firstOrNull()?.toInt()?.and(0xFF) ?: return false
+        return status in 0x80..0xEF
+    }
+
+    private fun transformMidiData(data: ByteArray, settings: AppSettings, instrumentOverrides: Map<Int, Int>): ByteArray? {
         if (data.isEmpty()) return null
         val status = data[0].toInt() and 0xFF
         if (status !in 0x80..0xEF) return data
@@ -2558,6 +2625,9 @@ class NoteCastService : Service() {
 
         val copy = data.copyOf()
         val messageType = status and 0xF0
+        if (messageType == 0xC0 && instrumentOverrides[channelNumber] != null) {
+            return null
+        }
         if (
             settings.transposeSemitones != 0 &&
             (messageType == 0x80 || messageType == 0x90) &&
@@ -2578,16 +2648,22 @@ class NoteCastService : Service() {
         val status = data[0].toInt() and 0xFF
         if (status !in 0x80..0xEF) return data
         val channelNumber = (status and 0x0F) + 1
+        val instrumentOverride = appSettings.instrumentOverridesForSong(_state.value.playback.currentItemId)[channelNumber]
         val control = appSettings.channelControls.channelControl(channelNumber)
         val soloActive = appSettings.channelControls.any { it.solo }
 
         val messageType = status and 0xF0
         val controller = if (data.size > 1) data[1].toInt() and 0xFF else -1
         val value = if (data.size > 2) data[2].toInt() and 0xFF else -1
+        if (messageType == 0xC0 && data.size > 1 && instrumentOverride != null) {
+            val program = data[1].toInt() and 0xFF
+            return if (program == instrumentOverride) data else null
+        }
         val noteOffMessage = isNoteOffMessage(messageType, value)
         val safetyControllerMessage = isSafetyControllerMessage(messageType, controller, value)
+        val programChangeMessage = messageType == 0xC0
         if (control.muted || (soloActive && !control.solo)) {
-            return if (noteOffMessage || safetyControllerMessage) data else null
+            return if (noteOffMessage || safetyControllerMessage || programChangeMessage) data else null
         }
         if (messageType != 0x90 && messageType != 0xB0) return data
         val masterPercent = _state.value.volumePercent
@@ -2695,6 +2771,7 @@ class NoteCastService : Service() {
         suspend fun applySeek(progressUs: Long) {
             val cleanProgressUs = progressUs.coerceIn(0L, sequence.durationUs)
             sendPanicMessages()
+            sendProgramOverridesForSong(item.id)
             eventIndex = sequence.events.indexOfFirst { it.timeUs >= cleanProgressUs }.let { index ->
                 if (index < 0) sequence.events.size else index
             }
@@ -3965,6 +4042,50 @@ class NoteCastService : Service() {
         }
     }
 
+    private fun sendChangedInstrumentPrograms(previousOverrides: Map<Int, Int>, currentOverrides: Map<Int, Int>) {
+        val port = midiInputPort ?: return
+        val changedChannels = (previousOverrides.keys + currentOverrides.keys)
+            .filter { channel -> channel in 1..16 && previousOverrides[channel] != currentOverrides[channel] }
+            .sorted()
+        if (changedChannels.isEmpty()) return
+        val originalPrograms = _state.value.playbackChannels.associate { channelInfo ->
+            channelInfo.channel to channelInfo.programNumbers.firstOrNull()
+        }
+        val now = System.nanoTime()
+        try {
+            changedChannels.forEach { channel ->
+                val program = currentOverrides[channel]
+                    ?: originalPrograms[channel]
+                    ?: GeneralMidi.defaultProgramForChannel(channel)
+                sendProgramChange(port, channel, program, now)
+            }
+        } catch (_: Throwable) {
+        }
+    }
+
+    private fun sendProgramOverridesForSong(songId: String) {
+        val port = midiInputPort ?: return
+        val overrides = appSettings.instrumentOverridesForSong(songId).cleanInstrumentOverrides()
+        if (overrides.isEmpty()) return
+        val now = System.nanoTime()
+        try {
+            overrides.forEach { (channel, program) ->
+                sendProgramChange(port, channel, program, now)
+            }
+        } catch (_: Throwable) {
+        }
+    }
+
+    private fun sendProgramChange(port: MidiInputPort, channel: Int, program: Int, timestampNs: Long) {
+        if (channel !in 1..16 || program !in 0..127) return
+        port.send(
+            byteArrayOf((0xC0 or (channel - 1)).toByte(), program.toByte()),
+            0,
+            2,
+            timestampNs
+        )
+    }
+
     private fun sendVolumeMessages(percent: Int) {
         if (appSettings.volumeControlMode != VolumeControlMode.StandardMidiVolume) return
         val connection = _state.value.connection
@@ -4001,7 +4122,25 @@ class NoteCastService : Service() {
             }.distinct().sorted()
         }
         return channels.map { channel ->
-            PlaybackChannelInfo(channel = channel, label = channelLabels[channel])
+            val metadata = channelMetadata[channel]
+            val programNumbers = metadata?.programNumbers.orEmpty()
+            val metaInstrumentNames = metadata?.metaInstrumentNames.orEmpty()
+            val instrumentName = when {
+                programNumbers.isNotEmpty() -> programNumbers
+                    .map { GeneralMidi.sourceProgramNameForChannel(channel, it) }
+                    .distinct()
+                    .joinToString(" / ")
+                metaInstrumentNames.isNotEmpty() -> metaInstrumentNames.distinct().joinToString(" / ")
+                else -> null
+            }
+            PlaybackChannelInfo(
+                channel = channel,
+                label = channelLabels[channel],
+                instrumentName = instrumentName,
+                programNumbers = programNumbers,
+                trackTitles = metadata?.trackNames.orEmpty(),
+                metaInstrumentNames = metaInstrumentNames
+            )
         }
     }
 

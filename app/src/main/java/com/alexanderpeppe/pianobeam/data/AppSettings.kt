@@ -53,6 +53,11 @@ data class MidiChannelControl(
     val volumePercent: Int = 100
 )
 
+data class SongInstrumentOverrides(
+    val songId: String,
+    val channelPrograms: Map<Int, Int> = emptyMap()
+)
+
 data class AppSettings(
     val themeMode: AppThemeMode = AppThemeMode.System,
     val fontScalePercent: Int = 100,
@@ -74,8 +79,44 @@ data class AppSettings(
     val recordingTargetPlaylistId: String? = null,
     val recordingCountdownSeconds: Int = 0,
     val recordingMetronomeEnabled: Boolean = false,
-    val confirmDiscardRecording: Boolean = true
+    val confirmDiscardRecording: Boolean = true,
+    val songInstrumentOverrides: List<SongInstrumentOverrides> = emptyList()
 )
 
 fun defaultChannelControls(): List<MidiChannelControl> =
     (1..16).map { MidiChannelControl(channel = it) }
+
+fun AppSettings.instrumentOverridesForSong(songId: String?): Map<Int, Int> =
+    songId
+        ?.takeIf { it.isNotBlank() }
+        ?.let { id -> songInstrumentOverrides.firstOrNull { it.songId == id }?.channelPrograms }
+        .orEmpty()
+
+fun AppSettings.instrumentOverrideSignatureForSong(songId: String?): String =
+    instrumentOverridesForSong(songId)
+        .toSortedMap()
+        .entries
+        .joinToString("|") { (channel, program) -> "$channel:$program" }
+
+fun AppSettings.withSongInstrumentOverride(songId: String, channel: Int, program: Int?): AppSettings {
+    val cleanSongId = songId.takeIf { it.isNotBlank() } ?: return this
+    val cleanChannel = channel.takeIf { it in 1..16 } ?: return this
+    val existing = instrumentOverridesForSong(cleanSongId).toMutableMap()
+    if (program == null) {
+        existing.remove(cleanChannel)
+    } else {
+        existing[cleanChannel] = program.coerceIn(0, 127)
+    }
+    val updated = songInstrumentOverrides
+        .filterNot { it.songId == cleanSongId }
+        .toMutableList()
+    if (existing.isNotEmpty()) {
+        updated += SongInstrumentOverrides(cleanSongId, existing.toSortedMap())
+    }
+    return copy(songInstrumentOverrides = updated.sortedBy { it.songId })
+}
+
+fun AppSettings.withClearedSongInstrumentOverrides(songId: String): AppSettings {
+    val cleanSongId = songId.takeIf { it.isNotBlank() } ?: return this
+    return copy(songInstrumentOverrides = songInstrumentOverrides.filterNot { it.songId == cleanSongId })
+}

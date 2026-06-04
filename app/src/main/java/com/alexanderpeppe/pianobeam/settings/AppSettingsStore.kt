@@ -6,11 +6,14 @@ import com.alexanderpeppe.pianobeam.data.AppThemeMode
 import com.alexanderpeppe.pianobeam.data.MidiChannelControl
 import com.alexanderpeppe.pianobeam.data.PlaybackAdvanceMode
 import com.alexanderpeppe.pianobeam.data.RepeatMode
+import com.alexanderpeppe.pianobeam.data.SongInstrumentOverrides
 import com.alexanderpeppe.pianobeam.data.VolumeControlMode
 import com.alexanderpeppe.pianobeam.data.defaultChannelControls
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import org.json.JSONArray
+import org.json.JSONObject
 
 class AppSettingsStore(context: Context) {
     private val preferences = context.applicationContext.getSharedPreferences(PREFERENCES_NAME, Context.MODE_PRIVATE)
@@ -38,7 +41,8 @@ class AppSettingsStore(context: Context) {
             tempoPercent = settings.tempoPercent.coerceIn(50, 150),
             transposeSemitones = settings.transposeSemitones.coerceIn(-12, 12),
             recordingCountdownSeconds = settings.recordingCountdownSeconds.coerceIn(0, 8),
-            channelControls = normalizedChannelControls(settings.channelControls)
+            channelControls = normalizedChannelControls(settings.channelControls),
+            songInstrumentOverrides = normalizedSongInstrumentOverrides(settings.songInstrumentOverrides)
         )
         preferences.edit()
             .putString(KEY_THEME_MODE, cleanSettings.themeMode.preferenceValue)
@@ -62,6 +66,7 @@ class AppSettingsStore(context: Context) {
             .putInt(KEY_RECORDING_COUNTDOWN_SECONDS, cleanSettings.recordingCountdownSeconds)
             .putBoolean(KEY_RECORDING_METRONOME, cleanSettings.recordingMetronomeEnabled)
             .putBoolean(KEY_CONFIRM_DISCARD_RECORDING, cleanSettings.confirmDiscardRecording)
+            .putString(KEY_SONG_INSTRUMENT_OVERRIDES, encodeSongInstrumentOverrides(cleanSettings.songInstrumentOverrides))
             .also { editor ->
                 cleanSettings.channelControls.forEach { control ->
                     val prefix = channelKeyPrefix(control.channel)
@@ -104,7 +109,8 @@ class AppSettingsStore(context: Context) {
             recordingTargetPlaylistId = preferences.getString(KEY_RECORDING_TARGET_PLAYLIST, null),
             recordingCountdownSeconds = preferences.getInt(KEY_RECORDING_COUNTDOWN_SECONDS, 0).coerceIn(0, 8),
             recordingMetronomeEnabled = preferences.getBoolean(KEY_RECORDING_METRONOME, false),
-            confirmDiscardRecording = preferences.getBoolean(KEY_CONFIRM_DISCARD_RECORDING, true)
+            confirmDiscardRecording = preferences.getBoolean(KEY_CONFIRM_DISCARD_RECORDING, true),
+            songInstrumentOverrides = decodeSongInstrumentOverrides(preferences.getString(KEY_SONG_INSTRUMENT_OVERRIDES, null))
         )
 
     private fun normalizedChannelControls(controls: List<MidiChannelControl>): List<MidiChannelControl> {
@@ -115,6 +121,66 @@ class AppSettingsStore(context: Context) {
                 volumePercent = byChannel[channel]?.volumePercent?.coerceIn(0, 100) ?: 100
             ) ?: MidiChannelControl(channel = channel)
         }
+    }
+
+    private fun normalizedSongInstrumentOverrides(overrides: List<SongInstrumentOverrides>): List<SongInstrumentOverrides> {
+        val bySong = linkedMapOf<String, MutableMap<Int, Int>>()
+        overrides.forEach { override ->
+            val songId = override.songId.takeIf { it.isNotBlank() } ?: return@forEach
+            val channelPrograms = bySong.getOrPut(songId) { linkedMapOf() }
+            override.channelPrograms.forEach { (channel, program) ->
+                if (channel in 1..16 && program in 0..127) {
+                    channelPrograms[channel] = program
+                }
+            }
+        }
+        return bySong.mapNotNull { (songId, programs) ->
+            programs.takeIf { it.isNotEmpty() }?.let {
+                SongInstrumentOverrides(songId = songId, channelPrograms = it.toSortedMap())
+            }
+        }.sortedBy { it.songId }
+    }
+
+    private fun encodeSongInstrumentOverrides(overrides: List<SongInstrumentOverrides>): String {
+        val array = JSONArray()
+        normalizedSongInstrumentOverrides(overrides).forEach { override ->
+            val channels = JSONObject()
+            override.channelPrograms.toSortedMap().forEach { (channel, program) ->
+                channels.put(channel.toString(), program)
+            }
+            array.put(
+                JSONObject()
+                    .put("song_id", override.songId)
+                    .put("channels", channels)
+            )
+        }
+        return array.toString()
+    }
+
+    private fun decodeSongInstrumentOverrides(rawJson: String?): List<SongInstrumentOverrides> {
+        if (rawJson.isNullOrBlank()) return emptyList()
+        return runCatching {
+            val array = JSONArray(rawJson)
+            buildList {
+                for (index in 0 until array.length()) {
+                    val obj = array.optJSONObject(index) ?: continue
+                    val songId = obj.optString("song_id").takeIf { it.isNotBlank() } ?: continue
+                    val channels = obj.optJSONObject("channels") ?: continue
+                    val programs = mutableMapOf<Int, Int>()
+                    val keys = channels.keys()
+                    while (keys.hasNext()) {
+                        val channel = keys.next().toIntOrNull()
+                        val program = channel?.let { channels.optInt(it.toString(), -1) }
+                        if (channel != null && channel in 1..16 && program != null && program in 0..127) {
+                            programs[channel] = program
+                        }
+                    }
+                    if (programs.isNotEmpty()) {
+                        add(SongInstrumentOverrides(songId = songId, channelPrograms = programs.toSortedMap()))
+                    }
+                }
+            }
+        }.getOrElse { emptyList() }.let(::normalizedSongInstrumentOverrides)
     }
 
     private fun channelKeyPrefix(channel: Int): String = "channel_$channel"
@@ -142,5 +208,6 @@ class AppSettingsStore(context: Context) {
         private const val KEY_RECORDING_COUNTDOWN_SECONDS = "recording_countdown_seconds"
         private const val KEY_RECORDING_METRONOME = "recording_metronome"
         private const val KEY_CONFIRM_DISCARD_RECORDING = "confirm_discard_recording"
+        private const val KEY_SONG_INSTRUMENT_OVERRIDES = "song_instrument_overrides"
     }
 }

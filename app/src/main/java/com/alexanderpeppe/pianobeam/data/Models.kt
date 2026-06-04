@@ -116,7 +116,11 @@ data class RecordingUiState(
 
 data class PlaybackChannelInfo(
     val channel: Int,
-    val label: String? = null
+    val label: String? = null,
+    val instrumentName: String? = null,
+    val programNumbers: List<Int> = emptyList(),
+    val trackTitles: List<String> = emptyList(),
+    val metaInstrumentNames: List<String> = emptyList()
 )
 
 data class AppUiState(

@@ -162,6 +162,10 @@ import com.alexanderpeppe.pianobeam.data.PlaybackUiState
 import com.alexanderpeppe.pianobeam.data.VolumeControlMode
 import com.alexanderpeppe.pianobeam.data.formatClockTime
 import com.alexanderpeppe.pianobeam.data.formatDuration
+import com.alexanderpeppe.pianobeam.data.instrumentOverridesForSong
+import com.alexanderpeppe.pianobeam.data.withClearedSongInstrumentOverrides
+import com.alexanderpeppe.pianobeam.data.withSongInstrumentOverride
+import com.alexanderpeppe.pianobeam.midi.GeneralMidi
 import com.alexanderpeppe.pianobeam.net.ApsNetworkStatus
 import com.alexanderpeppe.pianobeam.reporting.BugReportClient
 import com.alexanderpeppe.pianobeam.reporting.BugReportInput
@@ -173,6 +177,18 @@ import com.alexanderpeppe.pianobeam.ui.theme.NoteCastTheme
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlin.math.roundToInt
+
+private val midiImportMimeTypes = arrayOf(
+    "audio/midi",
+    "audio/x-midi",
+    "audio/mid",
+    "application/x-midi",
+    "application/zip",
+    "application/x-zip",
+    "application/x-zip-compressed",
+    "application/octet-stream",
+    "*/*"
+)
 
 class MainActivity : ComponentActivity() {
     private var service by mutableStateOf<NoteCastService?>(null)
@@ -908,7 +924,7 @@ private fun LibraryPane(
                     LibraryHero(
                         fileCount = state.files.size,
                         playlistCount = state.playlists.size,
-                        onImport = { importLauncher.launch(arrayOf("audio/midi", "audio/x-midi", "application/octet-stream", "*/*")) },
+                        onImport = { importLauncher.launch(midiImportMimeTypes) },
                         onBrowseKuhmann = { showKuhmannDialog = true },
                         onRecord = { showRecordDialog = true },
                         onCreatePlaylist = { showPlaylistDialog = true },
@@ -919,7 +935,7 @@ private fun LibraryPane(
                 if (state.files.isEmpty() && state.playlists.isEmpty()) {
                     item(span = { GridItemSpan(maxLineSpan) }) {
                         EmptyLibraryCard(
-                            onImport = { importLauncher.launch(arrayOf("audio/midi", "audio/x-midi", "application/octet-stream", "*/*")) },
+                            onImport = { importLauncher.launch(midiImportMimeTypes) },
                             onCreatePlaylist = { showPlaylistDialog = true }
                         )
                     }
@@ -2528,10 +2544,13 @@ private fun VolumeControl(
     }
 }
 
-private data class MixerChannelGroup(
-    val label: String,
-    val channels: List<Int>,
-    val detail: String
+private data class MixerChannelRowModel(
+    val channel: Int,
+    val instrumentName: String,
+    val detail: String,
+    val selectedProgram: Int,
+    val hasInstrumentOverride: Boolean,
+    val infoLines: List<Pair<String, String>>
 )
 
 @Composable
@@ -2542,8 +2561,13 @@ private fun VolumeMixerDialog(
     onSettingsChange: (AppSettings) -> Unit,
     onDismiss: () -> Unit
 ) {
-    val groups = remember(state.playback.isActive, state.playbackChannels) {
-        mixerChannelGroups(if (state.playback.isActive) state.playbackChannels else emptyList())
+    val currentSongId = state.playback.currentItemId?.takeIf { itemId -> state.files.any { it.id == itemId } }
+    val songInstrumentOverrides = settings.instrumentOverridesForSong(currentSongId)
+    val rows = remember(state.playback.isActive, state.playbackChannels, currentSongId, settings.songInstrumentOverrides) {
+        mixerChannelRows(
+            channels = if (state.playback.isActive) state.playbackChannels else emptyList(),
+            songInstrumentOverrides = songInstrumentOverrides
+        )
     }
     Dialog(
         onDismissRequest = onDismiss,
@@ -2592,7 +2616,7 @@ private fun VolumeMixerDialog(
                             onVolumeChange = service::setVolume
                         )
                     }
-                    if (groups.isEmpty()) {
+                    if (rows.isEmpty()) {
                         item {
                             Text(
                                 "No mixable channels in this MIDI file.",
@@ -2602,16 +2626,30 @@ private fun VolumeMixerDialog(
                             )
                         }
                     } else {
-                        items(groups, key = { it.label }) { group ->
+                        items(rows, key = { it.channel }) { row ->
                             MixerChannelRow(
-                                group = group,
+                                row = row,
+                                currentSongId = currentSongId,
                                 settings = settings,
                                 onSettingsChange = onSettingsChange
                             )
                         }
                     }
                 }
-                Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End) {
+                Row(
+                    Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp, Alignment.End),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    if (currentSongId != null && songInstrumentOverrides.isNotEmpty()) {
+                        TextButton(
+                            onClick = {
+                                onSettingsChange(settings.withClearedSongInstrumentOverrides(currentSongId))
+                            }
+                        ) {
+                            Text("Clear song instruments")
+                        }
+                    }
                     Button(onClick = onDismiss) {
                         Text("Done")
                     }
@@ -2660,13 +2698,17 @@ private fun MixerMainVolumeRow(
 
 @Composable
 private fun MixerChannelRow(
-    group: MixerChannelGroup,
+    row: MixerChannelRowModel,
+    currentSongId: String?,
     settings: AppSettings,
     onSettingsChange: (AppSettings) -> Unit
 ) {
-    val controls = group.channels.map { settings.channelControls.controlForChannel(it) }
+    val channels = listOf(row.channel)
+    val controls = channels.map { settings.channelControls.controlForChannel(it) }
     val volumePercent = controls.map { it.volumePercent.coerceIn(0, 100) }.average().roundToInt().coerceIn(0, 100)
     val muted = controls.all { it.muted }
+    var showInfo by remember { mutableStateOf(false) }
+    var showInstrumentMenu by remember { mutableStateOf(false) }
     Surface(
         modifier = Modifier.fillMaxWidth(),
         shape = RoundedCornerShape(6.dp),
@@ -2675,20 +2717,36 @@ private fun MixerChannelRow(
         Column(Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
             Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                 Column(Modifier.weight(1f)) {
-                    Text(
-                        group.label,
-                        style = MaterialTheme.typography.titleMedium,
-                        fontWeight = FontWeight.Bold,
-                        maxLines = 2,
-                        overflow = TextOverflow.Ellipsis
-                    )
-                    Text(
-                        group.detail,
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        maxLines = 1,
-                        overflow = TextOverflow.Ellipsis
-                    )
+                    Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+                        Text(
+                            row.instrumentName,
+                            modifier = Modifier.weight(1f),
+                            style = MaterialTheme.typography.titleMedium,
+                            fontWeight = FontWeight.Bold,
+                            maxLines = 2,
+                            overflow = TextOverflow.Ellipsis
+                        )
+                        if (row.infoLines.isNotEmpty()) {
+                            IconButton(onClick = { showInfo = true }, modifier = Modifier.size(32.dp)) {
+                                Icon(Icons.Default.Info, contentDescription = "Channel information", modifier = Modifier.size(18.dp))
+                            }
+                        }
+                    }
+                    Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        Text(
+                            row.detail,
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis
+                        )
+                        if (row.hasInstrumentOverride) {
+                            AssistChip(
+                                onClick = {},
+                                label = { Text("Song override", maxLines = 1) }
+                            )
+                        }
+                    }
                 }
                 Text("${volumePercent}%", style = MaterialTheme.typography.bodyMedium)
                 Checkbox(
@@ -2696,7 +2754,7 @@ private fun MixerChannelRow(
                     onCheckedChange = { checked ->
                         onSettingsChange(
                             settings.copy(
-                                channelControls = settings.channelControls.updateChannels(group.channels) {
+                                channelControls = settings.channelControls.updateChannels(channels) {
                                     it.copy(muted = checked)
                                 }
                             )
@@ -2705,13 +2763,51 @@ private fun MixerChannelRow(
                 )
                 Text("Mute", style = MaterialTheme.typography.bodySmall)
             }
+            Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                Box {
+                    OutlinedButton(
+                        onClick = { showInstrumentMenu = true },
+                        enabled = currentSongId != null
+                    ) {
+                        Text("Change")
+                    }
+                    DropdownMenu(expanded = showInstrumentMenu, onDismissRequest = { showInstrumentMenu = false }) {
+                        GeneralMidi.programNames.forEachIndexed { program, _ ->
+                            DropdownMenuItem(
+                                text = { Text(GeneralMidi.programLabel(program)) },
+                                leadingIcon = {
+                                    if (program == row.selectedProgram) {
+                                        Icon(Icons.Default.Check, contentDescription = null)
+                                    }
+                                },
+                                onClick = {
+                                    currentSongId?.let { songId ->
+                                        showInstrumentMenu = false
+                                        onSettingsChange(settings.withSongInstrumentOverride(songId, row.channel, program))
+                                    }
+                                }
+                            )
+                        }
+                    }
+                }
+                if (currentSongId != null && row.hasInstrumentOverride) {
+                    IconButton(
+                        onClick = {
+                            onSettingsChange(settings.withSongInstrumentOverride(currentSongId, row.channel, null))
+                        },
+                        modifier = Modifier.size(40.dp)
+                    ) {
+                        Icon(Icons.Default.Refresh, contentDescription = "Clear instrument override")
+                    }
+                }
+            }
             Slider(
                 value = volumePercent.toFloat(),
                 onValueChange = { value ->
                     val cleanValue = value.roundToInt().coerceIn(0, 100)
                     onSettingsChange(
                         settings.copy(
-                            channelControls = settings.channelControls.updateChannels(group.channels) {
+                            channelControls = settings.channelControls.updateChannels(channels) {
                                 it.copy(volumePercent = cleanValue)
                             }
                         )
@@ -2722,38 +2818,98 @@ private fun MixerChannelRow(
             )
         }
     }
+    if (showInfo) {
+        MixerChannelInfoDialog(row = row, onDismiss = { showInfo = false })
+    }
 }
 
-private fun mixerChannelGroups(channels: List<PlaybackChannelInfo>): List<MixerChannelGroup> {
+@Composable
+private fun MixerChannelInfoDialog(row: MixerChannelRowModel, onDismiss: () -> Unit) {
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        icon = { Icon(Icons.Default.Info, contentDescription = null) },
+        title = { Text(row.instrumentName) },
+        text = {
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .heightIn(max = 360.dp)
+                    .verticalScroll(rememberScrollState()),
+                verticalArrangement = Arrangement.spacedBy(10.dp)
+            ) {
+                row.infoLines.forEach { (label, value) ->
+                    Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                        Text(label, style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                        Text(value, style = MaterialTheme.typography.bodyMedium)
+                    }
+                }
+            }
+        },
+        confirmButton = {
+            TextButton(onClick = onDismiss) { Text("Done") }
+        }
+    )
+}
+
+private fun mixerChannelRows(
+    channels: List<PlaybackChannelInfo>,
+    songInstrumentOverrides: Map<Int, Int>
+): List<MixerChannelRowModel> {
     val present = channels
         .filter { it.channel in 1..16 }
         .distinctBy { it.channel }
         .sortedBy { it.channel }
-    return buildList {
-        present
-            .filter { !it.label.isNullOrBlank() }
-            .groupBy { it.label.orEmpty().trim() }
-            .forEach { (label, channelInfos) ->
-                val groupChannels = channelInfos.map { it.channel }
-                add(MixerChannelGroup(label, groupChannels, groupChannels.channelDetail()))
-            }
-        val unlabeledChannels = present
-            .filter { it.label.isNullOrBlank() }
-            .map { it.channel }
-        val pianoChannels = unlabeledChannels.filter { it == 1 || it == 2 }
-        if (pianoChannels.isNotEmpty()) {
-            add(MixerChannelGroup("Piano", pianoChannels, pianoChannels.channelDetail()))
+    return present.map { channelInfo ->
+        val overrideProgram = songInstrumentOverrides[channelInfo.channel]
+        val sourceProgram = channelInfo.programNumbers.firstOrNull()
+        val instrumentName = when {
+            overrideProgram != null -> GeneralMidi.programName(overrideProgram)
+            !channelInfo.instrumentName.isNullOrBlank() -> channelInfo.instrumentName
+            sourceProgram != null -> GeneralMidi.sourceProgramNameForChannel(channelInfo.channel, sourceProgram)
+            else -> GeneralMidi.defaultInstrumentNameForChannel(channelInfo.channel)
         }
-        unlabeledChannels
-            .filterNot { it == 1 || it == 2 }
-            .forEach { channel ->
-                add(MixerChannelGroup("Channel $channel", listOf(channel), "Channel $channel"))
-            }
+        MixerChannelRowModel(
+            channel = channelInfo.channel,
+            instrumentName = instrumentName,
+            detail = listOf(channelInfo.channel).channelDetail(),
+            selectedProgram = overrideProgram ?: sourceProgram ?: GeneralMidi.defaultProgramForChannel(channelInfo.channel),
+            hasInstrumentOverride = overrideProgram != null,
+            infoLines = channelInfo.infoLines(overrideProgram)
+        )
     }
 }
 
 private fun List<Int>.channelDetail(): String =
     if (size == 1) "Channel ${first()}" else "Channels ${joinToString(" and ")}"
+
+private fun PlaybackChannelInfo.infoLines(overrideProgram: Int?): List<Pair<String, String>> {
+    val hasExtraInfo = overrideProgram != null ||
+        programNumbers.isNotEmpty() ||
+        trackTitles.isNotEmpty() ||
+        metaInstrumentNames.isNotEmpty() ||
+        !label.isNullOrBlank()
+    if (!hasExtraInfo) return emptyList()
+    return buildList {
+        add("MIDI channel" to channel.toString())
+        if (overrideProgram != null) {
+            add("Song override" to GeneralMidi.programLabel(overrideProgram))
+        }
+        if (programNumbers.isNotEmpty()) {
+            add("MIDI program" to programNumbers.distinct().joinToString(" / ") {
+                GeneralMidi.sourceProgramLabelForChannel(channel, it)
+            })
+        }
+        if (metaInstrumentNames.isNotEmpty()) {
+            add("Instrument name" to metaInstrumentNames.distinct().joinToString(" / "))
+        }
+        if (trackTitles.isNotEmpty()) {
+            add("Track title" to trackTitles.distinct().joinToString(" / "))
+        }
+        label?.takeIf { it.isNotBlank() && it !in metaInstrumentNames && it !in trackTitles }?.let {
+            add("Channel title" to it)
+        }
+    }
+}
 
 private fun List<MidiChannelControl>.controlForChannel(channel: Int): MidiChannelControl =
     firstOrNull { it.channel == channel }?.let { control ->

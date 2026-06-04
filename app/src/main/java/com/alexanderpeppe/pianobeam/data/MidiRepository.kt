@@ -10,6 +10,7 @@ import org.json.JSONArray
 import org.json.JSONObject
 import java.io.File
 import java.util.UUID
+import java.util.zip.ZipInputStream
 
 class MidiRepository(private val context: Context) {
     companion object {
@@ -23,6 +24,20 @@ class MidiRepository(private val context: Context) {
             "Frederic Chopin - Etude Op. 10 No. 5 (KimG-04).mid"
         private const val DEMO_PLAYLIST_ID = "demo-playlist-two-chopin-pieces"
     }
+
+    class ZipWithoutMidiException(displayName: String) : IllegalArgumentException(
+        "$displayName does not contain MIDI files."
+    )
+
+    data class ImportResult(
+        val importedItems: List<MidiLibraryItem>,
+        val createdPlaylist: MidiPlaylist? = null
+    )
+
+    private data class ZipMidiEntry(
+        val displayName: String,
+        val bytes: ByteArray
+    )
 
     private val midiDir: File = File(context.filesDir, "midi").apply { mkdirs() }
     private val metadataFile: File = File(context.filesDir, "library.json")
@@ -112,11 +127,72 @@ class MidiRepository(private val context: Context) {
     }
 
     @Synchronized
+    fun importMidiOrZip(uri: Uri): ImportResult {
+        val displayName = queryDisplayName(uri) ?: "Imported MIDI ${System.currentTimeMillis()}.mid"
+        val mimeType = runCatching { context.contentResolver.getType(uri) }.getOrNull().orEmpty()
+        val bytes = context.contentResolver.openInputStream(uri).use { input ->
+            requireNotNull(input) { "Could not open $displayName" }
+            input.readBytes()
+        }
+        return if (displayName.isZipFileName() || mimeType.isZipMimeType() || bytes.hasZipHeader()) {
+            importZipBytes(bytes, displayName)
+        } else {
+            ImportResult(importedItems = listOf(importMidiBytes(bytes, displayName)))
+        }
+    }
+
+    @Synchronized
+    fun importZipBytes(bytes: ByteArray, displayName: String): ImportResult {
+        val cleanDisplayName = displayName.ifBlank { "Imported ZIP ${System.currentTimeMillis()}.zip" }
+        val entries = readMidiEntriesFromZip(bytes)
+        if (entries.isEmpty()) throw ZipWithoutMidiException(cleanDisplayName)
+
+        val importedAtMs = System.currentTimeMillis()
+        val importedItems = entries.mapIndexed { index, entry ->
+            createMidiItem(
+                bytes = entry.bytes,
+                displayName = entry.displayName,
+                notePrefix = "Imported from $cleanDisplayName",
+                preferredTitle = null,
+                importedAtMs = importedAtMs + index
+            )
+        }
+        val playlist = MidiPlaylist(
+            id = UUID.randomUUID().toString(),
+            name = cleanDisplayName.toZipPlaylistTitle(),
+            itemIds = importedItems.map { it.id },
+            createdAtMs = System.currentTimeMillis()
+        )
+        val snapshot = load()
+        save(snapshot.copy(files = snapshot.files + importedItems, playlists = snapshot.playlists + playlist))
+        return ImportResult(importedItems = importedItems, createdPlaylist = playlist)
+    }
+
+    @Synchronized
     fun importMidiBytes(
         bytes: ByteArray,
         displayName: String,
         notePrefix: String = "",
         preferredTitle: String? = null
+    ): MidiLibraryItem {
+        val item = createMidiItem(
+            bytes = bytes,
+            displayName = displayName,
+            notePrefix = notePrefix,
+            preferredTitle = preferredTitle,
+            importedAtMs = System.currentTimeMillis()
+        )
+        val snapshot = load()
+        save(snapshot.copy(files = snapshot.files + item))
+        return item
+    }
+
+    private fun createMidiItem(
+        bytes: ByteArray,
+        displayName: String,
+        notePrefix: String,
+        preferredTitle: String?,
+        importedAtMs: Long
     ): MidiLibraryItem {
         val cleanDisplayName = displayName.ifBlank { "Imported MIDI ${System.currentTimeMillis()}.mid" }.ensureMidiExtension()
         val id = UUID.randomUUID().toString()
@@ -136,18 +212,15 @@ class MidiRepository(private val context: Context) {
             .filterNot { it.isNullOrBlank() }
             .joinToString("; ")
 
-        val item = MidiLibraryItem(
+        return MidiLibraryItem(
             id = id,
             title = title,
             originalName = cleanDisplayName,
             storedFileName = storedName,
             durationUs = durationUs,
-            importedAtMs = System.currentTimeMillis(),
+            importedAtMs = importedAtMs,
             notes = notes
         )
-        val snapshot = load()
-        save(snapshot.copy(files = snapshot.files + item))
-        return item
     }
 
     @Synchronized
@@ -468,9 +541,60 @@ class MidiRepository(private val context: Context) {
         }.getOrNull()
     }
 
+    private fun readMidiEntriesFromZip(bytes: ByteArray): List<ZipMidiEntry> = buildList {
+        ZipInputStream(bytes.inputStream()).use { zip ->
+            while (true) {
+                val entry = zip.nextEntry ?: break
+                try {
+                    if (!entry.isDirectory && entry.name.isMidiFileName()) {
+                        val displayName = entry.name.zipEntryDisplayName()
+                        add(ZipMidiEntry(displayName, zip.readBytes()))
+                    }
+                } finally {
+                    zip.closeEntry()
+                }
+            }
+        }
+    }
+
+    private fun String.zipEntryDisplayName(): String {
+        val name = substringAfterLast('/').substringAfterLast('\\').trim()
+        return name.ifBlank { "Imported MIDI ${System.currentTimeMillis()}.mid" }.ensureMidiExtension()
+    }
+
     private fun String.removeMidiExtension(): String =
         replace(Regex("\\.(mid|midi)$", RegexOption.IGNORE_CASE), "")
 
     private fun String.ensureMidiExtension(): String =
         if (endsWith(".mid", ignoreCase = true) || endsWith(".midi", ignoreCase = true)) this else "$this.mid"
+
+    private fun String.isMidiFileName(): Boolean =
+        endsWith(".mid", ignoreCase = true) || endsWith(".midi", ignoreCase = true)
+
+    private fun String.isZipFileName(): Boolean =
+        endsWith(".zip", ignoreCase = true)
+
+    private fun String.isZipMimeType(): Boolean =
+        equals("application/zip", ignoreCase = true) ||
+            equals("application/x-zip", ignoreCase = true) ||
+            equals("application/x-zip-compressed", ignoreCase = true)
+
+    private fun ByteArray.hasZipHeader(): Boolean =
+        size >= 4 &&
+            this[0] == 0x50.toByte() &&
+            this[1] == 0x4B.toByte() &&
+            (
+                (this[2] == 0x03.toByte() && this[3] == 0x04.toByte()) ||
+                    (this[2] == 0x05.toByte() && this[3] == 0x06.toByte()) ||
+                    (this[2] == 0x07.toByte() && this[3] == 0x08.toByte())
+            )
+
+    private fun String.toZipPlaylistTitle(): String {
+        val name = substringAfterLast('/').substringAfterLast('\\')
+            .replace(Regex("\\.zip$", RegexOption.IGNORE_CASE), "")
+            .replace('_', ' ')
+            .trim()
+            .replace(Regex("\\s+"), " ")
+        return name.ifBlank { "Imported Playlist" }
+    }
 }

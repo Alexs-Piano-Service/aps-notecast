@@ -10,12 +10,20 @@ object MidiFileParser {
         val title: String,
         val durationUs: Long,
         val events: List<ScheduledMidiEvent>,
-        val channelLabels: Map<Int, String> = emptyMap()
+        val channelLabels: Map<Int, String> = emptyMap(),
+        val channelMetadata: Map<Int, ChannelMetadata> = emptyMap()
     )
 
     data class ScheduledMidiEvent(
         val timeUs: Long,
         val data: ByteArray
+    )
+
+    data class ChannelMetadata(
+        val channel: Int,
+        val trackNames: List<String> = emptyList(),
+        val metaInstrumentNames: List<String> = emptyList(),
+        val programNumbers: List<Int> = emptyList()
     )
 
     private data class RawMidiEvent(
@@ -34,7 +42,8 @@ object MidiFileParser {
         val trackName: String?,
         val instrumentName: String?,
         val channelPrefix: Int?,
-        val noteChannels: Set<Int>
+        val noteChannels: Set<Int>,
+        val programsByChannel: Map<Int, List<Int>>
     )
 
     fun parse(bytes: ByteArray, fallbackTitle: String): MidiSequence {
@@ -70,6 +79,7 @@ object MidiFileParser {
             var instrumentName: String? = null
             var channelPrefix: Int? = null
             val noteChannels = mutableSetOf<Int>()
+            val programsByChannel = mutableMapOf<Int, MutableList<Int>>()
 
             while (reader.position < trackEnd) {
                 tick += reader.readVariableLengthQuantity()
@@ -131,6 +141,10 @@ object MidiFileParser {
                         if (messageType == 0x90 && message.size > 2 && (message[2].toInt() and 0xFF) > 0) {
                             noteChannels += (status and 0x0F) + 1
                         }
+                        if (messageType == 0xC0 && message.size > 1) {
+                            val channel = (status and 0x0F) + 1
+                            programsByChannel.getOrPut(channel) { mutableListOf() } += (message[1].toInt() and 0xFF)
+                        }
                         rawEvents += RawMidiEvent(tick, message, order++)
                     }
 
@@ -142,14 +156,22 @@ object MidiFileParser {
                 trackName = trackName,
                 instrumentName = instrumentName,
                 channelPrefix = channelPrefix,
-                noteChannels = noteChannels
+                noteChannels = noteChannels,
+                programsByChannel = programsByChannel.mapValues { (_, programs) -> programs.distinct() }
             )
         }
 
         val scheduled = schedule(rawEvents, tempos, division)
         val duration = scheduled.maxOfOrNull { it.timeUs } ?: 0L
         val cleanTitle = title ?: fallbackTitle.replace(Regex("\\.(mid|midi)$", RegexOption.IGNORE_CASE), "")
-        return MidiSequence(cleanTitle, duration, scheduled, channelLabels(trackInfos, cleanTitle))
+        val metadata = channelMetadata(trackInfos, cleanTitle)
+        return MidiSequence(
+            title = cleanTitle,
+            durationUs = duration,
+            events = scheduled,
+            channelLabels = channelLabels(metadata),
+            channelMetadata = metadata
+        )
     }
 
     private fun cleanMetaText(data: ByteArray): String? =
@@ -159,23 +181,58 @@ object MidiFileParser {
             .replace(Regex("\\s+"), " ")
             .takeIf { it.isNotBlank() }
 
-    private fun channelLabels(trackInfos: List<TrackInfo>, title: String): Map<Int, String> {
-        val labels = mutableMapOf<Int, MutableList<String>>()
+    private fun channelMetadata(trackInfos: List<TrackInfo>, title: String): Map<Int, ChannelMetadata> {
+        val metadata = mutableMapOf<Int, MutableChannelMetadata>()
         trackInfos.forEach { info ->
-            val label = info.instrumentName
-                ?: info.trackName?.takeUnless { it.equals(title, ignoreCase = true) }
-                ?: return@forEach
+            info.programsByChannel.forEach { (channel, programs) ->
+                if (channel in 1..16) {
+                    metadata.getOrPut(channel) { MutableChannelMetadata(channel) }.programNumbers += programs
+                }
+            }
             val channels = when {
                 info.noteChannels.isNotEmpty() -> info.noteChannels
                 info.channelPrefix != null -> setOf(info.channelPrefix)
+                info.programsByChannel.isNotEmpty() -> info.programsByChannel.keys
                 else -> emptySet()
             }
             channels.filter { it in 1..16 }.forEach { channel ->
-                labels.getOrPut(channel) { mutableListOf() } += label
+                val channelMetadata = metadata.getOrPut(channel) { MutableChannelMetadata(channel) }
+                info.instrumentName?.let { channelMetadata.metaInstrumentNames += it }
+                info.trackName
+                    ?.takeUnless { it.equals(title, ignoreCase = true) }
+                    ?.let { channelMetadata.trackNames += it }
             }
         }
-        return labels.mapValues { (_, values) -> values.distinct().joinToString(" / ") }
+        return metadata.mapValues { (_, value) ->
+            ChannelMetadata(
+                channel = value.channel,
+                trackNames = value.trackNames.cleanDistinct(),
+                metaInstrumentNames = value.metaInstrumentNames.cleanDistinct(),
+                programNumbers = value.programNumbers.distinct().filter { it in 0..127 }
+            )
+        }
     }
+
+    private fun channelLabels(metadata: Map<Int, ChannelMetadata>): Map<Int, String> =
+        metadata.mapNotNull { (channel, value) ->
+            (value.metaInstrumentNames + value.trackNames)
+                .cleanDistinct()
+                .joinToString(" / ")
+                .takeIf { it.isNotBlank() }
+                ?.let { channel to it }
+        }.toMap()
+
+    private fun List<String>.cleanDistinct(): List<String> =
+        map { it.trim() }
+            .filter { it.isNotBlank() }
+            .distinct()
+
+    private data class MutableChannelMetadata(
+        val channel: Int,
+        val trackNames: MutableList<String> = mutableListOf(),
+        val metaInstrumentNames: MutableList<String> = mutableListOf(),
+        val programNumbers: MutableList<Int> = mutableListOf()
+    )
 
     private fun schedule(
         rawEvents: List<RawMidiEvent>,
