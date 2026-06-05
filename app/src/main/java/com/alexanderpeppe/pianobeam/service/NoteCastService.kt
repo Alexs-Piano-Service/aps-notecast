@@ -271,6 +271,11 @@ class NoteCastService : Service() {
         override fun removeEldestEntry(eldest: MutableMap.MutableEntry<PreparedSequenceCacheKey, PreparedPlaybackData>?): Boolean =
             size > 4
     }
+    private val kuhmannSearchCacheLock = Any()
+    private val kuhmannSearchCache = object : LinkedHashMap<KuhmannSearchNetworkKey, KuhmannRawSearchResponse>(16, 0.75f, true) {
+        override fun removeEldestEntry(eldest: MutableMap.MutableEntry<KuhmannSearchNetworkKey, KuhmannRawSearchResponse>?): Boolean =
+            size > 24
+    }
 
     private val activePlaybackNotesLock = Any()
     private val activePlaybackNotes = BooleanArray(16 * 128)
@@ -564,6 +569,28 @@ class NoteCastService : Service() {
             }
             return
         }
+        kuhmannSearchJob?.cancel()
+        kuhmannSearchJob = null
+        cachedKuhmannSearchResults(cleanQuery, format, pianoOnly, cleanChannel, cleanLimit)?.let { response ->
+            val message = response.kuhmannSearchMessage()
+            _state.update {
+                it.copy(
+                    kuhmann = it.kuhmann.copy(
+                        searching = false,
+                        query = cleanQuery,
+                        format = format,
+                        pianoOnly = pianoOnly,
+                        channel = cleanChannel,
+                        limit = cleanLimit,
+                        results = response.results,
+                        message = message,
+                        lastImportedIds = emptyList()
+                    ),
+                    lastMessage = message
+                )
+            }
+            return
+        }
         if (!ApsNetworkStatus.canReachInternet(this)) {
             val message = ApsNetworkStatus.userMessage(this)
             _state.update {
@@ -582,7 +609,6 @@ class NoteCastService : Service() {
             }
             return
         }
-        kuhmannSearchJob?.cancel()
         _state.update {
             it.copy(
                 kuhmann = it.kuhmann.copy(
@@ -601,11 +627,7 @@ class NoteCastService : Service() {
                 fetchKuhmannSearchResults(cleanQuery, format, pianoOnly, cleanChannel, cleanLimit)
             }.onSuccess { response ->
                 withContext(Dispatchers.Main) {
-                    val message = if (response.results.isEmpty()) {
-                        "No Kuhmann MIDI files matched."
-                    } else {
-                        "Found ${response.results.size} of ${response.count} Kuhmann MIDI file${if (response.count == 1) "" else "s"}."
-                    }
+                    val message = response.kuhmannSearchMessage()
                     _state.update {
                         it.copy(
                             kuhmann = it.kuhmann.copy(
@@ -2651,27 +2673,32 @@ class NoteCastService : Service() {
         val instrumentOverride = appSettings.instrumentOverridesForSong(_state.value.playback.currentItemId)[channelNumber]
         val control = appSettings.channelControls.channelControl(channelNumber)
         val soloActive = appSettings.channelControls.any { it.solo }
+        val outputChannel = outputChannelForCurrentPlayback(channelNumber)
 
         val messageType = status and 0xF0
         val controller = if (data.size > 1) data[1].toInt() and 0xFF else -1
         val value = if (data.size > 2) data[2].toInt() and 0xFF else -1
         if (messageType == 0xC0 && data.size > 1 && instrumentOverride != null) {
             val program = data[1].toInt() and 0xFF
-            return if (program == instrumentOverride) data else null
+            return if (program == instrumentOverride) data.withMidiChannel(outputChannel) else null
         }
         val noteOffMessage = isNoteOffMessage(messageType, value)
         val safetyControllerMessage = isSafetyControllerMessage(messageType, controller, value)
         val programChangeMessage = messageType == 0xC0
         if (control.muted || (soloActive && !control.solo)) {
-            return if (noteOffMessage || safetyControllerMessage || programChangeMessage) data else null
+            return if (noteOffMessage || safetyControllerMessage || programChangeMessage) {
+                data.withMidiChannel(outputChannel)
+            } else {
+                null
+            }
         }
-        if (messageType != 0x90 && messageType != 0xB0) return data
+        if (messageType != 0x90 && messageType != 0xB0) return data.withMidiChannel(outputChannel)
         val masterPercent = _state.value.volumePercent
 
         if (appSettings.volumeControlMode == VolumeControlMode.StandardMidiVolume && messageType == 0xB0 && data.size > 2 && controller == 7) {
             val copy = data.copyOf()
             copy[2] = controlChangeVolumeValue(control, soloActive, masterPercent).toByte()
-            return copy
+            return copy.withMidiChannel(outputChannel)
         }
         if (
             messageType == 0x90 &&
@@ -2688,9 +2715,43 @@ class NoteCastService : Service() {
             val adjusted = scaledMidiVelocityMinimum(scaled)
             val copy = data.copyOf()
             copy[2] = adjusted.toByte()
-            return copy
+            return copy.withMidiChannel(outputChannel)
         }
-        return data
+        return data.withMidiChannel(outputChannel)
+    }
+
+    private fun outputChannelForCurrentPlayback(sourceChannel: Int): Int {
+        if (sourceChannel !in 1..16) return sourceChannel
+        if (sourceChannel == 1 || sourceChannel == 2) return 1
+        val overrideProgram = appSettings.instrumentOverridesForSong(_state.value.playback.currentItemId)[sourceChannel]
+        if (overrideProgram != null) {
+            return if (GeneralMidi.isAcousticGrandPianoProgram(overrideProgram)) 1 else sourceChannel
+        }
+        val channelInfo = _state.value.playbackChannels.firstOrNull { it.channel == sourceChannel }
+        return if (channelInfo?.usesAcousticGrandPianoInstrument() == true) 1 else sourceChannel
+    }
+
+    private fun ByteArray.withMidiChannel(outputChannel: Int): ByteArray {
+        if (outputChannel !in 1..16 || isEmpty()) return this
+        val status = this[0].toInt() and 0xFF
+        if (status !in 0x80..0xEF) return this
+        val currentChannel = (status and 0x0F) + 1
+        if (currentChannel == outputChannel) return this
+        return copyOf().also { copy ->
+            copy[0] = ((status and 0xF0) or (outputChannel - 1)).toByte()
+        }
+    }
+
+    private fun PlaybackChannelInfo.usesAcousticGrandPianoInstrument(): Boolean {
+        if (channel == 10) return false
+        if (programNumbers.any { GeneralMidi.isAcousticGrandPianoProgram(it) }) return true
+        val names = buildList {
+            label?.let { add(it) }
+            instrumentName?.let { add(it) }
+            addAll(trackTitles)
+            addAll(metaInstrumentNames)
+        }
+        return names.any { GeneralMidi.isAcousticGrandPianoName(it) }
     }
 
     private fun isNoteOffMessage(messageType: Int, value: Int): Boolean =
@@ -2878,15 +2939,40 @@ class NoteCastService : Service() {
         if (_state.value.playback.currentItemId == itemId && _state.value.playback.isActive) stopPlayback(userRequested = true)
     }
 
+    private data class KuhmannSearchNetworkKey(
+        val query: String,
+        val format: Int?,
+        val channel: Int?,
+        val requestLimit: Int
+    )
+
+    private data class KuhmannRawSearchResponse(val count: Int, val results: List<KuhmannMidiResult>)
+
     private data class KuhmannSearchResponse(val count: Int, val results: List<KuhmannMidiResult>)
 
     private fun fetchKuhmannSearchResults(query: String, format: Int?, pianoOnly: Boolean, channel: Int?, limit: Int): KuhmannSearchResponse {
-        val requestLimit = if (pianoOnly) KUHMANN_SEARCH_MAX_LIMIT else limit
+        val requestLimit = KUHMANN_SEARCH_MAX_LIMIT
+        val cacheKey = KuhmannSearchNetworkKey(
+            query = query.trim(),
+            format = format,
+            channel = channel,
+            requestLimit = requestLimit
+        )
+        val raw = synchronized(kuhmannSearchCacheLock) { kuhmannSearchCache[cacheKey] }
+            ?: fetchKuhmannRawSearchResults(cacheKey).also { response ->
+                synchronized(kuhmannSearchCacheLock) {
+                    kuhmannSearchCache[cacheKey] = response
+                }
+            }
+        return filterKuhmannSearchResults(raw, pianoOnly, limit)
+    }
+
+    private fun fetchKuhmannRawSearchResults(cacheKey: KuhmannSearchNetworkKey): KuhmannRawSearchResponse {
         val params = buildList {
-            if (query.isNotBlank()) add("q=${query.urlEncoded()}")
-            if (format != null) add("format=$format")
-            if (channel != null) add("channel=$channel")
-            add("limit=$requestLimit")
+            if (cacheKey.query.isNotBlank()) add("q=${cacheKey.query.urlEncoded()}")
+            if (cacheKey.format != null) add("format=${cacheKey.format}")
+            if (cacheKey.channel != null) add("channel=${cacheKey.channel}")
+            add("limit=${cacheKey.requestLimit}")
         }
         val response = httpGetText(URL("$KUHMANN_SEARCH_URL?${params.joinToString("&")}"))
         val root = JSONObject(response)
@@ -2928,19 +3014,50 @@ class NoteCastService : Service() {
                 )
             }
         }
+        return KuhmannRawSearchResponse(count = root.optInt("count", results.size), results = results)
+    }
+
+    private fun cachedKuhmannSearchResults(query: String, format: Int?, pianoOnly: Boolean, channel: Int?, limit: Int): KuhmannSearchResponse? {
+        val cacheKey = KuhmannSearchNetworkKey(
+            query = query.trim(),
+            format = format,
+            channel = channel,
+            requestLimit = KUHMANN_SEARCH_MAX_LIMIT
+        )
+        val raw = synchronized(kuhmannSearchCacheLock) { kuhmannSearchCache[cacheKey] } ?: return null
+        return filterKuhmannSearchResults(raw, pianoOnly, limit)
+    }
+
+    private fun filterKuhmannSearchResults(raw: KuhmannRawSearchResponse, pianoOnly: Boolean, limit: Int): KuhmannSearchResponse {
         val filteredResults = if (pianoOnly) {
-            results.filter { it.isPianoOnlyCandidate() }.take(limit)
+            raw.results.filter { it.isPianoOnlyCandidate() }
         } else {
-            results
+            raw.results.filter { it.isEnsembleCandidate() }
         }
-        val count = if (pianoOnly) filteredResults.size else root.optInt("count", filteredResults.size)
-        return KuhmannSearchResponse(count = count, results = filteredResults)
+        return KuhmannSearchResponse(
+            count = filteredResults.size,
+            results = filteredResults.take(limit.coerceIn(1, KUHMANN_SEARCH_MAX_LIMIT))
+        )
+    }
+
+    private fun KuhmannSearchResponse.kuhmannSearchMessage(): String {
+        return if (results.isEmpty()) {
+            "No Kuhmann MIDI files matched."
+        } else {
+            "Found ${results.size} of $count Kuhmann MIDI file${if (count == 1) "" else "s"}."
+        }
     }
 
     private fun KuhmannMidiResult.isPianoOnlyCandidate(): Boolean {
         val cleanChannels = channels.distinct().sorted()
         val reportedCount = if (channelCount > 0) channelCount else cleanChannels.size
         return reportedCount <= 3 && (cleanChannels.isEmpty() || cleanChannels.all { it in 1..3 })
+    }
+
+    private fun KuhmannMidiResult.isEnsembleCandidate(): Boolean {
+        val cleanChannels = channels.distinct()
+        val reportedCount = if (channelCount > 0) channelCount else cleanChannels.size
+        return reportedCount > 1 && !isPianoOnlyCandidate()
     }
 
     private fun downloadKuhmannBytes(result: KuhmannMidiResult): ByteArray {
@@ -4057,7 +4174,7 @@ class NoteCastService : Service() {
                 val program = currentOverrides[channel]
                     ?: originalPrograms[channel]
                     ?: GeneralMidi.defaultProgramForChannel(channel)
-                sendProgramChange(port, channel, program, now)
+                sendProgramChange(port, outputChannelForProgram(channel, program), program, now)
             }
         } catch (_: Throwable) {
         }
@@ -4070,11 +4187,14 @@ class NoteCastService : Service() {
         val now = System.nanoTime()
         try {
             overrides.forEach { (channel, program) ->
-                sendProgramChange(port, channel, program, now)
+                sendProgramChange(port, outputChannelForProgram(channel, program), program, now)
             }
         } catch (_: Throwable) {
         }
     }
+
+    private fun outputChannelForProgram(sourceChannel: Int, program: Int): Int =
+        if (sourceChannel in 1..16 && GeneralMidi.isAcousticGrandPianoProgram(program)) 1 else sourceChannel
 
     private fun sendProgramChange(port: MidiInputPort, channel: Int, program: Int, timestampNs: Long) {
         if (channel !in 1..16 || program !in 0..127) return

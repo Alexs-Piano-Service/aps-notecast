@@ -3611,14 +3611,21 @@ private fun KuhmannMidiDialog(
     }
     val selectedResults = state.results.filter { selected[it.id] == true && it.id !in state.lastImportedIds }
     val limitLabel = limitText.toIntOrNull()?.coerceIn(1, 999)?.toString() ?: "50"
-    val searchAction = {
+    fun runSearch(searchPianoOnly: Boolean) {
         service.searchKuhmannMidi(
             query = query,
             format = null,
-            pianoOnly = pianoOnly,
+            pianoOnly = searchPianoOnly,
             channel = null,
             limit = limitText.toIntOrNull() ?: 50
         )
+    }
+    val searchAction = { runSearch(pianoOnly) }
+    val modeChangeAction: (Boolean) -> Unit = { newPianoOnly ->
+        pianoOnly = newPianoOnly
+        if (query.isNotBlank() && !state.downloading) {
+            runSearch(newPianoOnly)
+        }
     }
     val downloadAction = { service.downloadKuhmannMidi(selectedResults) }
 
@@ -3693,7 +3700,7 @@ private fun KuhmannMidiDialog(
                         Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
                             KuhmannSearchFilters(
                                 pianoOnly = pianoOnly,
-                                onPianoOnlyChange = { pianoOnly = it },
+                                onPianoOnlyChange = modeChangeAction,
                                 modifier = Modifier.fillMaxWidth()
                             )
                             TextButton(onClick = { showLimitControl = !showLimitControl }) {
@@ -3708,7 +3715,7 @@ private fun KuhmannMidiDialog(
                             Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                                 KuhmannSearchFilters(
                                     pianoOnly = pianoOnly,
-                                    onPianoOnlyChange = { pianoOnly = it },
+                                    onPianoOnlyChange = modeChangeAction,
                                     modifier = Modifier.weight(1f)
                                 )
                                 TextButton(onClick = { showLimitControl = !showLimitControl }) {

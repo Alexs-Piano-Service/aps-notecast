@@ -148,6 +148,12 @@ object GeneralMidi {
             programLabel(program)
         }
 
+    fun isAcousticGrandPianoProgram(program: Int): Boolean =
+        program == 0
+
+    fun isAcousticGrandPianoName(name: String): Boolean =
+        name.trim().equals("Acoustic Grand Piano", ignoreCase = true)
+
     fun defaultProgramForChannel(channel: Int): Int = 0
 
     fun defaultInstrumentNameForChannel(channel: Int): String =
