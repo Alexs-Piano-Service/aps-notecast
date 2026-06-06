@@ -4,6 +4,18 @@ All notable changes to APS NoteCast are documented here.
 
 ## Unreleased
 
+## 0.1.5
+
+### Added
+
+- ZIP imports that create playlists from bundled MIDI files.
+- Cached Kuhmann searches with automatic Piano Only/Ensemble re-filtering.
+
+### Changed
+
+- Ensemble Kuhmann search results now only show multi-channel ensemble candidates.
+- Disklavier playback now routes source channels 0/1 and Acoustic Grand Piano parts to MIDI channel 0.
+
 ## 0.1.4
 
 ### Added

@@ -2629,6 +2629,7 @@ private fun VolumeMixerDialog(
                         items(rows, key = { it.channel }) { row ->
                             MixerChannelRow(
                                 row = row,
+                                service = service,
                                 currentSongId = currentSongId,
                                 settings = settings,
                                 onSettingsChange = onSettingsChange
@@ -2699,6 +2700,7 @@ private fun MixerMainVolumeRow(
 @Composable
 private fun MixerChannelRow(
     row: MixerChannelRowModel,
+    service: NoteCastService,
     currentSongId: String?,
     settings: AppSettings,
     onSettingsChange: (AppSettings) -> Unit
@@ -2771,28 +2773,11 @@ private fun MixerChannelRow(
                     ) {
                         Text("Change")
                     }
-                    DropdownMenu(expanded = showInstrumentMenu, onDismissRequest = { showInstrumentMenu = false }) {
-                        GeneralMidi.programNames.forEachIndexed { program, _ ->
-                            DropdownMenuItem(
-                                text = { Text(GeneralMidi.programLabel(program)) },
-                                leadingIcon = {
-                                    if (program == row.selectedProgram) {
-                                        Icon(Icons.Default.Check, contentDescription = null)
-                                    }
-                                },
-                                onClick = {
-                                    currentSongId?.let { songId ->
-                                        showInstrumentMenu = false
-                                        onSettingsChange(settings.withSongInstrumentOverride(songId, row.channel, program))
-                                    }
-                                }
-                            )
-                        }
-                    }
                 }
                 if (currentSongId != null && row.hasInstrumentOverride) {
                     IconButton(
                         onClick = {
+                            service.applyLiveInstrumentOverride(currentSongId, row.channel, null)
                             onSettingsChange(settings.withSongInstrumentOverride(currentSongId, row.channel, null))
                         },
                         modifier = Modifier.size(40.dp)
@@ -2820,6 +2805,93 @@ private fun MixerChannelRow(
     }
     if (showInfo) {
         MixerChannelInfoDialog(row = row, onDismiss = { showInfo = false })
+    }
+    if (showInstrumentMenu && currentSongId != null) {
+        InstrumentPickerDialog(
+            row = row,
+            onDismiss = { showInstrumentMenu = false },
+            onSelect = { program ->
+                showInstrumentMenu = false
+                service.applyLiveInstrumentOverride(currentSongId, row.channel, program)
+                onSettingsChange(settings.withSongInstrumentOverride(currentSongId, row.channel, program))
+            }
+        )
+    }
+}
+
+@Composable
+private fun InstrumentPickerDialog(
+    row: MixerChannelRowModel,
+    onDismiss: () -> Unit,
+    onSelect: (Int) -> Unit
+) {
+    val programIds = remember { GeneralMidi.programNames.indices.toList() }
+    Dialog(
+        onDismissRequest = onDismiss,
+        properties = DialogProperties(usePlatformDefaultWidth = false)
+    ) {
+        Surface(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(12.dp)
+                .widthIn(max = 560.dp)
+                .heightIn(max = 680.dp),
+            shape = RoundedCornerShape(8.dp),
+            color = MaterialTheme.colorScheme.surface,
+            tonalElevation = 6.dp
+        ) {
+            Column(
+                modifier = Modifier.padding(16.dp),
+                verticalArrangement = Arrangement.spacedBy(10.dp)
+            ) {
+                Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                    Icon(Icons.Default.MusicNote, contentDescription = null)
+                    Column(Modifier.weight(1f)) {
+                        Text("Instrument", style = MaterialTheme.typography.headlineSmall, maxLines = 1)
+                        Text(
+                            row.detail,
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis
+                        )
+                    }
+                    IconButton(onClick = onDismiss, modifier = Modifier.size(40.dp)) {
+                        Icon(Icons.Default.Close, contentDescription = "Close")
+                    }
+                }
+                LazyColumn(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .weight(1f),
+                    verticalArrangement = Arrangement.spacedBy(2.dp)
+                ) {
+                    items(programIds, key = { it }) { program ->
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .clickable { onSelect(program) }
+                                .padding(horizontal = 8.dp, vertical = 10.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(10.dp)
+                        ) {
+                            Box(modifier = Modifier.size(24.dp), contentAlignment = Alignment.Center) {
+                                if (program == row.selectedProgram) {
+                                    Icon(Icons.Default.Check, contentDescription = null, modifier = Modifier.size(20.dp))
+                                }
+                            }
+                            Text(
+                                GeneralMidi.programLabel(program),
+                                modifier = Modifier.weight(1f),
+                                style = MaterialTheme.typography.bodyLarge,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis
+                            )
+                        }
+                    }
+                }
+            }
+        }
     }
 }
 

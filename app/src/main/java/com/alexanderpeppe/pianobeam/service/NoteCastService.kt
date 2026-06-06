@@ -75,6 +75,7 @@ import kotlinx.coroutines.CoroutineStart
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.asCoroutineDispatcher
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -92,6 +93,7 @@ import java.net.URL
 import java.net.URLEncoder
 import java.security.MessageDigest
 import java.util.UUID
+import java.util.concurrent.Executors
 import java.util.concurrent.atomic.AtomicLong
 import kotlin.math.min
 import kotlin.coroutines.coroutineContext
@@ -119,6 +121,8 @@ class NoteCastService : Service() {
         private const val SCHEDULE_AHEAD_NS = 45_000_000L
         private const val START_DELAY_NS = 160_000_000L
         private const val PROGRESS_POST_INTERVAL_NS = 220_000_000L
+        private const val MAX_TRACKED_NOTE_STACK = 127
+        private const val PLAYBACK_THREAD_NAME = "NoteCastPlayback"
         private const val DIAGNOSTIC_FIRST_PIANO_NOTE = 21 // A0
         private const val DIAGNOSTIC_LAST_PIANO_NOTE = 108 // C8
         private const val PREFS_NAME = "pianobeam"
@@ -152,6 +156,11 @@ class NoteCastService : Service() {
     private val binder = LocalBinder()
     private val serviceJob = SupervisorJob()
     private val serviceScope = CoroutineScope(serviceJob + Dispatchers.Main.immediate)
+    private val playbackDispatcher = Executors.newSingleThreadExecutor { runnable ->
+        Thread(runnable, PLAYBACK_THREAD_NAME).apply {
+            priority = Thread.NORM_PRIORITY + 1
+        }
+    }.asCoroutineDispatcher()
     private val mainHandler = Handler(Looper.getMainLooper())
 
     private lateinit var repository: MidiRepository
@@ -263,7 +272,8 @@ class NoteCastService : Service() {
 
     private data class ActiveMidiNote(
         val channel: Int,
-        val note: Int
+        val note: Int,
+        val count: Int
     )
 
     private val sequenceCacheLock = Any()
@@ -278,7 +288,10 @@ class NoteCastService : Service() {
     }
 
     private val activePlaybackNotesLock = Any()
-    private val activePlaybackNotes = BooleanArray(16 * 128)
+    private val activePlaybackNotes = IntArray(16 * 128)
+    private val playbackNoteOnsSinceQuiet = IntArray(16 * 128)
+    private val touchedPlaybackNotes = BooleanArray(16 * 128)
+    private val midiSendLock = Any()
     private val recordingLock = Any()
     private val recordingEvents = mutableListOf<MidiFileWriter.RecordedEvent>()
     private var recordingStartedNs = 0L
@@ -348,6 +361,7 @@ class NoteCastService : Service() {
             mediaSession.isActive = false
             mediaSession.release()
         }
+        playbackDispatcher.close()
         serviceJob.cancel()
         super.onDestroy()
     }
@@ -405,12 +419,10 @@ class NoteCastService : Service() {
                     val port = midiInputPort ?: throw IOException("MIDI connection was lost")
                     val noteOn = byteArrayOf(0x90.toByte(), note.toByte(), cleanVelocity.toByte())
                     val noteOff = byteArrayOf(0x80.toByte(), note.toByte(), 0)
-                    port.send(noteOn, 0, noteOn.size, System.nanoTime())
-                    setActivePlaybackNote(channel = 0, note = note, active = true)
+                    sendTrackedMidiData(port, noteOn, System.nanoTime())
                     playedAnyNote = true
                     delay(cleanNoteLengthMs.toLong())
-                    port.send(noteOff, 0, noteOff.size, System.nanoTime())
-                    setActivePlaybackNote(channel = 0, note = note, active = false)
+                    sendTrackedMidiData(port, noteOff, System.nanoTime())
                     delay(noteOffDelayMs)
                 }
                 withContext(Dispatchers.Main) {
@@ -789,7 +801,7 @@ class NoteCastService : Service() {
             )
         }
         updatePlaybackSurfaces(updateNotification = true)
-        playbackJob = serviceScope.launch(Dispatchers.Default) {
+        playbackJob = serviceScope.launch(playbackDispatcher) {
             if (replacingActivePlayback) {
                 withContext(Dispatchers.IO) { sendPanicMessages() }
                 delay(120)
@@ -2028,6 +2040,29 @@ class NoteCastService : Service() {
         }
     }
 
+    fun applyLiveInstrumentOverride(songId: String, channel: Int, program: Int?) {
+        val cleanSongId = songId.takeIf { it.isNotBlank() } ?: return
+        val cleanChannel = channel.takeIf { it in 1..16 } ?: return
+        val playbackItemId = _state.value.playback.currentItemId ?: return
+        if (playbackItemId != cleanSongId && displayPlaybackItemId(playbackItemId) != cleanSongId) return
+        if (!_state.value.playback.isActive || !_state.value.connection.connected) return
+
+        val previousOverrides = appSettings.instrumentOverridesForSong(cleanSongId)
+        val currentOverrides = previousOverrides.toMutableMap().also { overrides ->
+            if (program == null) {
+                overrides.remove(cleanChannel)
+            } else {
+                overrides[cleanChannel] = program.coerceIn(0, 127)
+            }
+        }.cleanInstrumentOverrides()
+
+        if (previousOverrides.cleanInstrumentOverrides() == currentOverrides) return
+        serviceScope.launch(Dispatchers.IO) {
+            sendActiveNoteOffMessagesIfNeeded()
+            sendChangedInstrumentPrograms(previousOverrides, currentOverrides)
+        }
+    }
+
     fun startRecording(title: String) {
         if (!_state.value.connection.connected || midiOutputPort == null) {
             postMessage("Connect to a BLE MIDI device with an output port before recording.")
@@ -2201,8 +2236,8 @@ class NoteCastService : Service() {
         skipRequest = 0
         seekRequestUs = -1L
         serviceScope.launch(Dispatchers.IO) {
-            repeat(2) {
-                sendPanicMessages()
+            repeat(2) { index ->
+                sendPanicMessages(clearTrackedNotesAfterSend = index == 1)
                 delay(120)
             }
             withContext(Dispatchers.Main) {
@@ -2255,7 +2290,7 @@ class NoteCastService : Service() {
             )
         }
         updatePlaybackSurfaces(updateNotification = true)
-        playbackJob = serviceScope.launch(Dispatchers.Default) {
+        playbackJob = serviceScope.launch(playbackDispatcher) {
             if (replacingActivePlayback) {
                 withContext(Dispatchers.IO) { sendPanicMessages() }
                 delay(120)
@@ -2771,6 +2806,26 @@ class NoteCastService : Service() {
         return if (status in 0x80..0xEF) 0L else SCHEDULE_AHEAD_NS
     }
 
+    private fun sendPlaybackMidiData(data: ByteArray, timestampNs: Long): Boolean {
+        val port = midiInputPort ?: throw IOException("MIDI connection was lost")
+        var sent = false
+        synchronized(midiSendLock) {
+            if (!_state.value.playback.isPaused) {
+                port.send(data, 0, data.size, timestampNs)
+                trackPlaybackNoteState(data)
+                sent = true
+            }
+        }
+        return sent
+    }
+
+    private fun sendTrackedMidiData(port: MidiInputPort, data: ByteArray, timestampNs: Long) {
+        synchronized(midiSendLock) {
+            port.send(data, 0, data.size, timestampNs)
+            trackPlaybackNoteState(data)
+        }
+    }
+
     private fun trackPlaybackNoteState(data: ByteArray) {
         if (data.size < 3) return
         val status = data[0].toInt() and 0xFF
@@ -2780,16 +2835,27 @@ class NoteCastService : Service() {
         val note = data[1].toInt() and 0xFF
         val value = data[2].toInt() and 0xFF
         when {
-            messageType == 0x90 && value > 0 && note in 0..127 -> setActivePlaybackNote(channel, note, active = true)
-            (messageType == 0x80 || messageType == 0x90) && note in 0..127 -> setActivePlaybackNote(channel, note, active = false)
+            messageType == 0x90 && value > 0 && note in 0..127 -> incrementActivePlaybackNote(channel, note)
+            (messageType == 0x80 || messageType == 0x90) && note in 0..127 -> decrementActivePlaybackNote(channel, note)
             messageType == 0xB0 && (note == 120 || note == 123) -> clearActivePlaybackChannel(channel)
         }
     }
 
-    private fun setActivePlaybackNote(channel: Int, note: Int, active: Boolean) {
+    private fun incrementActivePlaybackNote(channel: Int, note: Int) {
         if (channel !in 0..15 || note !in 0..127) return
         synchronized(activePlaybackNotesLock) {
-            activePlaybackNotes[channel * 128 + note] = active
+            val index = channel * 128 + note
+            activePlaybackNotes[index] = (activePlaybackNotes[index] + 1).coerceAtMost(MAX_TRACKED_NOTE_STACK)
+            playbackNoteOnsSinceQuiet[index] = (playbackNoteOnsSinceQuiet[index] + 1).coerceAtMost(MAX_TRACKED_NOTE_STACK)
+            touchedPlaybackNotes[index] = true
+        }
+    }
+
+    private fun decrementActivePlaybackNote(channel: Int, note: Int) {
+        if (channel !in 0..15 || note !in 0..127) return
+        synchronized(activePlaybackNotesLock) {
+            val index = channel * 128 + note
+            activePlaybackNotes[index] = (activePlaybackNotes[index] - 1).coerceAtLeast(0)
         }
     }
 
@@ -2797,30 +2863,60 @@ class NoteCastService : Service() {
         if (channel !in 0..15) return
         synchronized(activePlaybackNotesLock) {
             val offset = channel * 128
-            for (note in 0..127) activePlaybackNotes[offset + note] = false
+            for (note in 0..127) {
+                activePlaybackNotes[offset + note] = 0
+                playbackNoteOnsSinceQuiet[offset + note] = 0
+                touchedPlaybackNotes[offset + note] = false
+            }
         }
     }
 
     private fun clearActivePlaybackNotes() {
         synchronized(activePlaybackNotesLock) {
-            activePlaybackNotes.fill(false)
+            activePlaybackNotes.fill(0)
+            playbackNoteOnsSinceQuiet.fill(0)
+            touchedPlaybackNotes.fill(false)
         }
     }
 
     private fun hasActivePlaybackNotes(): Boolean =
         synchronized(activePlaybackNotesLock) {
-            activePlaybackNotes.any { it }
+            activePlaybackNotes.any { it > 0 } || playbackNoteOnsSinceQuiet.any { it > 0 } || touchedPlaybackNotes.any { it }
         }
 
-    private fun activePlaybackNotesSnapshotAndClear(): List<ActiveMidiNote> =
+    private fun activePlaybackNotesSnapshot(): List<ActiveMidiNote> =
         synchronized(activePlaybackNotesLock) {
             buildList {
-                activePlaybackNotes.forEachIndexed { index, active ->
-                    if (active) add(ActiveMidiNote(channel = index / 128, note = index % 128))
+                activePlaybackNotes.forEachIndexed { index, count ->
+                    val quietCount = maxOf(count, playbackNoteOnsSinceQuiet[index])
+                    if (quietCount > 0 || touchedPlaybackNotes[index]) {
+                        add(
+                            ActiveMidiNote(
+                                channel = index / 128,
+                                note = index % 128,
+                                count = quietCount.coerceAtLeast(1)
+                            )
+                        )
+                    }
                 }
-                activePlaybackNotes.fill(false)
             }
         }
+
+    private fun clearActivePlaybackNotes(notes: List<ActiveMidiNote>) {
+        if (notes.isEmpty()) return
+        synchronized(activePlaybackNotesLock) {
+            notes.forEach { active ->
+                if (active.channel in 0..15 && active.note in 0..127) {
+                    val index = active.channel * 128 + active.note
+                    activePlaybackNotes[index] = (activePlaybackNotes[index] - active.count.coerceAtLeast(0)).coerceAtLeast(0)
+                    playbackNoteOnsSinceQuiet[index] = (playbackNoteOnsSinceQuiet[index] - active.count.coerceAtLeast(0)).coerceAtLeast(0)
+                    if (activePlaybackNotes[index] == 0 && playbackNoteOnsSinceQuiet[index] == 0) {
+                        touchedPlaybackNotes[index] = false
+                    }
+                }
+            }
+        }
+    }
 
     private suspend fun playSequence(sequence: MidiFileParser.MidiSequence, item: MidiLibraryItem) {
         var startNs = System.nanoTime() + START_DELAY_NS
@@ -2889,13 +2985,12 @@ class NoteCastService : Service() {
                     applySeek(it)
                     continue@loop
                 }
+                if (_state.value.playback.isPaused) continue@loop
                 val targetNs = startNs + event.timeUs * 1_000L + pauseOffsetNs
-                val port = midiInputPort ?: throw IOException("MIDI connection was lost")
                 val data = applyLiveVolume(event.data)
                 if (data != null) {
                     val sendTimestampNs = if (scheduleAheadNsForEvent(data) == 0L) System.nanoTime() else targetNs
-                    port.send(data, 0, data.size, sendTimestampNs)
-                    trackPlaybackNoteState(data)
+                    if (!sendPlaybackMidiData(data, sendTimestampNs)) continue@loop
                 }
 
                 val nowNs = System.nanoTime()
@@ -4077,68 +4172,127 @@ class NoteCastService : Service() {
         _state.update { it.copy(recording = RecordingUiState()) }
     }
 
-    private fun sendPanicMessages() {
-        sendActiveNoteOffMessages()
-        val connection = _state.value.connection
-        if (!connection.connected) {
-            clearActivePlaybackNotes()
-            return
-        }
-        if (!isAndroidMidiConnectionId(connection.address) && !isBluetoothEnabled()) {
-            clearActivePlaybackNotes()
-            return
-        }
-        val port = midiInputPort ?: run {
-            clearActivePlaybackNotes()
-            return
-        }
-        val now = System.nanoTime()
-        try {
-            for (channel in 0..15) {
-                val status = (0xB0 or channel).toByte()
-                val messages = arrayOf(
-                    byteArrayOf(status, 64, 0),   // sustain pedal off
-                    byteArrayOf(status, 66, 0),   // sostenuto off
-                    byteArrayOf(status, 67, 0),   // soft pedal off
-                    byteArrayOf(status, 120.toByte(), 0), // all sound off
-                    byteArrayOf(status, 121.toByte(), 0), // reset all controllers
-                    byteArrayOf(status, 123.toByte(), 0)  // all notes off
-                )
-                messages.forEach { msg -> port.send(msg, 0, msg.size, now) }
-            }
-        } catch (_: Throwable) {
-        } finally {
-            clearActivePlaybackNotes()
-        }
-    }
-
-    private fun sendActiveNoteOffMessages(releasePedals: Boolean = true) {
-        val activeNotes = activePlaybackNotesSnapshotAndClear()
-        if (activeNotes.isEmpty() && !releasePedals) return
+    private fun sendPanicMessages(clearTrackedNotesAfterSend: Boolean = true) {
         val connection = _state.value.connection
         if (!connection.connected) return
         if (!isAndroidMidiConnectionId(connection.address) && !isBluetoothEnabled()) return
         val port = midiInputPort ?: return
-        val now = System.nanoTime()
-        try {
-            if (releasePedals) {
-                for (channel in 0..15) {
-                    val status = (0xB0 or channel).toByte()
-                    port.send(byteArrayOf(status, 64, 0), 0, 3, now)
-                    port.send(byteArrayOf(status, 66, 0), 0, 3, now)
-                    port.send(byteArrayOf(status, 67, 0), 0, 3, now)
+        synchronized(midiSendLock) {
+            val activeNotes = activePlaybackNotesSnapshot()
+            val now = System.nanoTime()
+            val firstSentNotes = sendExplicitNoteOffMessages(port, activeNotes, now)
+            sendPedalReleaseMessages(port, now)
+            val secondSentNotes = sendExplicitNoteOffMessages(port, activeNotes, now)
+            val sentAllPanicControllers = sendPanicControllerMessages(port, now)
+            if (clearTrackedNotesAfterSend) {
+                if (sentAllPanicControllers) {
+                    clearActivePlaybackNotes()
+                } else {
+                    clearActivePlaybackNotes(mergedSentNoteOffCounts(firstSentNotes, secondSentNotes))
                 }
             }
-            activeNotes.forEach { active ->
-                val status = (0x80 or active.channel).toByte()
-                port.send(byteArrayOf(status, active.note.toByte(), 0), 0, 3, now)
+        }
+    }
+
+    private fun sendActiveNoteOffMessages(releasePedals: Boolean = true) {
+        val connection = _state.value.connection
+        if (!connection.connected) return
+        if (!isAndroidMidiConnectionId(connection.address) && !isBluetoothEnabled()) return
+        val port = midiInputPort ?: return
+        synchronized(midiSendLock) {
+            val activeNotes = activePlaybackNotesSnapshot()
+            if (activeNotes.isNotEmpty() || releasePedals) {
+                val now = System.nanoTime()
+                val firstSentNotes = sendExplicitNoteOffMessages(port, activeNotes, now)
+                if (releasePedals) sendPedalReleaseMessages(port, now)
+                val secondSentNotes = sendExplicitNoteOffMessages(port, activeNotes, now)
+                clearActivePlaybackNotes(mergedSentNoteOffCounts(firstSentNotes, secondSentNotes))
             }
-        } catch (_: Throwable) {
         }
     }
 
     private fun sendActiveNoteOffMessagesIfNeeded() {
         if (hasActivePlaybackNotes()) sendActiveNoteOffMessages()
+    }
+
+    private fun sendMidiMessage(port: MidiInputPort, data: ByteArray, timestampNs: Long): Boolean =
+        try {
+            port.send(data, 0, data.size, timestampNs)
+            true
+        } catch (_: Throwable) {
+            false
+        }
+
+    private fun sendPedalReleaseMessages(port: MidiInputPort, timestampNs: Long): Boolean {
+        var allSent = true
+        for (channel in 0..15) {
+            val status = (0xB0 or channel).toByte()
+            allSent = sendMidiMessage(port, byteArrayOf(status, 64, 0), timestampNs) && allSent
+            allSent = sendMidiMessage(port, byteArrayOf(status, 66, 0), timestampNs) && allSent
+            allSent = sendMidiMessage(port, byteArrayOf(status, 67, 0), timestampNs) && allSent
+        }
+        return allSent
+    }
+
+    private fun sendExplicitNoteOffMessages(
+        port: MidiInputPort,
+        activeNotes: List<ActiveMidiNote>,
+        timestampNs: Long
+    ): List<ActiveMidiNote> =
+        activeNotes.mapNotNull { active ->
+            val status = (0x80 or active.channel).toByte()
+            var sentCount = 0
+            repeat(active.count.coerceIn(1, MAX_TRACKED_NOTE_STACK)) {
+                if (sendMidiMessage(port, byteArrayOf(status, active.note.toByte(), 0), timestampNs)) {
+                    sentCount++
+                }
+            }
+            if (sentCount > 0) active.copy(count = sentCount) else null
+        }
+
+    private fun mergedSentNoteOffCounts(vararg sentNotes: List<ActiveMidiNote>): List<ActiveMidiNote> {
+        if (sentNotes.all { it.isEmpty() }) return emptyList()
+        val counts = mutableMapOf<Pair<Int, Int>, Int>()
+        sentNotes.forEach { batch ->
+            batch.forEach { active ->
+                val key = active.channel to active.note
+                counts[key] = maxOf(counts[key] ?: 0, active.count)
+            }
+        }
+        return counts.map { (key, count) ->
+            ActiveMidiNote(channel = key.first, note = key.second, count = count)
+        }
+    }
+
+    private fun sendPanicControllerMessages(port: MidiInputPort, timestampNs: Long): Boolean {
+        var allSent = true
+        for (channel in 0..15) {
+            val status = (0xB0 or channel).toByte()
+            val messages = arrayOf(
+                byteArrayOf(status, 64, 0),   // sustain pedal off
+                byteArrayOf(status, 66, 0),   // sostenuto off
+                byteArrayOf(status, 67, 0),   // soft pedal off
+                byteArrayOf(status, 120.toByte(), 0), // all sound off
+                byteArrayOf(status, 121.toByte(), 0), // reset all controllers
+                byteArrayOf(status, 123.toByte(), 0)  // all notes off
+            )
+            messages.forEach { msg ->
+                allSent = sendMidiMessage(port, msg, timestampNs) && allSent
+            }
+        }
+        return allSent
+    }
+
+    private fun sendChannelQuietMessages(port: MidiInputPort, channel: Int, timestampNs: Long) {
+        if (channel !in 1..16) return
+        val status = (0xB0 or (channel - 1)).toByte()
+        val messages = arrayOf(
+            byteArrayOf(status, 64, 0),  // sustain pedal off
+            byteArrayOf(status, 66, 0),  // sostenuto off
+            byteArrayOf(status, 67, 0),  // soft pedal off
+            byteArrayOf(status, 123.toByte(), 0) // all notes off
+        )
+        messages.forEach { msg -> sendMidiMessage(port, msg, timestampNs) }
     }
 
     private fun sendSustainPedalMessages(pressed: Boolean): Boolean {
@@ -4148,15 +4302,14 @@ class NoteCastService : Service() {
         val port = midiInputPort ?: return false
         val value = if (pressed) 127.toByte() else 0.toByte()
         val now = System.nanoTime()
-        return try {
+        var allSent = true
+        synchronized(midiSendLock) {
             for (channel in 0..15) {
                 val status = (0xB0 or channel).toByte()
-                port.send(byteArrayOf(status, 64, value), 0, 3, now)
+                allSent = sendMidiMessage(port, byteArrayOf(status, 64, value), now) && allSent
             }
-            true
-        } catch (_: Throwable) {
-            false
         }
+        return allSent
     }
 
     private fun sendChangedInstrumentPrograms(previousOverrides: Map<Int, Int>, currentOverrides: Map<Int, Int>) {
@@ -4170,41 +4323,54 @@ class NoteCastService : Service() {
         }
         val now = System.nanoTime()
         try {
-            changedChannels.forEach { channel ->
-                val program = currentOverrides[channel]
-                    ?: originalPrograms[channel]
-                    ?: GeneralMidi.defaultProgramForChannel(channel)
-                sendProgramChange(port, outputChannelForProgram(channel, program), program, now)
+            synchronized(midiSendLock) {
+                changedChannels.forEach { channel ->
+                    val previousProgram = previousOverrides[channel]
+                        ?: originalPrograms[channel]
+                        ?: GeneralMidi.defaultProgramForChannel(channel)
+                    val currentProgram = currentOverrides[channel]
+                        ?: originalPrograms[channel]
+                        ?: GeneralMidi.defaultProgramForChannel(channel)
+                    val previousOutputChannel = outputChannelForProgram(channel, previousProgram)
+                    val currentOutputChannel = outputChannelForProgram(channel, currentProgram)
+                    sendChannelQuietMessages(port, previousOutputChannel, now)
+                    if (currentOutputChannel != previousOutputChannel) {
+                        sendChannelQuietMessages(port, currentOutputChannel, now)
+                    }
+                    sendProgramChange(port, currentOutputChannel, currentProgram, now)
+                }
             }
         } catch (_: Throwable) {
         }
     }
-
     private fun sendProgramOverridesForSong(songId: String) {
         val port = midiInputPort ?: return
         val overrides = appSettings.instrumentOverridesForSong(songId).cleanInstrumentOverrides()
         if (overrides.isEmpty()) return
         val now = System.nanoTime()
-        try {
+        synchronized(midiSendLock) {
             overrides.forEach { (channel, program) ->
                 sendProgramChange(port, outputChannelForProgram(channel, program), program, now)
             }
-        } catch (_: Throwable) {
         }
     }
 
     private fun outputChannelForProgram(sourceChannel: Int, program: Int): Int =
-        if (sourceChannel in 1..16 && GeneralMidi.isAcousticGrandPianoProgram(program)) 1 else sourceChannel
+        when {
+            sourceChannel !in 1..16 -> sourceChannel
+            sourceChannel == 1 || sourceChannel == 2 -> 1
+            GeneralMidi.isAcousticGrandPianoProgram(program) -> 1
+            else -> sourceChannel
+        }
 
-    private fun sendProgramChange(port: MidiInputPort, channel: Int, program: Int, timestampNs: Long) {
-        if (channel !in 1..16 || program !in 0..127) return
-        port.send(
-            byteArrayOf((0xC0 or (channel - 1)).toByte(), program.toByte()),
-            0,
-            2,
-            timestampNs
-        )
-    }
+    private fun sendProgramChange(port: MidiInputPort, channel: Int, program: Int, timestampNs: Long): Boolean =
+        channel in 1..16 &&
+            program in 0..127 &&
+            sendMidiMessage(
+                port,
+                byteArrayOf((0xC0 or (channel - 1)).toByte(), program.toByte()),
+                timestampNs
+            )
 
     private fun sendVolumeMessages(percent: Int) {
         if (appSettings.volumeControlMode != VolumeControlMode.StandardMidiVolume) return
@@ -4216,11 +4382,13 @@ class NoteCastService : Service() {
         val soloActive = controls.values.any { it.solo }
         val now = System.nanoTime()
         try {
-            for (channel in 0..15) {
-                val control = controls[channel + 1] ?: MidiChannelControl(channel = channel + 1)
-                val value = controlChangeVolumeValue(control, soloActive, percent).toByte()
-                val status = (0xB0 or channel).toByte()
-                port.send(byteArrayOf(status, 7, value), 0, 3, now)
+            synchronized(midiSendLock) {
+                for (channel in 0..15) {
+                    val control = controls[channel + 1] ?: MidiChannelControl(channel = channel + 1)
+                    val value = controlChangeVolumeValue(control, soloActive, percent).toByte()
+                    val status = (0xB0 or channel).toByte()
+                    sendMidiMessage(port, byteArrayOf(status, 7, value), now)
+                }
             }
         } catch (_: Throwable) {
         }
