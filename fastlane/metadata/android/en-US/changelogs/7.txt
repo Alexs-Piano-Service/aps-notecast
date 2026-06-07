@@ -1,0 +1,1 @@
+Improves playback robustness: pause, stop, and panic stop now clean up active notes, mixer instrument changes apply live, and UI-triggered MIDI jitter is reduced.

@@ -39,6 +39,23 @@ class MidiRepository(private val context: Context) {
         val bytes: ByteArray
     )
 
+    private enum class MidiFileExtension(
+        val defaultSuffix: String,
+        val fallbackBase: String,
+        val regex: Regex
+    ) {
+        Midi(
+            defaultSuffix = ".mid",
+            fallbackBase = "Imported MIDI",
+            regex = Regex("\\.(mid|midi)$", RegexOption.IGNORE_CASE)
+        ),
+        Zip(
+            defaultSuffix = ".zip",
+            fallbackBase = "Imported ZIP",
+            regex = Regex("\\.zip$", RegexOption.IGNORE_CASE)
+        )
+    }
+
     private val midiDir: File = File(context.filesDir, "midi").apply { mkdirs() }
     private val metadataFile: File = File(context.filesDir, "library.json")
 
@@ -49,7 +66,10 @@ class MidiRepository(private val context: Context) {
             val root = JSONObject(metadataFile.readText())
             val files = root.optJSONArray("files")?.toMidiFiles() ?: emptyList()
             val playlists = root.optJSONArray("playlists")?.toPlaylists() ?: emptyList()
-            LibrarySnapshot(files, playlists)
+            val snapshot = LibrarySnapshot(files, playlists)
+            val normalized = snapshot.normalizeImportedNames()
+            if (normalized != snapshot) save(normalized)
+            normalized
         } catch (t: Throwable) {
             LibrarySnapshot()
         }
@@ -143,7 +163,12 @@ class MidiRepository(private val context: Context) {
 
     @Synchronized
     fun importZipBytes(bytes: ByteArray, displayName: String): ImportResult {
-        val cleanDisplayName = displayName.ifBlank { "Imported ZIP ${System.currentTimeMillis()}.zip" }
+        val cleanDisplayName = displayName
+            .ifBlank { "Imported ZIP ${System.currentTimeMillis()}.zip" }
+            .normalizeImportedFileName(
+                extension = MidiFileExtension.Zip,
+                replaceHyphenSymbols = true
+            )
         val entries = readMidiEntriesFromZip(bytes)
         if (entries.isEmpty()) throw ZipWithoutMidiException(cleanDisplayName)
 
@@ -154,7 +179,9 @@ class MidiRepository(private val context: Context) {
                 displayName = entry.displayName,
                 notePrefix = "Imported from $cleanDisplayName",
                 preferredTitle = null,
-                importedAtMs = importedAtMs + index
+                importedAtMs = importedAtMs + index,
+                preferDisplayNameTitle = true,
+                replaceTitleSeparators = true
             )
         }
         val playlist = MidiPlaylist(
@@ -180,7 +207,9 @@ class MidiRepository(private val context: Context) {
             displayName = displayName,
             notePrefix = notePrefix,
             preferredTitle = preferredTitle,
-            importedAtMs = System.currentTimeMillis()
+            importedAtMs = System.currentTimeMillis(),
+            preferDisplayNameTitle = false,
+            replaceTitleSeparators = false
         )
         val snapshot = load()
         save(snapshot.copy(files = snapshot.files + item))
@@ -192,20 +221,34 @@ class MidiRepository(private val context: Context) {
         displayName: String,
         notePrefix: String,
         preferredTitle: String?,
-        importedAtMs: Long
+        importedAtMs: Long,
+        preferDisplayNameTitle: Boolean,
+        replaceTitleSeparators: Boolean
     ): MidiLibraryItem {
-        val cleanDisplayName = displayName.ifBlank { "Imported MIDI ${System.currentTimeMillis()}.mid" }.ensureMidiExtension()
+        val cleanDisplayName = displayName
+            .ifBlank { "Imported MIDI ${System.currentTimeMillis()}.mid" }
+            .normalizeImportedFileName(
+                extension = MidiFileExtension.Midi,
+                replaceHyphenSymbols = replaceTitleSeparators
+            )
         val id = UUID.randomUUID().toString()
         val storedName = "$id.mid"
         val outFile = File(midiDir, storedName)
         outFile.writeBytes(bytes)
         val parseResult = runCatching { MidiFileParser.parse(bytes, cleanDisplayName) }
+        val displayNameTitle = cleanDisplayName
+            .removeMidiExtension()
+            .normalizeImportedTitleText(replaceHyphenSymbols = replaceTitleSeparators)
+        val parsedTitle = parseResult.getOrNull()
+            ?.title
+            ?.normalizeImportedTitleText(replaceHyphenSymbols = false)
+            ?.takeIf { it.isNotBlank() }
         val title = preferredTitle
             ?.trim()
             ?.takeIf { it.isNotBlank() }
             ?.removeMidiExtension()
-            ?: parseResult.getOrNull()?.title?.takeIf { it.isNotBlank() }
-            ?: cleanDisplayName.removeMidiExtension()
+            ?.normalizeImportedTitleText(replaceHyphenSymbols = replaceTitleSeparators)
+            ?: if (preferDisplayNameTitle) displayNameTitle else parsedTitle ?: displayNameTitle
         val durationUs = parseResult.getOrNull()?.durationUs ?: 0L
         val parseNote = parseResult.exceptionOrNull()?.message?.let { "Imported, but parse check reported: $it" }
         val notes = listOf(notePrefix.trim(), parseNote)
@@ -559,11 +602,19 @@ class MidiRepository(private val context: Context) {
 
     private fun String.zipEntryDisplayName(): String {
         val name = substringAfterLast('/').substringAfterLast('\\').trim()
-        return name.ifBlank { "Imported MIDI ${System.currentTimeMillis()}.mid" }.ensureMidiExtension()
+        return name
+            .ifBlank { "Imported MIDI ${System.currentTimeMillis()}.mid" }
+            .normalizeImportedFileName(
+                extension = MidiFileExtension.Midi,
+                replaceHyphenSymbols = true
+            )
     }
 
     private fun String.removeMidiExtension(): String =
         replace(Regex("\\.(mid|midi)$", RegexOption.IGNORE_CASE), "")
+
+    private fun String.removeZipExtension(): String =
+        replace(Regex("\\.zip$", RegexOption.IGNORE_CASE), "")
 
     private fun String.ensureMidiExtension(): String =
         if (endsWith(".mid", ignoreCase = true) || endsWith(".midi", ignoreCase = true)) this else "$this.mid"
@@ -590,11 +641,138 @@ class MidiRepository(private val context: Context) {
             )
 
     private fun String.toZipPlaylistTitle(): String {
-        val name = substringAfterLast('/').substringAfterLast('\\')
-            .replace(Regex("\\.zip$", RegexOption.IGNORE_CASE), "")
-            .replace('_', ' ')
-            .trim()
-            .replace(Regex("\\s+"), " ")
+        val name = normalizeImportedFileName(
+            extension = MidiFileExtension.Zip,
+            replaceHyphenSymbols = true
+        )
+            .removeZipExtension()
+            .normalizeImportedTitleText(replaceHyphenSymbols = true)
         return name.ifBlank { "Imported Playlist" }
     }
+
+    private fun LibrarySnapshot.normalizeImportedNames(): LibrarySnapshot {
+        val zipImportedIds = files
+            .filter { it.isZipImported() }
+            .map { it.id }
+            .toSet()
+        if (zipImportedIds.isEmpty()) {
+            val normalizedFiles = files.map { item ->
+                item.copy(
+                    title = item.title.normalizeImportedTitleText(replaceHyphenSymbols = false),
+                    originalName = item.originalName.repairImportedText(),
+                    notes = item.notes.repairImportedText()
+                )
+            }
+            val normalizedPlaylists = playlists.map { playlist ->
+                playlist.copy(name = playlist.name.normalizeImportedTitleText(replaceHyphenSymbols = false))
+            }
+            return copy(files = normalizedFiles, playlists = normalizedPlaylists)
+        }
+
+        val normalizedFiles = files.map { item ->
+            val isZipImported = item.id in zipImportedIds
+            val originalName = if (isZipImported) {
+                item.originalName.normalizeImportedFileName(
+                    extension = MidiFileExtension.Midi,
+                    replaceHyphenSymbols = true
+                )
+            } else {
+                item.originalName.repairImportedText()
+            }
+            val title = if (isZipImported) {
+                originalName
+                    .removeMidiExtension()
+                    .normalizeImportedTitleText(replaceHyphenSymbols = true)
+            } else {
+                item.title
+                    .normalizeImportedTitleText(replaceHyphenSymbols = false)
+                    .ifBlank {
+                        originalName
+                            .removeMidiExtension()
+                            .normalizeImportedTitleText(replaceHyphenSymbols = false)
+                    }
+            }
+            item.copy(
+                title = title,
+                originalName = originalName,
+                notes = if (isZipImported) item.notes.normalizeImportedNotes() else item.notes.repairImportedText()
+            )
+        }
+        val normalizedPlaylists = playlists.map { playlist ->
+            val isZipPlaylist = playlist.itemIds.any { it in zipImportedIds }
+            playlist.copy(name = playlist.name.normalizeImportedTitleText(replaceHyphenSymbols = isZipPlaylist))
+        }
+        return copy(files = normalizedFiles, playlists = normalizedPlaylists)
+    }
+
+    private fun MidiLibraryItem.isZipImported(): Boolean =
+        notes.trimStart().startsWith("Imported from ")
+
+    private fun String.normalizeImportedNotes(): String {
+        val repaired = repairImportedText()
+        val prefix = "Imported from "
+        if (!repaired.trimStart().startsWith(prefix)) return repaired
+        val leadingWhitespace = repaired.takeWhile { it.isWhitespace() }
+        val withoutLeading = repaired.trimStart()
+        val parts = withoutLeading.split(";", limit = 2)
+        val archiveName = parts[0]
+            .removePrefix(prefix)
+            .normalizeImportedFileName(
+                extension = MidiFileExtension.Zip,
+                replaceHyphenSymbols = true
+            )
+        val firstPart = "$prefix$archiveName"
+        return leadingWhitespace + if (parts.size == 1) firstPart else "$firstPart;${parts[1]}"
+    }
+
+    private fun String.normalizeImportedFileName(
+        extension: MidiFileExtension,
+        replaceHyphenSymbols: Boolean
+    ): String {
+        val repaired = substringAfterLast('/')
+            .substringAfterLast('\\')
+            .repairImportedText()
+            .trim()
+        val suffix = extension.regex.find(repaired)?.value ?: extension.defaultSuffix
+        val base = extension.regex
+            .replace(repaired, "")
+            .normalizeImportedTitleText(replaceHyphenSymbols = replaceHyphenSymbols)
+            .ifBlank { "${extension.fallbackBase} ${System.currentTimeMillis()}" }
+        return "$base$suffix"
+    }
+
+    private fun String.normalizeImportedTitleText(replaceHyphenSymbols: Boolean): String {
+        var text = repairImportedText()
+            .replace('_', ' ')
+        if (replaceHyphenSymbols) {
+            text = text.replace(Regex("\\s*[-\\u2010\\u2011\\u2012\\u2013\\u2014\\u2015]+\\s*"), " ")
+        }
+        return text
+            .trim()
+            .replace(Regex("\\s+"), " ")
+    }
+
+    private fun String.repairImportedText(): String =
+        replace("\u0081e", "'")
+            .replace("\u0081f", "'")
+            .replace("\u0081g", "\"")
+            .replace("\u0081h", "\"")
+            .replace("\u00E2\u0080\u0098", "'")
+            .replace("\u00E2\u0080\u0099", "'")
+            .replace("\u00E2\u0080\u009C", "\"")
+            .replace("\u00E2\u0080\u009D", "\"")
+            .replace("\u00E2\u0080\u0093", "-")
+            .replace("\u00E2\u0080\u0094", "-")
+            .replace('\u2018', '\'')
+            .replace('\u2019', '\'')
+            .replace('\u201A', '\'')
+            .replace('\u201B', '\'')
+            .replace('\u201C', '"')
+            .replace('\u201D', '"')
+            .replace('\u201E', '"')
+            .replace('\u0091', '\'')
+            .replace('\u0092', '\'')
+            .replace('\u0093', '"')
+            .replace('\u0094', '"')
+            .replace(Regex("[\\u0000-\\u001F\\u007F-\\u009F]"), " ")
 }

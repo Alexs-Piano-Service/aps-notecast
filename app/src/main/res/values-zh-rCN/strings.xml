@@ -9,4 +9,7 @@
     <string name="disclaimer_url">https://www.alexanderpeppe.com/disclaimer/</string>
     <string name="privacy_policy">隐私政策</string>
     <string name="privacy_policy_url">https://www.alexanderpeppe.com/privacy-policy/</string>
+    <string name="battery_recommendation_title">建议的电池设置</string>
+    <string name="battery_recommendation_message">为了可靠地在后台播放 Bluetooth MIDI，请将 APS NoteCast 的电池使用设置为不受限制，并允许后台活动。在 Xiaomi/POCO/HyperOS 上，也请关闭此应用的省电模式。</string>
+    <string name="battery_recommendation_button">打开应用电池设置</string>
 </resources>

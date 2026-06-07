@@ -1,0 +1,1 @@
+Improves pedal and playback reliability: song endings now send full note/pedal cleanup, optional roll sustain note 18 output is available, the sustain pedal test can play a held chord, imported MIDI/ZIP names are cleaned up, and background playback battery guidance is clearer for Xiaomi/POCO/HyperOS devices.

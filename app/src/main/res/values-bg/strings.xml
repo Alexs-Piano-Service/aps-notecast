@@ -9,4 +9,7 @@
     <string name="disclaimer_url">https://www.alexanderpeppe.com/disclaimer/</string>
     <string name="privacy_policy">Политика за поверителност</string>
     <string name="privacy_policy_url">https://www.alexanderpeppe.com/privacy-policy/</string>
+    <string name="battery_recommendation_title">Препоръчителна настройка на батерията</string>
+    <string name="battery_recommendation_message">За надеждно фоново Bluetooth MIDI възпроизвеждане задайте използването на батерията за APS NoteCast на Неограничено и разрешете активност във фонов режим. На Xiaomi/POCO/HyperOS изключете и икономията на батерия за това приложение.</string>
+    <string name="battery_recommendation_button">Отвори настройките на батерията на приложението</string>
 </resources>

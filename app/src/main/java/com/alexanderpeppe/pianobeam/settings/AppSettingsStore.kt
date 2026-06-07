@@ -4,6 +4,7 @@ import android.content.Context
 import com.alexanderpeppe.pianobeam.data.AppSettings
 import com.alexanderpeppe.pianobeam.data.AppThemeMode
 import com.alexanderpeppe.pianobeam.data.MidiChannelControl
+import com.alexanderpeppe.pianobeam.data.PedalOutputMode
 import com.alexanderpeppe.pianobeam.data.PlaybackAdvanceMode
 import com.alexanderpeppe.pianobeam.data.RepeatMode
 import com.alexanderpeppe.pianobeam.data.SongInstrumentOverrides
@@ -55,6 +56,7 @@ class AppSettingsStore(context: Context) {
             .putString(KEY_REPEAT_MODE, cleanSettings.repeatMode.preferenceValue)
             .putBoolean(KEY_SHUFFLE_PLAYLISTS, cleanSettings.shufflePlaylistsByDefault)
             .putString(KEY_VOLUME_CONTROL_MODE, cleanSettings.volumeControlMode.preferenceValue)
+            .putString(KEY_PEDAL_OUTPUT_MODE, cleanSettings.pedalOutputMode.preferenceValue)
             .putBoolean(KEY_APP_CONTROLS_VOLUME, cleanSettings.volumeControlMode == VolumeControlMode.LegacyVolumeScaling)
             .putBoolean(KEY_VELOCITY_SCALING_ENABLED, cleanSettings.velocityScalingEnabled)
             .putInt(KEY_MINIMUM_NOTE_VELOCITY, cleanSettings.minimumNoteVelocity)
@@ -92,6 +94,7 @@ class AppSettingsStore(context: Context) {
             shufflePlaylistsByDefault = preferences.getBoolean(KEY_SHUFFLE_PLAYLISTS, false),
             volumeControlMode = VolumeControlMode.fromPreference(preferences.getString(KEY_VOLUME_CONTROL_MODE, null))
                 ?: VolumeControlMode.fromLegacyPreference(preferences.getBoolean(KEY_APP_CONTROLS_VOLUME, true)),
+            pedalOutputMode = PedalOutputMode.fromPreference(preferences.getString(KEY_PEDAL_OUTPUT_MODE, null)),
             velocityScalingEnabled = preferences.getBoolean(KEY_VELOCITY_SCALING_ENABLED, true),
             minimumNoteVelocity = preferences.getInt(KEY_MINIMUM_NOTE_VELOCITY, 32).coerceIn(1, 127),
             tempoPercent = preferences.getInt(KEY_TEMPO_PERCENT, 100).coerceIn(50, 150),
@@ -197,6 +200,7 @@ class AppSettingsStore(context: Context) {
         private const val KEY_REPEAT_MODE = "repeat_mode"
         private const val KEY_SHUFFLE_PLAYLISTS = "shuffle_playlists"
         private const val KEY_VOLUME_CONTROL_MODE = "volume_control_mode"
+        private const val KEY_PEDAL_OUTPUT_MODE = "pedal_output_mode"
         private const val KEY_APP_CONTROLS_VOLUME = "app_controls_volume"
         private const val KEY_VELOCITY_SCALING_ENABLED = "velocity_scaling_enabled"
         private const val KEY_MINIMUM_NOTE_VELOCITY = "minimum_note_velocity"

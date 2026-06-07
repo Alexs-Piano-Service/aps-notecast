@@ -9,4 +9,7 @@
     <string name="disclaimer_url">https://www.alexanderpeppe.com/disclaimer/</string>
     <string name="privacy_policy">Política de privacidade</string>
     <string name="privacy_policy_url">https://www.alexanderpeppe.com/privacy-policy/</string>
+    <string name="battery_recommendation_title">Configuração de bateria recomendada</string>
+    <string name="battery_recommendation_message">Para reprodução Bluetooth MIDI confiável em segundo plano, defina o uso da bateria do APS NoteCast como Sem restrições e permita atividade em segundo plano. No Xiaomi/POCO/HyperOS, desative também a economia de bateria para este app.</string>
+    <string name="battery_recommendation_button">Abrir configurações de bateria do app</string>
 </resources>

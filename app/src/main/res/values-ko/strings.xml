@@ -9,4 +9,7 @@
     <string name="disclaimer_url">https://www.alexanderpeppe.com/disclaimer/</string>
     <string name="privacy_policy">개인정보 처리방침</string>
     <string name="privacy_policy_url">https://www.alexanderpeppe.com/privacy-policy/</string>
+    <string name="battery_recommendation_title">권장 배터리 설정</string>
+    <string name="battery_recommendation_message">안정적인 백그라운드 Bluetooth MIDI 재생을 위해 APS NoteCast 배터리 사용을 제한 없음으로 설정하고 백그라운드 활동을 허용하세요. Xiaomi/POCO/HyperOS에서는 이 앱의 배터리 절약도 끄세요.</string>
+    <string name="battery_recommendation_button">앱 배터리 설정 열기</string>
 </resources>

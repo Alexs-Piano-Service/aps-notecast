@@ -46,6 +46,16 @@ enum class VolumeControlMode(val preferenceValue: String) {
     }
 }
 
+enum class PedalOutputMode(val preferenceValue: String) {
+    StandardControllers("standard_controllers"),
+    StandardControllersAndRollNote18("standard_controllers_and_roll_note_18");
+
+    companion object {
+        fun fromPreference(value: String?): PedalOutputMode =
+            values().firstOrNull { it.preferenceValue == value } ?: StandardControllers
+    }
+}
+
 data class MidiChannelControl(
     val channel: Int,
     val muted: Boolean = false,
@@ -69,6 +79,7 @@ data class AppSettings(
     val repeatMode: RepeatMode = RepeatMode.Off,
     val shufflePlaylistsByDefault: Boolean = false,
     val volumeControlMode: VolumeControlMode = VolumeControlMode.LegacyVolumeScaling,
+    val pedalOutputMode: PedalOutputMode = PedalOutputMode.StandardControllers,
     val velocityScalingEnabled: Boolean = true,
     val minimumNoteVelocity: Int = 32,
     val tempoPercent: Int = 100,

@@ -1,17 +1,22 @@
 package com.alexanderpeppe.pianobeam.midi
 
+import java.nio.ByteBuffer
 import java.nio.charset.Charset
+import java.nio.charset.CodingErrorAction
 import kotlin.math.roundToLong
 
 object MidiFileParser {
     private val latin1: Charset = Charsets.ISO_8859_1
+    private val shiftJis: Charset = Charset.forName("Shift_JIS")
+    private val windows1252: Charset = Charset.forName("windows-1252")
 
     data class MidiSequence(
         val title: String,
         val durationUs: Long,
         val events: List<ScheduledMidiEvent>,
         val channelLabels: Map<Int, String> = emptyMap(),
-        val channelMetadata: Map<Int, ChannelMetadata> = emptyMap()
+        val channelMetadata: Map<Int, ChannelMetadata> = emptyMap(),
+        val pedalAnalysis: PedalAnalysis = PedalAnalysis()
     )
 
     data class ScheduledMidiEvent(
@@ -24,6 +29,12 @@ object MidiFileParser {
         val trackNames: List<String> = emptyList(),
         val metaInstrumentNames: List<String> = emptyList(),
         val programNumbers: List<Int> = emptyList()
+    )
+
+    data class PedalAnalysis(
+        val noteEventCountsByChannel: Map<Int, Int> = emptyMap(),
+        val pedalEventCountsByChannel: Map<Int, Int> = emptyMap(),
+        val pedalOnlyChannels: Set<Int> = emptySet()
     )
 
     private data class RawMidiEvent(
@@ -61,6 +72,8 @@ object MidiFileParser {
         val rawEvents = mutableListOf<RawMidiEvent>()
         val tempos = mutableListOf<TempoEvent>()
         val trackInfos = mutableListOf<TrackInfo>()
+        val noteEventCountsByChannel = mutableMapOf<Int, Int>()
+        val pedalEventCountsByChannel = mutableMapOf<Int, Int>()
         var title: String? = null
         var order = 0L
 
@@ -138,12 +151,16 @@ object MidiFileParser {
                         message[0] = status.toByte()
                         repeat(length) { message[it + 1] = reader.readU8().toByte() }
                         val messageType = status and 0xF0
+                        val channel = (status and 0x0F) + 1
                         if (messageType == 0x90 && message.size > 2 && (message[2].toInt() and 0xFF) > 0) {
-                            noteChannels += (status and 0x0F) + 1
+                            noteChannels += channel
+                            noteEventCountsByChannel[channel] = (noteEventCountsByChannel[channel] ?: 0) + 1
                         }
                         if (messageType == 0xC0 && message.size > 1) {
-                            val channel = (status and 0x0F) + 1
                             programsByChannel.getOrPut(channel) { mutableListOf() } += (message[1].toInt() and 0xFF)
+                        }
+                        if (messageType == 0xB0 && message.size > 2 && isPedalController(message[1].toInt() and 0xFF)) {
+                            pedalEventCountsByChannel[channel] = (pedalEventCountsByChannel[channel] ?: 0) + 1
                         }
                         rawEvents += RawMidiEvent(tick, message, order++)
                     }
@@ -170,16 +187,44 @@ object MidiFileParser {
             durationUs = duration,
             events = scheduled,
             channelLabels = channelLabels(metadata),
-            channelMetadata = metadata
+            channelMetadata = metadata,
+            pedalAnalysis = pedalAnalysis(noteEventCountsByChannel, pedalEventCountsByChannel)
         )
     }
 
     private fun cleanMetaText(data: ByteArray): String? =
-        data.toString(latin1)
+        decodeMetaText(data)
             .replace('\u0000', ' ')
             .trim()
             .replace(Regex("\\s+"), " ")
             .takeIf { it.isNotBlank() }
+
+    private fun decodeMetaText(data: ByteArray): String {
+        val latinText = data.toString(latin1)
+        if (!latinText.contains(Regex("[\\u0080-\\u009F]"))) return latinText
+        val candidates = listOfNotNull(
+            data.decodeStrict(Charsets.UTF_8),
+            data.decodeStrict(windows1252),
+            data.decodeStrict(shiftJis),
+            latinText
+        ).distinct()
+        return candidates.minByOrNull { it.decodePenalty() } ?: latinText
+    }
+
+    private fun ByteArray.decodeStrict(charset: Charset): String? =
+        runCatching {
+            charset
+                .newDecoder()
+                .onMalformedInput(CodingErrorAction.REPORT)
+                .onUnmappableCharacter(CodingErrorAction.REPORT)
+                .decode(ByteBuffer.wrap(this))
+                .toString()
+        }.getOrNull()
+
+    private fun String.decodePenalty(): Int =
+        count { it == '\uFFFD' } * 20 +
+            count { it in '\u0000'..'\u001F' || it in '\u007F'..'\u009F' } * 10 +
+            count { it == 'Ã' || it == 'Â' || it == 'â' } * 3
 
     private fun channelMetadata(trackInfos: List<TrackInfo>, title: String): Map<Int, ChannelMetadata> {
         val metadata = mutableMapOf<Int, MutableChannelMetadata>()
@@ -226,6 +271,29 @@ object MidiFileParser {
         map { it.trim() }
             .filter { it.isNotBlank() }
             .distinct()
+
+    private fun pedalAnalysis(
+        noteEventCountsByChannel: Map<Int, Int>,
+        pedalEventCountsByChannel: Map<Int, Int>
+    ): PedalAnalysis {
+        val noteCounts = noteEventCountsByChannel
+            .filter { (channel, count) -> channel in 1..16 && count > 0 }
+            .toSortedMap()
+        val pedalCounts = pedalEventCountsByChannel
+            .filter { (channel, count) -> channel in 1..16 && count > 0 }
+            .toSortedMap()
+        val pedalOnlyChannels = pedalCounts.keys
+            .filter { channel -> (noteCounts[channel] ?: 0) == 0 }
+            .toSortedSet()
+        return PedalAnalysis(
+            noteEventCountsByChannel = noteCounts,
+            pedalEventCountsByChannel = pedalCounts,
+            pedalOnlyChannels = pedalOnlyChannels
+        )
+    }
+
+    private fun isPedalController(controller: Int): Boolean =
+        controller == 64 || controller == 66 || controller == 67 || controller == 69
 
     private data class MutableChannelMetadata(
         val channel: Int,

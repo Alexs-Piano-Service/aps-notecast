@@ -54,6 +54,7 @@ import com.alexanderpeppe.pianobeam.data.KuhmannSearchUiState
 import com.alexanderpeppe.pianobeam.data.MidiChannelControl
 import com.alexanderpeppe.pianobeam.data.MidiLibraryItem
 import com.alexanderpeppe.pianobeam.data.MidiRepository
+import com.alexanderpeppe.pianobeam.data.PedalOutputMode
 import com.alexanderpeppe.pianobeam.data.PlaybackAdvanceMode
 import com.alexanderpeppe.pianobeam.data.PlaybackChannelInfo
 import com.alexanderpeppe.pianobeam.data.PlaybackMode
@@ -118,6 +119,7 @@ class NoteCastService : Service() {
         private const val RECENT_BLE_SCAN_TTL_MS = 60_000L
         private const val CONNECTION_ATTACH_VERIFY_DELAY_MS = 1_500L
         private const val BLE_MIDI_READY_SETTLE_MS = 2_000L
+        private const val ROLL_SUSTAIN_NOTE = 18
         private const val SCHEDULE_AHEAD_NS = 45_000_000L
         private const val START_DELAY_NS = 160_000_000L
         private const val PROGRESS_POST_INTERVAL_NS = 220_000_000L
@@ -125,6 +127,9 @@ class NoteCastService : Service() {
         private const val PLAYBACK_THREAD_NAME = "NoteCastPlayback"
         private const val DIAGNOSTIC_FIRST_PIANO_NOTE = 21 // A0
         private const val DIAGNOSTIC_LAST_PIANO_NOTE = 108 // C8
+        private const val DIAGNOSTIC_PEDAL_TEST_VELOCITY = 72
+        private const val DIAGNOSTIC_PEDAL_TEST_HOLD_MS = 450L
+        private val DIAGNOSTIC_PEDAL_TEST_CHORD = intArrayOf(60, 64, 67, 72) // C4, E4, G4, C5
         private const val PREFS_NAME = "pianobeam"
         private const val PREF_LAST_DEVICE_ADDRESS = "last_device_address"
         private const val PREF_LAST_DEVICE_NAME = "last_device_name"
@@ -267,7 +272,12 @@ class NoteCastService : Service() {
 
     private data class PreparedPlaybackData(
         val sequence: MidiFileParser.MidiSequence,
-        val channels: List<PlaybackChannelInfo>
+        val channels: List<PlaybackChannelInfo>,
+        val pedalRouting: PedalRouting
+    )
+
+    private data class PedalRouting(
+        val sourceChannelToOutputChannels: Map<Int, List<Int>> = emptyMap()
     )
 
     private data class ActiveMidiNote(
@@ -275,6 +285,27 @@ class NoteCastService : Service() {
         val note: Int,
         val count: Int
     )
+
+    private inner class RollSustainNoteState {
+        private val pressedByChannel = BooleanArray(16)
+
+        fun messagesFor(controllerMessage: ByteArray, enabled: Boolean): List<ByteArray> {
+            if (!enabled || !controllerMessage.isSustainControllerMessage()) return emptyList()
+            val channel = controllerMessage.midiChannelNumber() ?: return emptyList()
+            val index = channel - 1
+            if (index !in pressedByChannel.indices) return emptyList()
+            val pressed = (controllerMessage[2].toInt() and 0xFF) >= 64
+            if (pressedByChannel[index] == pressed) return emptyList()
+            pressedByChannel[index] = pressed
+            val status = ((if (pressed) 0x90 else 0x80) or index).toByte()
+            val velocity = if (pressed) 127 else 0
+            return listOf(byteArrayOf(status, ROLL_SUSTAIN_NOTE.toByte(), velocity.toByte()))
+        }
+
+        fun clear() {
+            pressedByChannel.fill(false)
+        }
+    }
 
     private val sequenceCacheLock = Any()
     private val preparedSequenceCache = object : LinkedHashMap<PreparedSequenceCacheKey, PreparedPlaybackData>(8, 0.75f, true) {
@@ -370,14 +401,15 @@ class NoteCastService : Service() {
         val previousSettings = appSettings
         appSettings = settings
         val volumeBehaviorChanged = previousSettings.volumeControlMode != settings.volumeControlMode
+        val pedalOutputChanged = previousSettings.pedalOutputMode != settings.pedalOutputMode
         val channelVolumesChanged = previousSettings.channelControls.volumeSignature() != settings.channelControls.volumeSignature()
         val muteSoloChanged = previousSettings.channelControls.muteSoloSignature() != settings.channelControls.muteSoloSignature()
         val activeSongId = _state.value.playback.currentItemId
         val instrumentOverridesChanged = activeSongId != null &&
             previousSettings.instrumentOverridesForSong(activeSongId) != settings.instrumentOverridesForSong(activeSongId)
-        if (_state.value.connection.connected && (volumeBehaviorChanged || channelVolumesChanged || muteSoloChanged || instrumentOverridesChanged)) {
+        if (_state.value.connection.connected && (volumeBehaviorChanged || pedalOutputChanged || channelVolumesChanged || muteSoloChanged || instrumentOverridesChanged)) {
             serviceScope.launch(Dispatchers.IO) {
-                if (muteSoloChanged) {
+                if (muteSoloChanged || pedalOutputChanged) {
                     sendPanicMessages()
                 } else {
                     sendActiveNoteOffMessagesIfNeeded()
@@ -466,18 +498,82 @@ class NoteCastService : Service() {
         }
     }
 
-    fun setPianoTestSustainPedal(pressed: Boolean) {
+    fun setPianoTestSustainPedal(pressed: Boolean, playSustainedChord: Boolean) {
         if (midiInputPort == null || !_state.value.connection.connected) {
             postMessage("Connect to a BLE MIDI device before testing sustain.")
             return
         }
+
+        val previousDiagnosticJob = diagnosticJob
+        if (pressed && playSustainedChord) {
+            val job = serviceScope.launch(Dispatchers.IO, start = CoroutineStart.LAZY) {
+                try {
+                    previousDiagnosticJob?.cancel()
+                    previousDiagnosticJob?.join()
+                    stopActivePlaybackForPianoTest()
+                    withContext(Dispatchers.Main) {
+                        postMessage("Pedal test: sustain on, playing C major chord.")
+                    }
+                    sendActiveNoteOffMessages(releasePedals = true)
+                    delay(80L)
+                    val sent = sendSustainPedalMessages(pressed = true)
+                    if (!sent) {
+                        withContext(Dispatchers.Main) {
+                            postMessage("Could not send pedal test sustain on.")
+                        }
+                        return@launch
+                    }
+                    delay(60L)
+                    val port = midiInputPort ?: throw IOException("MIDI connection was lost")
+                    DIAGNOSTIC_PEDAL_TEST_CHORD.forEach { note ->
+                        sendTrackedMidiData(
+                            port,
+                            byteArrayOf(0x90.toByte(), note.toByte(), DIAGNOSTIC_PEDAL_TEST_VELOCITY.toByte()),
+                            System.nanoTime()
+                        )
+                    }
+                    delay(DIAGNOSTIC_PEDAL_TEST_HOLD_MS)
+                    DIAGNOSTIC_PEDAL_TEST_CHORD.forEach { note ->
+                        sendTrackedMidiData(
+                            port,
+                            byteArrayOf(0x80.toByte(), note.toByte(), 0),
+                            System.nanoTime()
+                        )
+                    }
+                    withContext(Dispatchers.Main) {
+                        postMessage("Pedal test chord released. It should sustain until Pedal Test Off.")
+                    }
+                } catch (cancelled: CancellationException) {
+                    throw cancelled
+                } catch (io: IOException) {
+                    withContext(Dispatchers.Main) {
+                        handleConnectionLost("MIDI connection was lost.")
+                    }
+                } catch (t: Throwable) {
+                    withContext(Dispatchers.Main) {
+                        postMessage("Could not run pedal test: ${t.message ?: "unknown error"}")
+                    }
+                } finally {
+                    if (diagnosticJob === coroutineContext[Job]) {
+                        diagnosticJob = null
+                    }
+                }
+            }
+            diagnosticJob = job
+            job.start()
+            return
+        }
+
         serviceScope.launch(Dispatchers.IO) {
+            previousDiagnosticJob?.cancel()
+            previousDiagnosticJob?.join()
+            if (!pressed) sendActiveNoteOffMessages(releasePedals = false)
             val sent = sendSustainPedalMessages(pressed)
             withContext(Dispatchers.Main) {
                 if (sent) {
-                    postMessage("Sustain pedal ${if (pressed) "on" else "off"}.")
+                    postMessage("Pedal test sustain ${if (pressed) "on" else "off"}.")
                 } else {
-                    postMessage("Could not send sustain pedal ${if (pressed) "on" else "off"}.")
+                    postMessage("Could not send pedal test sustain ${if (pressed) "on" else "off"}.")
                 }
             }
         }
@@ -2357,7 +2453,7 @@ class NoteCastService : Service() {
                 }
                 sendVolumeMessages(_state.value.volumePercent)
                 try {
-                    playSequence(sequence, item)
+                    playSequence(sequence, item, playbackData.pedalRouting)
                     sendPanicMessages()
                     delay(250)
                     nextTrackIndex(index, items.size, playlistName != null, settingsSnapshot)?.let { next ->
@@ -2432,9 +2528,11 @@ class NoteCastService : Service() {
             coroutineContext.ensureActive()
             val parsed = MidiFileParser.parse(bytes, result.filename.ifBlank { title })
             val prepared = prepareSequence(parsed, appSettings, instrumentOverrides = emptyMap())
+            val channels = parsed.playbackChannelInfos()
             val playbackData = PreparedPlaybackData(
                 sequence = prepared,
-                channels = parsed.playbackChannelInfos()
+                channels = channels,
+                pedalRouting = pedalRouting(parsed, channels, instrumentOverrides = emptyMap())
             )
             val item = MidiLibraryItem(
                 id = temporaryItemId,
@@ -2472,7 +2570,7 @@ class NoteCastService : Service() {
             }
             playbackStarted = true
             sendVolumeMessages(_state.value.volumePercent)
-            playSequence(prepared, item)
+            playSequence(prepared, item, playbackData.pedalRouting)
             sendPanicMessages()
             delay(250)
             completedNormally = true
@@ -2598,9 +2696,11 @@ class NoteCastService : Service() {
         val parsed = MidiFileParser.parse(file.readBytes(), item.title)
         val instrumentOverrides = settings.instrumentOverridesForSong(item.id)
         val prepared = prepareSequence(parsed, settings, instrumentOverrides)
+        val channels = parsed.playbackChannelInfos()
         val playbackData = PreparedPlaybackData(
             sequence = prepared,
-            channels = parsed.playbackChannelInfos()
+            channels = channels,
+            pedalRouting = pedalRouting(parsed, channels, instrumentOverrides)
         )
         synchronized(sequenceCacheLock) {
             preparedSequenceCache[key] = playbackData
@@ -2740,6 +2840,9 @@ class NoteCastService : Service() {
             data.size > 2 &&
             (data[2].toInt() and 0xFF) > 0
         ) {
+            if (appSettings.pedalOutputMode == PedalOutputMode.StandardControllersAndRollNote18 && controller == ROLL_SUSTAIN_NOTE) {
+                return data.withMidiChannel(outputChannel)
+            }
             val rawVelocity = data[2].toInt() and 0xFF
             val scaled = if (appSettings.volumeControlMode == VolumeControlMode.LegacyVolumeScaling) {
                 scaledMidiVelocity(rawVelocity, masterPercent, control.volumePercent)
@@ -2755,14 +2858,24 @@ class NoteCastService : Service() {
         return data.withMidiChannel(outputChannel)
     }
 
-    private fun outputChannelForCurrentPlayback(sourceChannel: Int): Int {
+    private fun outputChannelForCurrentPlayback(sourceChannel: Int): Int =
+        outputChannelForSourceChannel(
+            sourceChannel = sourceChannel,
+            channelInfo = _state.value.playbackChannels.firstOrNull { it.channel == sourceChannel },
+            instrumentOverrides = appSettings.instrumentOverridesForSong(_state.value.playback.currentItemId)
+        )
+
+    private fun outputChannelForSourceChannel(
+        sourceChannel: Int,
+        channelInfo: PlaybackChannelInfo?,
+        instrumentOverrides: Map<Int, Int>
+    ): Int {
         if (sourceChannel !in 1..16) return sourceChannel
         if (sourceChannel == 1 || sourceChannel == 2) return 1
-        val overrideProgram = appSettings.instrumentOverridesForSong(_state.value.playback.currentItemId)[sourceChannel]
+        val overrideProgram = instrumentOverrides[sourceChannel]
         if (overrideProgram != null) {
             return if (GeneralMidi.isAcousticGrandPianoProgram(overrideProgram)) 1 else sourceChannel
         }
-        val channelInfo = _state.value.playbackChannels.firstOrNull { it.channel == sourceChannel }
         return if (channelInfo?.usesAcousticGrandPianoInstrument() == true) 1 else sourceChannel
     }
 
@@ -2789,15 +2902,52 @@ class NoteCastService : Service() {
         return names.any { GeneralMidi.isAcousticGrandPianoName(it) }
     }
 
+    private fun pedalRouting(
+        sequence: MidiFileParser.MidiSequence,
+        channels: List<PlaybackChannelInfo>,
+        instrumentOverrides: Map<Int, Int>
+    ): PedalRouting {
+        val pianoOutputChannels = channels
+            .filter { channelInfo -> channelInfo.isLikelyPianoSourceChannel(instrumentOverrides[channelInfo.channel]) }
+            .map { channelInfo ->
+                outputChannelForSourceChannel(
+                    sourceChannel = channelInfo.channel,
+                    channelInfo = channelInfo,
+                    instrumentOverrides = instrumentOverrides
+                )
+            }
+            .filter { channel -> channel in 1..16 }
+            .distinct()
+            .sorted()
+        if (pianoOutputChannels.isEmpty()) return PedalRouting()
+
+        val routes = sequence.pedalAnalysis.pedalOnlyChannels
+            .filter { sourceChannel -> sourceChannel in 1..16 }
+            .associateWith { sourceChannel ->
+                pianoOutputChannels.filter { outputChannel -> outputChannel != sourceChannel }
+            }
+            .filterValues { outputChannels -> outputChannels.isNotEmpty() }
+        return PedalRouting(routes)
+    }
+
+    private fun PlaybackChannelInfo.isLikelyPianoSourceChannel(overrideProgram: Int?): Boolean =
+        channel != 10 &&
+            (
+                channel == 1 ||
+                    channel == 2 ||
+                    overrideProgram?.let { GeneralMidi.isAcousticGrandPianoProgram(it) } == true ||
+                    usesAcousticGrandPianoInstrument()
+                )
+
     private fun isNoteOffMessage(messageType: Int, value: Int): Boolean =
         messageType == 0x80 || (messageType == 0x90 && value == 0)
 
     private fun isSafetyControllerMessage(messageType: Int, controller: Int, value: Int): Boolean =
         messageType == 0xB0 && (
-            controller == 120 ||
+                controller == 120 ||
                 controller == 121 ||
                 controller == 123 ||
-                (value == 0 && (controller == 64 || controller == 66 || controller == 67))
+                (value == 0 && (controller == 64 || controller == 66 || controller == 67 || controller == 69))
             )
 
     private fun scheduleAheadNsForEvent(data: ByteArray): Long {
@@ -2918,16 +3068,74 @@ class NoteCastService : Service() {
         }
     }
 
-    private suspend fun playSequence(sequence: MidiFileParser.MidiSequence, item: MidiLibraryItem) {
+    private fun playbackMessagesForEvent(
+        data: ByteArray,
+        pedalRouting: PedalRouting,
+        rollSustainNoteState: RollSustainNoteState
+    ): List<ByteArray> {
+        if (!data.isPedalControllerMessage()) return listOf(data)
+        val sourceChannel = data.midiChannelNumber() ?: return listOf(data)
+        val outputChannels = pedalRouting.sourceChannelToOutputChannels[sourceChannel].orEmpty()
+        val rollNoteEnabled = appSettings.pedalOutputMode == PedalOutputMode.StandardControllersAndRollNote18
+        if (outputChannels.isEmpty()) {
+            return buildList {
+                add(data)
+                addAll(rollSustainNoteState.messagesFor(data, rollNoteEnabled))
+            }
+        }
+
+        return buildList {
+            add(data)
+            outputChannels.forEach { outputChannel ->
+                if (outputChannel in 1..16 && outputChannel != sourceChannel) {
+                    val routedData = data.withMidiChannel(outputChannel)
+                    add(routedData)
+                    addAll(rollSustainNoteState.messagesFor(routedData, rollNoteEnabled))
+                }
+            }
+        }
+    }
+
+    private fun ByteArray.isPedalControllerMessage(): Boolean {
+        if (size < 3) return false
+        val status = this[0].toInt() and 0xFF
+        val messageType = status and 0xF0
+        val controller = this[1].toInt() and 0xFF
+        return messageType == 0xB0 && isPedalController(controller)
+    }
+
+    private fun ByteArray.isSustainControllerMessage(): Boolean {
+        if (size < 3) return false
+        val status = this[0].toInt() and 0xFF
+        val messageType = status and 0xF0
+        val controller = this[1].toInt() and 0xFF
+        return messageType == 0xB0 && controller == 64
+    }
+
+    private fun ByteArray.midiChannelNumber(): Int? {
+        val status = firstOrNull()?.toInt()?.and(0xFF) ?: return null
+        return if (status in 0x80..0xEF) (status and 0x0F) + 1 else null
+    }
+
+    private fun isPedalController(controller: Int): Boolean =
+        controller == 64 || controller == 66 || controller == 67 || controller == 69
+
+    private suspend fun playSequence(
+        sequence: MidiFileParser.MidiSequence,
+        item: MidiLibraryItem,
+        pedalRouting: PedalRouting
+    ) {
         var startNs = System.nanoTime() + START_DELAY_NS
         var lastProgressPostNs = 0L
         var pauseOffsetNs = 0L
         var pauseStartedNs = 0L
         var eventIndex = 0
+        val rollSustainNoteState = RollSustainNoteState()
 
         suspend fun applySeek(progressUs: Long) {
             val cleanProgressUs = progressUs.coerceIn(0L, sequence.durationUs)
             sendPanicMessages()
+            rollSustainNoteState.clear()
             sendProgramOverridesForSong(item.id)
             eventIndex = sequence.events.indexOfFirst { it.timeUs >= cleanProgressUs }.let { index ->
                 if (index < 0) sequence.events.size else index
@@ -2967,6 +3175,7 @@ class NoteCastService : Service() {
                     }
                     if (_state.value.playback.isPaused) {
                         if (pauseStartedNs == 0L) pauseStartedNs = System.nanoTime()
+                        rollSustainNoteState.clear()
                         delay(40)
                         continue
                     }
@@ -2987,11 +3196,16 @@ class NoteCastService : Service() {
                 }
                 if (_state.value.playback.isPaused) continue@loop
                 val targetNs = startNs + event.timeUs * 1_000L + pauseOffsetNs
-                val data = applyLiveVolume(event.data)
-                if (data != null) {
+                var sendInterrupted = false
+                for (message in playbackMessagesForEvent(event.data, pedalRouting, rollSustainNoteState)) {
+                    val data = applyLiveVolume(message) ?: continue
                     val sendTimestampNs = if (scheduleAheadNsForEvent(data) == 0L) System.nanoTime() else targetNs
-                    if (!sendPlaybackMidiData(data, sendTimestampNs)) continue@loop
+                    if (!sendPlaybackMidiData(data, sendTimestampNs)) {
+                        sendInterrupted = true
+                        break
+                    }
                 }
+                if (sendInterrupted) continue@loop
 
                 val nowNs = System.nanoTime()
                 if (nowNs - lastProgressPostNs > PROGRESS_POST_INTERVAL_NS) {
@@ -4230,6 +4444,12 @@ class NoteCastService : Service() {
             allSent = sendMidiMessage(port, byteArrayOf(status, 64, 0), timestampNs) && allSent
             allSent = sendMidiMessage(port, byteArrayOf(status, 66, 0), timestampNs) && allSent
             allSent = sendMidiMessage(port, byteArrayOf(status, 67, 0), timestampNs) && allSent
+            allSent = sendMidiMessage(port, byteArrayOf(status, 69, 0), timestampNs) && allSent
+            allSent = sendMidiMessage(
+                port,
+                byteArrayOf((0x80 or channel).toByte(), ROLL_SUSTAIN_NOTE.toByte(), 0),
+                timestampNs
+            ) && allSent
         }
         return allSent
     }
@@ -4272,9 +4492,11 @@ class NoteCastService : Service() {
                 byteArrayOf(status, 64, 0),   // sustain pedal off
                 byteArrayOf(status, 66, 0),   // sostenuto off
                 byteArrayOf(status, 67, 0),   // soft pedal off
+                byteArrayOf(status, 69, 0),   // hold 2 off
                 byteArrayOf(status, 120.toByte(), 0), // all sound off
                 byteArrayOf(status, 121.toByte(), 0), // reset all controllers
-                byteArrayOf(status, 123.toByte(), 0)  // all notes off
+                byteArrayOf(status, 123.toByte(), 0), // all notes off
+                byteArrayOf((0x80 or channel).toByte(), ROLL_SUSTAIN_NOTE.toByte(), 0)
             )
             messages.forEach { msg ->
                 allSent = sendMidiMessage(port, msg, timestampNs) && allSent
@@ -4290,7 +4512,9 @@ class NoteCastService : Service() {
             byteArrayOf(status, 64, 0),  // sustain pedal off
             byteArrayOf(status, 66, 0),  // sostenuto off
             byteArrayOf(status, 67, 0),  // soft pedal off
-            byteArrayOf(status, 123.toByte(), 0) // all notes off
+            byteArrayOf(status, 69, 0),  // hold 2 off
+            byteArrayOf(status, 123.toByte(), 0), // all notes off
+            byteArrayOf((0x80 or (channel - 1)).toByte(), ROLL_SUSTAIN_NOTE.toByte(), 0)
         )
         messages.forEach { msg -> sendMidiMessage(port, msg, timestampNs) }
     }
@@ -4307,6 +4531,10 @@ class NoteCastService : Service() {
             for (channel in 0..15) {
                 val status = (0xB0 or channel).toByte()
                 allSent = sendMidiMessage(port, byteArrayOf(status, 64, value), now) && allSent
+                if (appSettings.pedalOutputMode == PedalOutputMode.StandardControllersAndRollNote18) {
+                    val noteStatus = ((if (pressed) 0x90 else 0x80) or channel).toByte()
+                    allSent = sendMidiMessage(port, byteArrayOf(noteStatus, ROLL_SUSTAIN_NOTE.toByte(), value), now) && allSent
+                }
             }
         }
         return allSent

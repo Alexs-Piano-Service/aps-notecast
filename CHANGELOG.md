@@ -4,6 +4,34 @@ All notable changes to APS NoteCast are documented here.
 
 ## Unreleased
 
+## 0.1.7
+
+### Added
+
+- Pedal output mode for systems that also expect sustain as piano roll note 18.
+- Sustain pedal test chord to verify that Pedal Test On holds notes until Pedal Test Off.
+- Localized battery/background playback guidance, including Xiaomi/POCO/HyperOS wording.
+
+### Changed
+
+- Pedal-only MIDI channels now route pedal controllers to likely piano output channels.
+- Imported MIDI and ZIP names are cleaned up more consistently, including smart quotes and separator text.
+
+### Fixed
+
+- Song completion sends full note, pedal, all-sound-off, reset-controller, and all-notes-off cleanup.
+
+## 0.1.6
+
+### Changed
+
+- Improved playback scheduling to reduce UI-triggered MIDI jitter.
+- Mixer instrument changes now apply immediately during playback.
+
+### Fixed
+
+- Pause, stop, and panic stop now send note-off cleanup for active notes.
+
 ## 0.1.5
 
 ### Added

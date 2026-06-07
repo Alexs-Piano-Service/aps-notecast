@@ -9,4 +9,7 @@
     <string name="disclaimer_url">https://www.alexanderpeppe.com/disclaimer/</string>
     <string name="privacy_policy">Polityka prywatności</string>
     <string name="privacy_policy_url">https://www.alexanderpeppe.com/privacy-policy/</string>
+    <string name="battery_recommendation_title">Zalecane ustawienie baterii</string>
+    <string name="battery_recommendation_message">Aby odtwarzanie Bluetooth MIDI w tle było niezawodne, ustaw zużycie baterii APS NoteCast na Bez ograniczeń i zezwól na aktywność w tle. Na Xiaomi/POCO/HyperOS wyłącz też oszczędzanie baterii dla tej aplikacji.</string>
+    <string name="battery_recommendation_button">Otwórz ustawienia baterii aplikacji</string>
 </resources>

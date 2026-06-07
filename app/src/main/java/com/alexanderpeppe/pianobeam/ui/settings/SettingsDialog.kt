@@ -35,6 +35,7 @@ import com.alexanderpeppe.pianobeam.data.AppSettings
 import com.alexanderpeppe.pianobeam.data.AppThemeMode
 import com.alexanderpeppe.pianobeam.data.MidiChannelControl
 import com.alexanderpeppe.pianobeam.data.MidiPlaylist
+import com.alexanderpeppe.pianobeam.data.PedalOutputMode
 import com.alexanderpeppe.pianobeam.data.PlaybackAdvanceMode
 import com.alexanderpeppe.pianobeam.data.RepeatMode
 import com.alexanderpeppe.pianobeam.data.VolumeControlMode
@@ -50,7 +51,7 @@ fun SettingsDialog(
     onDiagnostics: () -> Unit,
     onPlayChromaticScale: (velocity: Int, noteLengthMs: Int) -> Unit,
     onStopChromaticScale: () -> Unit,
-    onSustainPedalChange: (pressed: Boolean) -> Unit,
+    onSustainPedalChange: (pressed: Boolean, playSustainedChord: Boolean) -> Unit,
     onBackupLibrary: () -> Unit,
     onRestoreLibrary: () -> Unit,
     onDismiss: () -> Unit
@@ -58,6 +59,7 @@ fun SettingsDialog(
     var showAdvancedMidi by rememberSaveable { mutableStateOf(false) }
     var diagnosticVelocity by rememberSaveable { mutableStateOf(64) }
     var diagnosticNoteLengthMs by rememberSaveable { mutableStateOf(180) }
+    var pedalTestPlaysChord by rememberSaveable { mutableStateOf(true) }
 
     AlertDialog(
         onDismissRequest = onDismiss,
@@ -129,6 +131,20 @@ fun SettingsDialog(
                             selected = settings.volumeControlMode == VolumeControlMode.StandardMidiVolume,
                             onClick = { onSettingsChange(settings.copy(volumeControlMode = VolumeControlMode.StandardMidiVolume)) }
                         )
+                        CompactDivider()
+                        RadioRow(
+                            title = "Standard sustain pedal",
+                            subtitle = "Send MIDI CC64/66/67 pedal messages",
+                            selected = settings.pedalOutputMode == PedalOutputMode.StandardControllers,
+                            onClick = { onSettingsChange(settings.copy(pedalOutputMode = PedalOutputMode.StandardControllers)) }
+                        )
+                        RadioRow(
+                            title = "Add roll sustain note 18",
+                            subtitle = "Also send note 18 on/off for Virtual Roll-style systems",
+                            selected = settings.pedalOutputMode == PedalOutputMode.StandardControllersAndRollNote18,
+                            onClick = { onSettingsChange(settings.copy(pedalOutputMode = PedalOutputMode.StandardControllersAndRollNote18)) }
+                        )
+                        CompactDivider()
                         SwitchRow(
                             title = "Disklavier velocity floor",
                             subtitle = "Raise quiet NOTE ON events to a reliable minimum",
@@ -315,23 +331,24 @@ fun SettingsDialog(
                                 Text("Stop")
                             }
                         }
-                        Text(
-                            "Sustain pedal",
-                            style = MaterialTheme.typography.bodyMedium,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        CheckboxRow(
+                            title = "Pedal test chord",
+                            subtitle = "Pedal On plays and releases a moderate C major chord",
+                            checked = pedalTestPlaysChord,
+                            onCheckedChange = { pedalTestPlaysChord = it }
                         )
                         Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                             OutlinedButton(
-                                onClick = { onSustainPedalChange(true) },
+                                onClick = { onSustainPedalChange(true, pedalTestPlaysChord) },
                                 modifier = Modifier.weight(1f)
                             ) {
-                                Text("Pedal On")
+                                Text("Pedal Test On")
                             }
                             OutlinedButton(
-                                onClick = { onSustainPedalChange(false) },
+                                onClick = { onSustainPedalChange(false, false) },
                                 modifier = Modifier.weight(1f)
                             ) {
-                                Text("Pedal Off")
+                                Text("Pedal Test Off")
                             }
                         }
                     }
@@ -400,6 +417,24 @@ private fun SwitchRow(title: String, subtitle: String, checked: Boolean, onCheck
             Text(subtitle, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
         }
         Switch(checked = checked, onCheckedChange = onCheckedChange)
+    }
+}
+
+@Composable
+private fun CheckboxRow(title: String, subtitle: String, checked: Boolean, onCheckedChange: (Boolean) -> Unit) {
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clickable { onCheckedChange(!checked) }
+            .padding(vertical = 3.dp),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(8.dp)
+    ) {
+        Checkbox(checked = checked, onCheckedChange = onCheckedChange)
+        Column(Modifier.weight(1f)) {
+            Text(title, style = MaterialTheme.typography.bodyMedium, fontWeight = FontWeight.SemiBold)
+            Text(subtitle, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+        }
     }
 }
 

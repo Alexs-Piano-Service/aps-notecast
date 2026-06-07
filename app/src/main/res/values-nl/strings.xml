@@ -9,4 +9,7 @@
     <string name="disclaimer_url">https://www.alexanderpeppe.com/disclaimer/</string>
     <string name="privacy_policy">Privacybeleid</string>
     <string name="privacy_policy_url">https://www.alexanderpeppe.com/privacy-policy/</string>
+    <string name="battery_recommendation_title">Aanbevolen batterijinstelling</string>
+    <string name="battery_recommendation_message">Zet voor betrouwbare Bluetooth-MIDI-weergave op de achtergrond het batterijgebruik van APS NoteCast op Onbeperkt en sta achtergrondactiviteit toe. Schakel op Xiaomi/POCO/HyperOS ook batterijbesparing voor deze app uit.</string>
+    <string name="battery_recommendation_button">App-batterijinstellingen openen</string>
 </resources>

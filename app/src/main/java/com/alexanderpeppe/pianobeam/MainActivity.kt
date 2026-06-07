@@ -35,6 +35,7 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.heightIn
+import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
@@ -712,8 +713,8 @@ private fun NoteCastApp(
             onStopChromaticScale = {
                 service.stopDiagnosticChromaticScale()
             },
-            onSustainPedalChange = { pressed ->
-                service.setPianoTestSustainPedal(pressed)
+            onSustainPedalChange = { pressed, playSustainedChord ->
+                service.setPianoTestSustainPedal(pressed, playSustainedChord)
             },
             onBackupLibrary = { backupLauncher.launch("aps-notecast-library-backup.json") },
             onRestoreLibrary = { restoreLauncher.launch(arrayOf("application/json", "text/*", "*/*")) },
@@ -2301,7 +2302,10 @@ private fun TransportBar(
         "playlist" -> state.playlists.firstOrNull { it.id == selectedId }?.name
         else -> state.files.firstOrNull { it.id == selectedId }?.title
     }
-    Surface(tonalElevation = 4.dp) {
+    Surface(
+        modifier = Modifier.navigationBarsPadding(),
+        tonalElevation = 4.dp
+    ) {
         BoxWithConstraints(Modifier.fillMaxWidth()) {
             val compact = maxWidth < 560.dp
             val contentModifier = Modifier
@@ -3094,15 +3098,15 @@ private fun BatteryUsageRecommendation(onOpenBatterySettings: () -> Unit) {
             Row(verticalAlignment = Alignment.CenterVertically) {
                 Icon(Icons.Default.Settings, contentDescription = null)
                 Spacer(Modifier.width(8.dp))
-                Text("Recommended battery setting", fontWeight = FontWeight.SemiBold)
+                Text(stringResource(R.string.battery_recommendation_title), fontWeight = FontWeight.SemiBold)
             }
             Text(
-                "For reliable Bluetooth MIDI Service playback, set APS NoteCast battery usage to Unrestricted. Android usually lists this under App battery usage, Allow background usage.",
+                stringResource(R.string.battery_recommendation_message),
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onPrimaryContainer
             )
             OutlinedButton(onClick = onOpenBatterySettings, modifier = Modifier.fillMaxWidth()) {
-                Text("Open app battery settings")
+                Text(stringResource(R.string.battery_recommendation_button))
             }
         }
     }
