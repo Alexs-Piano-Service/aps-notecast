@@ -267,7 +267,8 @@ class NoteCastService : Service() {
         val transposeSemitones: Int,
         val excludeDrumChannelFromTranspose: Boolean,
         val channelSignature: String,
-        val instrumentOverrideSignature: String
+        val instrumentOverrideSignature: String,
+        val foldPedalsIntoPianoChannel: Boolean
     )
 
     private data class PreparedPlaybackData(
@@ -277,7 +278,8 @@ class NoteCastService : Service() {
     )
 
     private data class PedalRouting(
-        val sourceChannelToOutputChannels: Map<Int, List<Int>> = emptyMap()
+        val sourceChannelToOutputChannels: Map<Int, List<Int>> = emptyMap(),
+        val replaceSourceChannel: Boolean = false
     )
 
     private data class ActiveMidiNote(
@@ -2532,7 +2534,12 @@ class NoteCastService : Service() {
             val playbackData = PreparedPlaybackData(
                 sequence = prepared,
                 channels = channels,
-                pedalRouting = pedalRouting(parsed, channels, instrumentOverrides = emptyMap())
+                pedalRouting = pedalRouting(
+                    sequence = parsed,
+                    channels = channels,
+                    instrumentOverrides = emptyMap(),
+                    foldPedalsIntoPianoChannel = appSettings.foldPedalsIntoPianoChannel
+                )
             )
             val item = MidiLibraryItem(
                 id = temporaryItemId,
@@ -2687,7 +2694,8 @@ class NoteCastService : Service() {
             transposeSemitones = settings.transposeSemitones,
             excludeDrumChannelFromTranspose = settings.excludeDrumChannelFromTranspose,
             channelSignature = settings.channelControls.cacheSignature(),
-            instrumentOverrideSignature = settings.instrumentOverrideSignatureForSong(item.id)
+            instrumentOverrideSignature = settings.instrumentOverrideSignatureForSong(item.id),
+            foldPedalsIntoPianoChannel = settings.foldPedalsIntoPianoChannel
         )
         synchronized(sequenceCacheLock) { preparedSequenceCache[key] }?.let { cached ->
             return@withContext cached
@@ -2700,7 +2708,12 @@ class NoteCastService : Service() {
         val playbackData = PreparedPlaybackData(
             sequence = prepared,
             channels = channels,
-            pedalRouting = pedalRouting(parsed, channels, instrumentOverrides)
+            pedalRouting = pedalRouting(
+                sequence = parsed,
+                channels = channels,
+                instrumentOverrides = instrumentOverrides,
+                foldPedalsIntoPianoChannel = settings.foldPedalsIntoPianoChannel
+            )
         )
         synchronized(sequenceCacheLock) {
             preparedSequenceCache[key] = playbackData
@@ -2905,7 +2918,8 @@ class NoteCastService : Service() {
     private fun pedalRouting(
         sequence: MidiFileParser.MidiSequence,
         channels: List<PlaybackChannelInfo>,
-        instrumentOverrides: Map<Int, Int>
+        instrumentOverrides: Map<Int, Int>,
+        foldPedalsIntoPianoChannel: Boolean
     ): PedalRouting {
         val pianoOutputChannels = channels
             .filter { channelInfo -> channelInfo.isLikelyPianoSourceChannel(instrumentOverrides[channelInfo.channel]) }
@@ -2921,13 +2935,17 @@ class NoteCastService : Service() {
             .sorted()
         if (pianoOutputChannels.isEmpty()) return PedalRouting()
 
-        val routes = sequence.pedalAnalysis.pedalOnlyChannels
-            .filter { sourceChannel -> sourceChannel in 1..16 }
-            .associateWith { sourceChannel ->
-                pianoOutputChannels.filter { outputChannel -> outputChannel != sourceChannel }
-            }
-            .filterValues { outputChannels -> outputChannels.isNotEmpty() }
-        return PedalRouting(routes)
+        val routes: Map<Int, List<Int>> = if (foldPedalsIntoPianoChannel) {
+            sequence.pedalAnalysis.pedalEventCountsByChannel.keys
+                .filter { sourceChannel -> sourceChannel in 1..16 }
+                .associateWith { pianoOutputChannels }
+        } else {
+            emptyMap()
+        }
+        return PedalRouting(
+            sourceChannelToOutputChannels = routes,
+            replaceSourceChannel = foldPedalsIntoPianoChannel
+        )
     }
 
     private fun PlaybackChannelInfo.isLikelyPianoSourceChannel(overrideProgram: Int?): Boolean =
@@ -3075,7 +3093,10 @@ class NoteCastService : Service() {
     ): List<ByteArray> {
         if (!data.isPedalControllerMessage()) return listOf(data)
         val sourceChannel = data.midiChannelNumber() ?: return listOf(data)
-        val outputChannels = pedalRouting.sourceChannelToOutputChannels[sourceChannel].orEmpty()
+        val outputChannels = pedalRouting.sourceChannelToOutputChannels[sourceChannel]
+            .orEmpty()
+            .filter { outputChannel -> outputChannel in 1..16 }
+            .distinct()
         val rollNoteEnabled = appSettings.pedalOutputMode == PedalOutputMode.StandardControllersAndRollNote18
         if (outputChannels.isEmpty()) {
             return buildList {
@@ -3084,10 +3105,20 @@ class NoteCastService : Service() {
             }
         }
 
+        if (pedalRouting.replaceSourceChannel) {
+            return buildList {
+                outputChannels.forEach { outputChannel ->
+                    val routedData = data.withMidiChannel(outputChannel)
+                    add(routedData)
+                    addAll(rollSustainNoteState.messagesFor(routedData, rollNoteEnabled))
+                }
+            }
+        }
+
         return buildList {
             add(data)
             outputChannels.forEach { outputChannel ->
-                if (outputChannel in 1..16 && outputChannel != sourceChannel) {
+                if (outputChannel != sourceChannel) {
                     val routedData = data.withMidiChannel(outputChannel)
                     add(routedData)
                     addAll(rollSustainNoteState.messagesFor(routedData, rollNoteEnabled))

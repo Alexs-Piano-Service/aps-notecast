@@ -80,6 +80,7 @@ data class AppSettings(
     val shufflePlaylistsByDefault: Boolean = false,
     val volumeControlMode: VolumeControlMode = VolumeControlMode.LegacyVolumeScaling,
     val pedalOutputMode: PedalOutputMode = PedalOutputMode.StandardControllers,
+    val foldPedalsIntoPianoChannel: Boolean = true,
     val velocityScalingEnabled: Boolean = true,
     val minimumNoteVelocity: Int = 32,
     val tempoPercent: Int = 100,

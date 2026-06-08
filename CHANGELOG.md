@@ -4,6 +4,10 @@ All notable changes to APS NoteCast are documented here.
 
 ## Unreleased
 
+### Changed
+
+- Pedal controllers now fold into the detected piano output channel by default, with a Pedal Options switch to preserve source channels.
+
 ## 0.1.7
 
 ### Added

@@ -144,6 +144,12 @@ fun SettingsDialog(
                             selected = settings.pedalOutputMode == PedalOutputMode.StandardControllersAndRollNote18,
                             onClick = { onSettingsChange(settings.copy(pedalOutputMode = PedalOutputMode.StandardControllersAndRollNote18)) }
                         )
+                        SwitchRow(
+                            title = "Fold pedals into piano channel",
+                            subtitle = "Send pedal controllers on the detected piano output channel",
+                            checked = settings.foldPedalsIntoPianoChannel,
+                            onCheckedChange = { onSettingsChange(settings.copy(foldPedalsIntoPianoChannel = it)) }
+                        )
                         CompactDivider()
                         SwitchRow(
                             title = "Disklavier velocity floor",
