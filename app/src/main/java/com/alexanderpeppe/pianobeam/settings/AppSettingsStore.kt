@@ -70,6 +70,7 @@ class AppSettingsStore(context: Context) {
             .putBoolean(KEY_RECORDING_METRONOME, cleanSettings.recordingMetronomeEnabled)
             .putBoolean(KEY_CONFIRM_DISCARD_RECORDING, cleanSettings.confirmDiscardRecording)
             .putString(KEY_SONG_INSTRUMENT_OVERRIDES, encodeSongInstrumentOverrides(cleanSettings.songInstrumentOverrides))
+            .putBoolean(KEY_BATTERY_RECOMMENDATION_DISMISSED, cleanSettings.batteryRecommendationDismissed)
             .also { editor ->
                 cleanSettings.channelControls.forEach { control ->
                     val prefix = channelKeyPrefix(control.channel)
@@ -115,7 +116,8 @@ class AppSettingsStore(context: Context) {
             recordingCountdownSeconds = preferences.getInt(KEY_RECORDING_COUNTDOWN_SECONDS, 0).coerceIn(0, 8),
             recordingMetronomeEnabled = preferences.getBoolean(KEY_RECORDING_METRONOME, false),
             confirmDiscardRecording = preferences.getBoolean(KEY_CONFIRM_DISCARD_RECORDING, true),
-            songInstrumentOverrides = decodeSongInstrumentOverrides(preferences.getString(KEY_SONG_INSTRUMENT_OVERRIDES, null))
+            songInstrumentOverrides = decodeSongInstrumentOverrides(preferences.getString(KEY_SONG_INSTRUMENT_OVERRIDES, null)),
+            batteryRecommendationDismissed = preferences.getBoolean(KEY_BATTERY_RECOMMENDATION_DISMISSED, false)
         )
 
     private fun normalizedChannelControls(controls: List<MidiChannelControl>): List<MidiChannelControl> {
@@ -216,5 +218,6 @@ class AppSettingsStore(context: Context) {
         private const val KEY_RECORDING_METRONOME = "recording_metronome"
         private const val KEY_CONFIRM_DISCARD_RECORDING = "confirm_discard_recording"
         private const val KEY_SONG_INSTRUMENT_OVERRIDES = "song_instrument_overrides"
+        private const val KEY_BATTERY_RECOMMENDATION_DISMISSED = "battery_recommendation_dismissed"
     }
 }

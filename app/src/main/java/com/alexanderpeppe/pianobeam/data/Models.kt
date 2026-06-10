@@ -60,7 +60,7 @@ data class KuhmannSearchUiState(
     val channel: Int? = null,
     val limit: Int = 50,
     val results: List<KuhmannMidiResult> = emptyList(),
-    val message: String = "Search the Kuhmann MIDI directory.",
+    val message: String = "Search the external Kuhmann MIDI source. Personal/noncommercial unless permitted.",
     val lastImportedIds: List<Int> = emptyList(),
     val activePlaybackResultId: Int? = null
 )

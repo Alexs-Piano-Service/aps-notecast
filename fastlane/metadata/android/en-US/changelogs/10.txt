@@ -1,0 +1,1 @@
+Clarifies that Kuhmann is an external noncommercial MIDI source, adds copyright and DMCA/removal dialogs, and keeps external-source imports user initiated.

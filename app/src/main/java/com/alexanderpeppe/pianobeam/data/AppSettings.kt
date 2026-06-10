@@ -92,7 +92,8 @@ data class AppSettings(
     val recordingCountdownSeconds: Int = 0,
     val recordingMetronomeEnabled: Boolean = false,
     val confirmDiscardRecording: Boolean = true,
-    val songInstrumentOverrides: List<SongInstrumentOverrides> = emptyList()
+    val songInstrumentOverrides: List<SongInstrumentOverrides> = emptyList(),
+    val batteryRecommendationDismissed: Boolean = false
 )
 
 fun defaultChannelControls(): List<MidiChannelControl> =

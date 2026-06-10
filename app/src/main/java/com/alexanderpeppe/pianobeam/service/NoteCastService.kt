@@ -728,7 +728,7 @@ class NoteCastService : Service() {
                     pianoOnly = pianoOnly,
                     channel = cleanChannel,
                     limit = cleanLimit,
-                    message = "Searching Kuhmann MIDI..."
+                    message = "Searching external noncommercial Kuhmann MIDI source..."
                 )
             )
         }
@@ -783,7 +783,7 @@ class NoteCastService : Service() {
             it.copy(
                 kuhmann = it.kuhmann.copy(
                     downloading = true,
-                    message = "Downloading ${uniqueResults.size} Kuhmann MIDI file${if (uniqueResults.size == 1) "" else "s"}..."
+                    message = "Importing ${uniqueResults.size} file${if (uniqueResults.size == 1) "" else "s"} from Kuhmann..."
                 )
             )
         }
@@ -801,7 +801,7 @@ class NoteCastService : Service() {
                         bytes = bytes,
                         displayName = result.filename.ifBlank { "${result.title}.mid" },
                         preferredTitle = result.title,
-                        notePrefix = "Kuhmann MIDI: ${result.folder}"
+                        notePrefix = "External Kuhmann MIDI: ${result.folder}"
                     )
                     imported++
                     importedIds += result.id
@@ -814,10 +814,10 @@ class NoteCastService : Service() {
             }
             withContext(Dispatchers.Main) {
                 val message = when {
-                    imported > 0 && failed == 0 -> "Downloaded $imported Kuhmann MIDI file${if (imported == 1) "" else "s"}."
-                    imported > 0 -> "Downloaded $imported Kuhmann MIDI file${if (imported == 1) "" else "s"}; $failed failed."
+                    imported > 0 && failed == 0 -> "Imported $imported file${if (imported == 1) "" else "s"} from Kuhmann."
+                    imported > 0 -> "Imported $imported file${if (imported == 1) "" else "s"} from Kuhmann; $failed failed."
                     networkFailure -> ApsNetworkStatus.userMessage(this@NoteCastService)
-                    else -> "Could not download the selected Kuhmann MIDI file${if (failed == 1) "" else "s"}."
+                    else -> "Could not import the selected Kuhmann file${if (failed == 1) "" else "s"}."
                 }
                 reloadLibrary(message)
                 val previewItemId = _state.value.playback.currentItemId
@@ -872,7 +872,7 @@ class NoteCastService : Service() {
             return
         }
 
-        val title = result.title.ifBlank { result.filename.ifBlank { "Kuhmann MIDI" } }
+        val title = result.title.ifBlank { result.filename.ifBlank { "Kuhmann MIDI file" } }
         val temporaryItemId = "kuhmann-preview-${result.id}-${SystemClock.elapsedRealtime()}"
         val generation = playbackGeneration.incrementAndGet()
         val replacingActivePlayback = _state.value.playback.isActive || playbackJob?.isActive == true
@@ -2548,7 +2548,7 @@ class NoteCastService : Service() {
                 storedFileName = "",
                 durationUs = prepared.durationUs,
                 importedAtMs = System.currentTimeMillis(),
-                notes = "Kuhmann MIDI preview"
+                notes = "External Kuhmann MIDI preview"
             )
 
             coroutineContext.ensureActive()
@@ -2631,7 +2631,7 @@ class NoteCastService : Service() {
             withContext(Dispatchers.Main) {
                 if (!isCurrentPlayback(generation)) return@withContext
                 if (completedNormally) {
-                    val message = "Kuhmann playback finished."
+                    val message = "External Kuhmann playback finished."
                     _state.update {
                         it.copy(
                             playback = PlaybackUiState(),
@@ -3326,7 +3326,7 @@ class NoteCastService : Service() {
                 val obj = resultsArray.optJSONObject(index) ?: continue
                 val id = obj.optInt("id", -1)
                 val url = obj.optString("url")
-                val title = obj.optString("title", obj.optString("filename", "Kuhmann MIDI"))
+                val title = obj.optString("title", obj.optString("filename", "External Kuhmann MIDI file"))
                 if (id < 0 || url.isBlank()) continue
                 val channelsArray = obj.optJSONArray("channels")
                 val channels = buildList {
@@ -3382,9 +3382,9 @@ class NoteCastService : Service() {
 
     private fun KuhmannSearchResponse.kuhmannSearchMessage(): String {
         return if (results.isEmpty()) {
-            "No Kuhmann MIDI files matched."
+            "No external Kuhmann MIDI files matched."
         } else {
-            "Found ${results.size} of $count Kuhmann MIDI file${if (count == 1) "" else "s"}."
+            "Found ${results.size} of $count external Kuhmann MIDI file${if (count == 1) "" else "s"}. Personal/noncommercial unless permitted."
         }
     }
 

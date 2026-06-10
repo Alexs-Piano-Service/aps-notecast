@@ -31,20 +31,36 @@ assets supplied for APS NoteCast.
 
 ## Bundled Demo MIDI Files
 
-APS NoteCast includes two demo MIDI files so a new installation has immediate
-sample content. The underlying Chopin compositions are public-domain works, but
-the MIDI files are specific captured or prepared files and their separate reuse
-license should be kept explicit for public app-store distribution.
+Demo MIDI files are from the Mutopia Project and are marked Public Domain / no
+rights reserved on their source pages. They are included so users can test APS
+NoteCast immediately.
 
-| App resource | Original filename | Embedded/source credit | SHA-256 |
-| --- | --- | --- | --- |
-| `app/src/main/res/raw/demo_chopin_andante_polonaise.mid` | `Frederic Chopin, Andante Spianato and Grande Polonaise Brillante, Op. 22 (Zuber-06).mid` | Embedded MIDI text: "Andante Spianato, Chopin"; "Yamaha Disklavier Pro Mark IV concert grand piano, model DCFIIISM4PRO"; "AndantePolonaiseEric Zuber" | `afa68c906b1ed2fb34277f1257e9168876fdcd5e324509af82032fdc3842ca79` |
-| `app/src/main/res/raw/demo_chopin_etude_op10_no5.mid` | `Frederic Chopin - Etude Op. 10 No. 5 (KimG-04).mid` | Embedded MIDI text/source listing: "2009 Piano-e-Competition audition round"; "captured January 2009"; "http://www.piano-e-competition.com/"; "File processed for distribution by software from Zenph Studios, Inc., http://www.zenph.com"; "Etude Op. 10/5  Grace EunHae Kim" | `d35b134d42584f141c97efed7999a62f1714c6e481499be592d8cb4c9c5c8c42` |
+| App resource | Work | Source page | Mutopia ID / updated | Source marking | SHA-256 |
+| --- | --- | --- | --- | --- | --- |
+| `app/src/main/res/raw/demo_beethoven_fur_elise.mid` | `Fur Elise, WoO 59` by L. V. Beethoven | https://www.mutopiaproject.org/cgibin/piece-info.cgi?id=931 | `Mutopia-2015/08/18-931`, updated 2015/Aug/18 | Public Domain / no rights reserved | `1c12c21c7bbf4cf163896732672648a69d497636059837abd153c71abe50215a` |
+| `app/src/main/res/raw/demo_bach_wtc1_prelude1.mid` | `Das Wohltemperierte Clavier I, Praeludium I, BWV 846` by J. S. Bach | https://www.mutopiaproject.org/cgibin/piece-info.cgi?id=5 | `Mutopia-2011/09/12-5`, updated 2011/Sep/12 | Public Domain / no rights reserved | `874e07d0479542971bfceaf420d6117da8d602d89d26eea4610e7dd1ef58bf26` |
+
+## External MIDI Sources
+
+APS NoteCast can search, preview, and import files from external MIDI sources
+such as the Kuhmann MIDI directory. Those files are not bundled in the APK/AAB
+and should not be treated as an APS NoteCast-owned or APS NoteCast-licensed
+catalog.
+
+Rights and permissions may vary by file and source. External-source access
+should be treated as personal/noncommercial unless the source clearly grants
+broader rights. Users should download, import, and use only files they have the
+right to use. Do not sell, redistribute, remaster, or use external-source files
+for paid/commercial playback unless allowed by the rights holder.
+
+Copyright concerns or removal requests can be sent through the published DMCA /
+removal policy:
+
+https://www.alexanderpeppe.com/dmca-policy/
 
 ### F-Droid Packaging Note
 
-The software dependencies are free/open-source, but the bundled demo MIDI files
-should be reviewed as content assets. Before submitting to the main F-Droid
-repository, either confirm and document a libre redistribution license for these
-MIDI files, or remove/replace them with demo MIDI files whose source and license
-are unambiguous.
+The software dependencies are free/open-source. The bundled demo MIDI files are
+content assets from the Mutopia Project and are marked Public Domain / no rights
+reserved on their source pages. Keep the source URLs and SHA-256 values above
+current for review.

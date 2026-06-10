@@ -7,6 +7,9 @@ All notable changes to APS NoteCast are documented here.
 ### Changed
 
 - Pedal controllers now fold into the detected piano output channel by default, with a Pedal Options switch to preserve source channels.
+- Kuhmann is now presented as an external noncommercial MIDI source with copyright and DMCA/removal guidance.
+- Bundled demo MIDI files now come from Mutopia Project public-domain sources.
+- Recommended battery settings now appear as a one-time startup dialog instead of inside the connection wizard.
 
 ## 0.1.7
 

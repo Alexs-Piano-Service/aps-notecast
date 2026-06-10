@@ -19,6 +19,7 @@ import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.isSystemInDarkTheme
+import androidx.compose.foundation.ScrollState
 import androidx.compose.foundation.gestures.detectDragGesturesAfterLongPress
 import androidx.compose.foundation.gestures.scrollBy
 import androidx.compose.foundation.Image
@@ -28,6 +29,7 @@ import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.ColumnScope
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
@@ -144,6 +146,7 @@ import androidx.compose.ui.platform.LocalUriHandler
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.Density
+import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
@@ -450,6 +453,10 @@ private fun NoteCastApp(
     val restoreLauncher = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
         if (uri != null) service.restoreLibraryBackup(uri)
     }
+    val showBatteryRecommendation = !settings.batteryRecommendationDismissed
+    val dismissBatteryRecommendation = {
+        onSettingsChange(settings.copy(batteryRecommendationDismissed = true))
+    }
 
     LaunchedEffect(settings) {
         service.applySettings(settings)
@@ -666,7 +673,17 @@ private fun NoteCastApp(
         }
     }
 
-    if (showWizard && !state.connection.connected) {
+    if (showBatteryRecommendation) {
+        BatteryRecommendationDialog(
+            onOpenBatterySettings = {
+                dismissBatteryRecommendation()
+                onOpenBatterySettings()
+            },
+            onDismiss = dismissBatteryRecommendation
+        )
+    }
+
+    if (showWizard && !state.connection.connected && !showBatteryRecommendation) {
         ConnectionWizardDialog(
             state = state,
             service = service,
@@ -674,7 +691,6 @@ private fun NoteCastApp(
             onRequestPermissions = onRequestPermissions,
             onRequestBluetoothEnable = onRequestBluetoothEnable,
             onOpenBluetoothPairing = onOpenBluetoothPairing,
-            onOpenBatterySettings = onOpenBatterySettings,
             autoReconnectEnabled = settings.autoReconnectEnabled,
             onDismiss = {
                 service.continueOffline()
@@ -738,12 +754,9 @@ private fun NoteCastApp(
             icon = { Icon(Icons.Default.Bluetooth, contentDescription = null) },
             title = { Text("Connection diagnostics") },
             text = {
-                Text(
-                    diagnostics,
-                    modifier = Modifier
-                        .heightIn(max = 360.dp)
-                        .verticalScroll(rememberScrollState())
-                )
+                ScrollableDialogColumn {
+                    Text(diagnostics)
+                }
             },
             confirmButton = {
                 TextButton(onClick = { diagnosticsText = null }) { Text("Done") }
@@ -1259,7 +1272,7 @@ private fun LibraryHero(
                     horizontalArrangement = Arrangement.spacedBy(6.dp)
                 ) {
                     LibraryActionButton(Icons.Default.UploadFile, if (veryNarrow) "Add" else "Add MIDI", onImport, Modifier.weight(1f))
-                    LibraryActionButton(Icons.Default.Search, if (veryNarrow) "Web" else "Kuhmann", onBrowseKuhmann, Modifier.weight(1f))
+                    LibraryActionButton(Icons.Default.Search, if (veryNarrow) "Web" else "External", onBrowseKuhmann, Modifier.weight(1f))
                     LibraryActionButton(
                         Icons.Default.FiberManualRecord,
                         if (veryNarrow) "Record" else "Record MIDI",
@@ -1320,15 +1333,12 @@ private fun AppInfoDialog(onDismiss: () -> Unit) {
             }
         },
         text = {
-            Column(
-                modifier = Modifier
-                    .heightIn(max = 360.dp)
-                    .verticalScroll(rememberScrollState()),
-                verticalArrangement = Arrangement.spacedBy(12.dp)
-            ) {
+            ScrollableDialogColumn(verticalArrangement = Arrangement.spacedBy(12.dp)) {
                 InfoLine("Version", BuildConfig.VERSION_NAME)
                 InfoLine("Built for", "BLE MIDI playback to WIDI and compatible player-piano adapters")
-                InfoLine("Library", "Import MIDI files, use the bundled Chopin demo, create playlists, or record BLE MIDI input")
+                InfoLine("Cost", "Free and open-source. No subscriptions, in-app purchases, ads, or paid music catalog.")
+                InfoLine("Library", "Import MIDI files, use bundled Mutopia demos, create playlists, or record BLE MIDI input")
+                InfoLine("External MIDI", "APS NoteCast can link to external MIDI sources for personal/noncommercial use. Rights vary by source.")
                 InfoLine("Playback", "Sequence or shuffle playlists with pause, stop, skip, panic, and channel volume")
                 InfoLine("Safety", "Stop and Panic send pedal-off, all-notes-off, reset controllers, and all-sound-off on all MIDI channels")
                 InfoLine(
@@ -1344,6 +1354,11 @@ private fun AppInfoDialog(onDismiss: () -> Unit) {
                     label = stringResource(R.string.disclaimer),
                     value = stringResource(R.string.disclaimer_url),
                     onClick = { uriHandler.openUri("https://www.alexanderpeppe.com/disclaimer/") }
+                )
+                InfoLink(
+                    label = stringResource(R.string.dmca_policy),
+                    value = stringResource(R.string.dmca_policy_url),
+                    onClick = { uriHandler.openUri("https://www.alexanderpeppe.com/dmca-policy/") }
                 )
                 InfoLink(
                     label = stringResource(R.string.privacy_policy),
@@ -1380,6 +1395,57 @@ private fun InfoLink(label: String, value: String, onClick: () -> Unit) {
 }
 
 @Composable
+private fun ScrollableDialogColumn(
+    modifier: Modifier = Modifier,
+    maxHeight: Dp = 360.dp,
+    verticalArrangement: Arrangement.Vertical = Arrangement.Top,
+    content: @Composable ColumnScope.() -> Unit
+) {
+    val scrollState = rememberScrollState()
+    BoxWithConstraints(modifier = modifier.heightIn(max = maxHeight)) {
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .heightIn(max = maxHeight)
+                .verticalScroll(scrollState)
+                .padding(end = if (scrollState.maxValue > 0) 10.dp else 0.dp),
+            verticalArrangement = verticalArrangement,
+            content = content
+        )
+        DialogScrollThumb(
+            scrollState = scrollState,
+            maxHeight = maxHeight,
+            modifier = Modifier.align(Alignment.TopEnd)
+        )
+    }
+}
+
+@Composable
+private fun DialogScrollThumb(
+    scrollState: ScrollState,
+    maxHeight: Dp,
+    modifier: Modifier = Modifier
+) {
+    if (scrollState.maxValue <= 0) return
+    val density = LocalDensity.current
+    val viewportPx = with(density) { maxHeight.toPx() }
+    val contentPx = viewportPx + scrollState.maxValue
+    val minThumbPx = with(density) { 32.dp.toPx() }
+    val thumbHeightPx = (viewportPx * viewportPx / contentPx).coerceAtLeast(minThumbPx)
+    val maxOffsetPx = (viewportPx - thumbHeightPx).coerceAtLeast(0f)
+    val thumbOffsetPx = maxOffsetPx * (scrollState.value.toFloat() / scrollState.maxValue.toFloat())
+
+    Surface(
+        modifier = modifier
+            .width(3.dp)
+            .height(with(density) { thumbHeightPx.toDp() })
+            .graphicsLayer { translationY = thumbOffsetPx },
+        shape = RoundedCornerShape(2.dp),
+        color = MaterialTheme.colorScheme.outline.copy(alpha = 0.7f)
+    ) {}
+}
+
+@Composable
 private fun BugReportDialog(
     context: Context,
     state: AppUiState,
@@ -1402,12 +1468,7 @@ private fun BugReportDialog(
         icon = { Icon(Icons.Default.Warning, contentDescription = null) },
         title = { Text("Report a Bug") },
         text = {
-            Column(
-                modifier = Modifier
-                    .heightIn(max = 360.dp)
-                    .verticalScroll(rememberScrollState()),
-                verticalArrangement = Arrangement.spacedBy(10.dp)
-            ) {
+            ScrollableDialogColumn(verticalArrangement = Arrangement.spacedBy(10.dp)) {
                 Text("Tell us what happened and what you expected instead.")
                 Text(
                     "The report includes app and Android details. Logs are optional and may include recent app events and MIDI device names.",
@@ -2906,13 +2967,7 @@ private fun MixerChannelInfoDialog(row: MixerChannelRowModel, onDismiss: () -> U
         icon = { Icon(Icons.Default.Info, contentDescription = null) },
         title = { Text(row.instrumentName) },
         text = {
-            Column(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .heightIn(max = 360.dp)
-                    .verticalScroll(rememberScrollState()),
-                verticalArrangement = Arrangement.spacedBy(10.dp)
-            ) {
+            ScrollableDialogColumn(verticalArrangement = Arrangement.spacedBy(10.dp)) {
                 row.infoLines.forEach { (label, value) ->
                     Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
                         Text(label, style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
@@ -3056,7 +3111,6 @@ private fun ConnectionWizardDialog(
     onRequestPermissions: () -> Unit,
     onRequestBluetoothEnable: () -> Unit,
     onOpenBluetoothPairing: () -> Unit,
-    onOpenBatterySettings: () -> Unit,
     autoReconnectEnabled: Boolean,
     onDismiss: () -> Unit
 ) {
@@ -3065,10 +3119,7 @@ private fun ConnectionWizardDialog(
         icon = { BrandMark(modifier = Modifier.size(64.dp), contentDescription = "APS NoteCast") },
         title = { Text("Connect BLE MIDI") },
         text = {
-            Column(
-                modifier = Modifier.verticalScroll(rememberScrollState()),
-                verticalArrangement = Arrangement.spacedBy(12.dp)
-            ) {
+            ScrollableDialogColumn(verticalArrangement = Arrangement.spacedBy(12.dp)) {
                 PrimaryLogoBanner()
                 Text("Choose your MIDI device to start. You can continue offline and connect later.")
                 DeviceConnectorContent(
@@ -3080,7 +3131,6 @@ private fun ConnectionWizardDialog(
                     onOpenBluetoothPairing = onOpenBluetoothPairing,
                     compact = true
                 )
-                BatteryUsageRecommendation(onOpenBatterySettings = onOpenBatterySettings)
             }
         },
         confirmButton = {
@@ -3092,24 +3142,30 @@ private fun ConnectionWizardDialog(
 }
 
 @Composable
-private fun BatteryUsageRecommendation(onOpenBatterySettings: () -> Unit) {
-    Surface(shape = RoundedCornerShape(4.dp), color = MaterialTheme.colorScheme.primaryContainer) {
-        Column(Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                Icon(Icons.Default.Settings, contentDescription = null)
-                Spacer(Modifier.width(8.dp))
-                Text(stringResource(R.string.battery_recommendation_title), fontWeight = FontWeight.SemiBold)
+private fun BatteryRecommendationDialog(
+    onOpenBatterySettings: () -> Unit,
+    onDismiss: () -> Unit
+) {
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        icon = { Icon(Icons.Default.Settings, contentDescription = null) },
+        title = { Text(stringResource(R.string.battery_recommendation_title)) },
+        text = {
+            ScrollableDialogColumn(maxHeight = 260.dp) {
+                Text(stringResource(R.string.battery_recommendation_message))
             }
-            Text(
-                stringResource(R.string.battery_recommendation_message),
-                style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onPrimaryContainer
-            )
-            OutlinedButton(onClick = onOpenBatterySettings, modifier = Modifier.fillMaxWidth()) {
+        },
+        confirmButton = {
+            Button(onClick = onOpenBatterySettings) {
                 Text(stringResource(R.string.battery_recommendation_button))
             }
+        },
+        dismissButton = {
+            TextButton(onClick = onDismiss) {
+                Text("Not now")
+            }
         }
-    }
+    )
 }
 
 @Composable
@@ -3127,10 +3183,7 @@ private fun ConnectionDialog(
         icon = { BrandMark(modifier = Modifier.size(56.dp), contentDescription = "APS NoteCast") },
         title = { Text(if (state.connection.connected) "BLE MIDI connected" else "BLE MIDI connection") },
         text = {
-            Column(
-                modifier = Modifier.verticalScroll(rememberScrollState()),
-                verticalArrangement = Arrangement.spacedBy(12.dp)
-            ) {
+            ScrollableDialogColumn(verticalArrangement = Arrangement.spacedBy(12.dp)) {
                 DeviceConnectorContent(
                     state = state,
                     service = service,
@@ -3678,6 +3731,9 @@ private fun KuhmannMidiDialog(
     var limitText by rememberSaveable { mutableStateOf(state.limit.toString()) }
     var pianoOnly by rememberSaveable { mutableStateOf(state.pianoOnly) }
     var showLimitControl by rememberSaveable { mutableStateOf(false) }
+    var showCopyrightInfo by rememberSaveable { mutableStateOf(false) }
+    var showRemovalInfo by rememberSaveable { mutableStateOf(false) }
+    val uriHandler = LocalUriHandler.current
     val selected = remember { mutableStateMapOf<Int, Boolean>() }
     LaunchedEffect(state.results) {
         selected.clear()
@@ -3703,7 +3759,7 @@ private fun KuhmannMidiDialog(
             runSearch(newPianoOnly)
         }
     }
-    val downloadAction = { service.downloadKuhmannMidi(selectedResults) }
+    val importAction = { service.downloadKuhmannMidi(selectedResults) }
 
     Dialog(
         onDismissRequest = onDismiss,
@@ -3738,18 +3794,18 @@ private fun KuhmannMidiDialog(
                 Column(
                     modifier = Modifier
                         .heightIn(max = maxHeight)
-                        .padding(16.dp),
-                    verticalArrangement = Arrangement.spacedBy(8.dp)
+                        .padding(12.dp),
+                    verticalArrangement = Arrangement.spacedBy(6.dp)
                 ) {
                     Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(10.dp)) {
                         Icon(Icons.Default.Search, contentDescription = null)
                         Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(1.dp)) {
-                            Text("Kuhmann MIDI", style = MaterialTheme.typography.headlineSmall, maxLines = 1)
+                            Text("External MIDI", style = MaterialTheme.typography.titleLarge, maxLines = 1)
                             Text(
-                                state.message,
+                                "Kuhmann source - noncommercial only",
                                 style = MaterialTheme.typography.bodySmall,
                                 color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                maxLines = 2,
+                                maxLines = 1,
                                 overflow = TextOverflow.Ellipsis
                             )
                         }
@@ -3757,12 +3813,40 @@ private fun KuhmannMidiDialog(
                             Icon(Icons.Default.Close, contentDescription = "Close")
                         }
                     }
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                        Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(1.dp)) {
+                            Text(
+                                "External source",
+                                style = MaterialTheme.typography.labelMedium,
+                                fontWeight = FontWeight.SemiBold,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                            Text(
+                                "Personal/noncommercial only. Check rights first.",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                maxLines = 2,
+                                overflow = TextOverflow.Ellipsis
+                            )
+                        }
+                        TextButton(onClick = { showCopyrightInfo = true }) {
+                            Text("Copyright")
+                        }
+                        TextButton(onClick = { showRemovalInfo = true }) {
+                            Text("DMCA")
+                        }
+                    }
                     OutlinedTextField(
                         value = query,
                         onValueChange = { query = it },
                         modifier = Modifier.fillMaxWidth(),
                         singleLine = true,
-                        label = { Text("Search Kuhmann directory") },
+                        label = { Text("Search") },
+                        placeholder = { Text("Composer, title, or style") },
                         leadingIcon = { Icon(Icons.Default.Search, contentDescription = null) },
                         trailingIcon = {
                             if (query.isNotEmpty()) {
@@ -3773,21 +3857,23 @@ private fun KuhmannMidiDialog(
                         }
                     )
                     if (compactControls) {
-                        Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
-                            KuhmannSearchFilters(
-                                pianoOnly = pianoOnly,
-                                onPianoOnlyChange = modeChangeAction,
-                                modifier = Modifier.fillMaxWidth()
-                            )
-                            TextButton(onClick = { showLimitControl = !showLimitControl }) {
-                                Text(if (showLimitControl) "Hide limit" else "Limit: $limitLabel")
+                        Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                            Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                                KuhmannSearchFilters(
+                                    pianoOnly = pianoOnly,
+                                    onPianoOnlyChange = modeChangeAction,
+                                    modifier = Modifier.weight(1f)
+                                )
+                                TextButton(onClick = { showLimitControl = !showLimitControl }) {
+                                    Text(if (showLimitControl) "Hide" else "Limit $limitLabel")
+                                }
                             }
                             if (showLimitControl) {
-                                KuhmannSmallNumberField("Result limit", limitText, { limitText = it }, Modifier.fillMaxWidth())
+                                KuhmannSmallNumberField("Limit", limitText, { limitText = it }, Modifier.fillMaxWidth())
                             }
                         }
                     } else {
-                        Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                        Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
                             Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                                 KuhmannSearchFilters(
                                     pianoOnly = pianoOnly,
@@ -3795,51 +3881,46 @@ private fun KuhmannMidiDialog(
                                     modifier = Modifier.weight(1f)
                                 )
                                 TextButton(onClick = { showLimitControl = !showLimitControl }) {
-                                    Text(if (showLimitControl) "Hide limit" else "Limit: $limitLabel")
+                                    Text(if (showLimitControl) "Hide limit" else "Limit $limitLabel")
                                 }
                             }
                             if (showLimitControl) {
                                 Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End) {
-                                    KuhmannSmallNumberField("Result limit", limitText, { limitText = it }, Modifier.width(132.dp))
+                                    KuhmannSmallNumberField("Limit", limitText, { limitText = it }, Modifier.width(132.dp))
                                 }
                             }
                         }
                     }
                     Row(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
-                        TextButton(
-                            onClick = {
-                                state.results
-                                    .filterNot { it.id in state.lastImportedIds }
-                                    .forEach { selected[it.id] = true }
-                            },
-                            enabled = state.results.isNotEmpty() && !state.downloading
-                        ) {
-                            Text("Select all")
-                        }
-                        TextButton(
-                            onClick = { selected.clear() },
-                            enabled = selectedResults.isNotEmpty() && !state.downloading
-                        ) {
-                            Text("Clear")
-                        }
                         Text(
                             "${state.results.size} shown - ${selectedResults.size} selected",
+                            modifier = Modifier.weight(1f),
                             style = MaterialTheme.typography.bodySmall,
                             color = MaterialTheme.colorScheme.onSurfaceVariant,
-                            maxLines = 1
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis
                         )
+                        if (selectedResults.isNotEmpty() && !state.downloading) {
+                            TextButton(onClick = { selected.clear() }) {
+                                Text("Clear")
+                            }
+                        }
                     }
                     if (state.results.isEmpty()) {
                         Box(
                             modifier = Modifier
                                 .fillMaxWidth()
-                                .heightIn(min = 144.dp),
-                            contentAlignment = Alignment.Center
+                                .heightIn(min = 52.dp),
+                            contentAlignment = Alignment.CenterStart
                         ) {
                             if (state.searching || state.downloading) {
                                 LoadingIndicator(contentDescription = state.message)
                             } else {
-                                Text("Search by composer, title, or style.", color = MaterialTheme.colorScheme.onSurfaceVariant)
+                                Text(
+                                    "Search by composer, title, or style.",
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                                )
                             }
                         }
                     } else {
@@ -3892,17 +3973,78 @@ private fun KuhmannMidiDialog(
                         }
                         Spacer(Modifier.width(8.dp))
                         Button(
-                            onClick = downloadAction,
+                            onClick = importAction,
                             enabled = selectedResults.isNotEmpty() && !state.searching && !state.downloading,
                             modifier = if (compactControls) Modifier.weight(1f) else Modifier
                         ) {
-                            Text(if (state.downloading) "Downloading..." else "Download ${selectedResults.size}")
+                            Text(if (state.downloading) "Importing..." else "Import ${selectedResults.size}")
                         }
                     }
                 }
             }
         }
     }
+    if (showCopyrightInfo) {
+        ExternalSourceCopyrightDialog(
+            onDismiss = { showCopyrightInfo = false },
+            onOpenDisclaimer = { uriHandler.openUri("https://www.alexanderpeppe.com/disclaimer/") }
+        )
+    }
+    if (showRemovalInfo) {
+        ExternalSourceRemovalDialog(
+            onDismiss = { showRemovalInfo = false },
+            onOpenDmcaPolicy = { uriHandler.openUri("https://www.alexanderpeppe.com/dmca-policy/") }
+        )
+    }
+}
+
+@Composable
+private fun ExternalSourceCopyrightDialog(
+    onDismiss: () -> Unit,
+    onOpenDisclaimer: () -> Unit
+) {
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("Copyright") },
+        text = {
+            ScrollableDialogColumn(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                Text("APS NoteCast is a MIDI playback and Bluetooth MIDI connection tool. It does not sell, license, or claim ownership of third-party MIDI or E-SEQ files.")
+                Text("External archives may contain public-domain works, user-created sequences, live MIDI performances, arrangements, or files with unknown or mixed permissions.")
+                Text("A public-domain composition does not always mean every MIDI file, arrangement, or performance of that composition is unrestricted.")
+                Text("Use external files only for personal, noncommercial purposes unless you have permission or a separate license. Do not redistribute, sell, remaster, or use files for paid/commercial playback unless allowed by the rights holder.")
+            }
+        },
+        dismissButton = {
+            TextButton(onClick = onOpenDisclaimer) { Text("Disclaimer") }
+        },
+        confirmButton = {
+            TextButton(onClick = onDismiss) { Text("Done") }
+        }
+    )
+}
+
+@Composable
+private fun ExternalSourceRemovalDialog(
+    onDismiss: () -> Unit,
+    onOpenDmcaPolicy: () -> Unit
+) {
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("DMCA / Removal") },
+        text = {
+            ScrollableDialogColumn(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                Text("If you own rights to a MIDI, E-SEQ, arrangement, performance, or related file accessible through an external source shown in APS NoteCast and want it removed or delisted, please contact us.")
+                Text("Include the file name or title, the source where it appears, your relationship to the work, and a good contact address. We will review removal requests promptly.")
+                Text("APS NoteCast does not claim ownership of third-party files and does not intend to encourage copyright infringement.")
+            }
+        },
+        dismissButton = {
+            TextButton(onClick = onOpenDmcaPolicy) { Text("Open policy") }
+        },
+        confirmButton = {
+            TextButton(onClick = onDismiss) { Text("Done") }
+        }
+    )
 }
 
 @Composable
@@ -3911,26 +4053,9 @@ private fun KuhmannSearchFilters(
     onPianoOnlyChange: (Boolean) -> Unit,
     modifier: Modifier = Modifier
 ) {
-    Surface(
-        modifier = modifier,
-        shape = RoundedCornerShape(6.dp),
-        color = MaterialTheme.colorScheme.surfaceVariant
-    ) {
-        Column(
-            modifier = Modifier.padding(horizontal = 10.dp, vertical = 8.dp),
-            verticalArrangement = Arrangement.spacedBy(6.dp)
-        ) {
-            Text(
-                "Search mode",
-                style = MaterialTheme.typography.labelLarge,
-                fontWeight = FontWeight.SemiBold,
-                color = MaterialTheme.colorScheme.onSurfaceVariant
-            )
-            Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                KuhmannFilterButton("Piano Only", pianoOnly, { onPianoOnlyChange(true) }, Modifier.weight(1f))
-                KuhmannFilterButton("Ensemble", !pianoOnly, { onPianoOnlyChange(false) }, Modifier.weight(1f))
-            }
-        }
+    Row(modifier = modifier, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+        KuhmannFilterButton("Piano", pianoOnly, { onPianoOnlyChange(true) }, Modifier.weight(1f))
+        KuhmannFilterButton("Ensemble", !pianoOnly, { onPianoOnlyChange(false) }, Modifier.weight(1f))
     }
 }
 
@@ -3948,13 +4073,13 @@ private fun KuhmannFilterButton(
         )
     } else {
         ButtonDefaults.filledTonalButtonColors(
-            containerColor = MaterialTheme.colorScheme.surface,
-            contentColor = MaterialTheme.colorScheme.onSurface
+            containerColor = MaterialTheme.colorScheme.surfaceVariant,
+            contentColor = MaterialTheme.colorScheme.onSurfaceVariant
         )
     }
     FilledTonalButton(
         onClick = onClick,
-        modifier = modifier.height(44.dp),
+        modifier = modifier.height(40.dp),
         colors = colors,
         contentPadding = PaddingValues(horizontal = 6.dp)
     ) {
@@ -4326,10 +4451,7 @@ private fun PlaylistColorDialog(
         icon = { Icon(Icons.Default.FiberManualRecord, contentDescription = null) },
         title = { Text("Playlist color") },
         text = {
-            Column(
-                modifier = Modifier.verticalScroll(rememberScrollState()),
-                verticalArrangement = Arrangement.spacedBy(8.dp)
-            ) {
+            ScrollableDialogColumn(verticalArrangement = Arrangement.spacedBy(8.dp)) {
                 Text(
                     playlist.name,
                     style = MaterialTheme.typography.bodyMedium,

@@ -8,6 +8,10 @@ The primary path is:
 
 APS NoteCast is developed by Alex's Piano Service LLC for practical player-piano service workflows: importing MIDI files, organizing playlists, connecting to BLE MIDI hardware, recording incoming MIDI, and keeping playback controls accessible from both the app and Android media controls.
 
+APS NoteCast is free and open-source. It has no subscriptions, in-app purchases,
+advertising, or paid music catalog. It is independent and is not affiliated with
+Yamaha, PianoStream, PianoDisc, QRS, Steinway, or Spirio.
+
 ## Highlights
 
 - First-run connection wizard for BLE MIDI.
@@ -17,8 +21,8 @@ APS NoteCast is developed by Alex's Piano Service LLC for practical player-piano
 - Preferred-device memory and auto-reconnect while the app is open.
 - Real-time connection monitoring that marks the device disconnected when Android MIDI removal, Bluetooth state, or MIDI heartbeat checks indicate the adapter is gone.
 - Timed reconnect attempts after unexpected connection loss.
-- Local MIDI library with bundled Chopin demo files.
-- Sample playlist containing the bundled Chopin pieces.
+- Local MIDI library with bundled Mutopia Project public-domain demo files.
+- Sample playlist containing the bundled Mutopia demo pieces.
 - Collapsible playlists with add-file multi-select sheets, drag/drop support, playlist cloning, rename, delete, and reordering.
 - Single-file and playlist playback, including sequential, shuffle, repeat-one, repeat-playlist, stop-after-current, and stop-after-playlist behaviors.
 - Playback transport with play/pause, stop, previous, next, visible progress, seek, volume, and panic.
@@ -28,6 +32,7 @@ APS NoteCast is developed by Alex's Piano Service LLC for practical player-piano
 - Advanced per-channel mute, solo, and volume controls.
 - BLE MIDI recording to Standard MIDI File with count-in, discard confirmation, silence trimming, and optional save-to-playlist.
 - MIDI file export/share and library backup/restore.
+- User-initiated import from local files, recordings, and clearly labeled external MIDI sources.
 - Light, dark, and system-default appearance modes.
 
 ## Hardware Notes
@@ -100,6 +105,28 @@ For reliable testing:
 Player pianos are physical instruments. Before using long playlists or unattended playback, confirm that the receiving instrument responds correctly to stop, panic, pedal-off, and all-notes-off messages.
 
 Use copies of MIDI files whenever possible and keep backups of anything important. APS NoteCast can export individual MIDI files and a JSON library backup, but device storage and Android document permissions can still fail or be revoked.
+
+## External MIDI Sources
+
+APS NoteCast is a MIDI player, recorder, and library tool. It can help users
+find, preview, and import MIDI files from external noncommercial archives such
+as the Kuhmann / Disklavier World source, but those files are not presented as
+an APS NoteCast catalog.
+
+Kuhmann and similar sources may contain public-domain, open, community, or
+mixed-rights material. APS NoteCast does not own or license those files. Users
+should treat external-source access as personal/noncommercial unless the source
+clearly grants broader rights, and should download, import, and use only files
+they have the right to use.
+
+Do not sell, redistribute, remaster, or use external-source files for
+paid/commercial playback unless allowed by the rights holder. A public-domain
+composition does not necessarily mean a specific MIDI sequence, arrangement, or
+performance file is unrestricted.
+
+External-source imports are user initiated. APS NoteCast should not be described
+in store listings, screenshots, or release text as providing a built-in catalog
+of free songs.
 
 ## Build
 
@@ -185,6 +212,7 @@ Third-party dependency and bundled asset provenance is documented in [THIRD_PART
 Alex's Piano Service LLC website policies:
 
 - [Disclaimer](https://www.alexanderpeppe.com/disclaimer/)
+- [DMCA / Removal Policy](https://www.alexanderpeppe.com/dmca-policy/)
 - [Privacy Policy](https://www.alexanderpeppe.com/privacy-policy/)
 
 ## Contributing

@@ -34,8 +34,7 @@ MaintainerNotes: |-
   licenses. See THIRD_PARTY_NOTICES.md for dependency and bundled asset
   provenance.
 
-  The bundled demo MIDI files are content assets, not code dependencies. Their
-  underlying compositions are public domain, but the specific captured/prepared
-  MIDI files need a confirmed libre redistribution license before submission to
-  the main F-Droid repository. If that cannot be confirmed, replace or remove
-  those demo files before submitting.
+  The bundled demo MIDI files are content assets from the Mutopia Project and
+  are marked Public Domain / no rights reserved on their source pages. They are
+  included so users can test APS NoteCast immediately. See
+  THIRD_PARTY_NOTICES.md for source URLs and SHA-256 values.

@@ -14,15 +14,25 @@ import java.util.zip.ZipInputStream
 
 class MidiRepository(private val context: Context) {
     companion object {
-        private const val DEMO_CHOPIN_ANDANTE_ID = "demo-chopin-andante-polonaise"
-        private const val DEMO_CHOPIN_ANDANTE_FILE = "demo_chopin_andante_polonaise.mid"
-        private const val DEMO_CHOPIN_ANDANTE_ORIGINAL_NAME =
-            "Frederic Chopin, Andante Spianato and Grande Polonaise Brillante, Op. 22 (Zuber-06).mid"
-        private const val DEMO_CHOPIN_ETUDE_ID = "demo-chopin-etude-op10-no5"
-        private const val DEMO_CHOPIN_ETUDE_FILE = "demo_chopin_etude_op10_no5.mid"
-        private const val DEMO_CHOPIN_ETUDE_ORIGINAL_NAME =
-            "Frederic Chopin - Etude Op. 10 No. 5 (KimG-04).mid"
-        private const val DEMO_PLAYLIST_ID = "demo-playlist-two-chopin-pieces"
+        private const val DEMO_BEETHOVEN_FUR_ELISE_ID = "demo-mutopia-beethoven-fur-elise"
+        private const val DEMO_BEETHOVEN_FUR_ELISE_FILE = "demo_beethoven_fur_elise.mid"
+        private const val DEMO_BEETHOVEN_FUR_ELISE_TITLE = "Beethoven - Für Elise, WoO 59"
+        private const val DEMO_BEETHOVEN_FUR_ELISE_ORIGINAL_NAME =
+            "Mutopia - Beethoven - Fur Elise, WoO 59.mid"
+        private const val DEMO_BACH_WTC1_PRELUDE1_ID = "demo-mutopia-bach-wtc1-prelude1"
+        private const val DEMO_BACH_WTC1_PRELUDE1_FILE = "demo_bach_wtc1_prelude1.mid"
+        private const val DEMO_BACH_WTC1_PRELUDE1_TITLE = "Bach - WTC I Prelude I, BWV 846"
+        private const val DEMO_BACH_WTC1_PRELUDE1_ORIGINAL_NAME =
+            "Mutopia - Bach - WTC I Prelude I, BWV 846.mid"
+        private const val DEMO_PLAYLIST_ID = "demo-playlist-mutopia-public-domain"
+        private val LEGACY_DEMO_IDS = setOf(
+            "demo-chopin-andante-polonaise",
+            "demo-chopin-etude-op10-no5"
+        )
+        private val LEGACY_DEMO_FILES = listOf(
+            "demo_chopin_andante_polonaise.mid",
+            "demo_chopin_etude_op10_no5.mid"
+        )
     }
 
     class ZipWithoutMidiException(displayName: String) : IllegalArgumentException(
@@ -78,38 +88,47 @@ class MidiRepository(private val context: Context) {
     @Synchronized
     fun ensureDemoMidi() {
         val snapshot = load()
-        val andante = ensureDemoItem(
+        LEGACY_DEMO_FILES.forEach { fileName ->
+            runCatching { File(midiDir, fileName).delete() }
+        }
+        val furElise = ensureDemoItem(
             existingFiles = snapshot.files,
-            id = DEMO_CHOPIN_ANDANTE_ID,
-            storedFileName = DEMO_CHOPIN_ANDANTE_FILE,
-            originalName = DEMO_CHOPIN_ANDANTE_ORIGINAL_NAME,
-            rawResourceId = R.raw.demo_chopin_andante_polonaise,
+            id = DEMO_BEETHOVEN_FUR_ELISE_ID,
+            title = DEMO_BEETHOVEN_FUR_ELISE_TITLE,
+            storedFileName = DEMO_BEETHOVEN_FUR_ELISE_FILE,
+            originalName = DEMO_BEETHOVEN_FUR_ELISE_ORIGINAL_NAME,
+            rawResourceId = R.raw.demo_beethoven_fur_elise,
             importedAtMs = 0L
         )
-        val etude = ensureDemoItem(
+        val bachPrelude = ensureDemoItem(
             existingFiles = snapshot.files,
-            id = DEMO_CHOPIN_ETUDE_ID,
-            storedFileName = DEMO_CHOPIN_ETUDE_FILE,
-            originalName = DEMO_CHOPIN_ETUDE_ORIGINAL_NAME,
-            rawResourceId = R.raw.demo_chopin_etude_op10_no5,
+            id = DEMO_BACH_WTC1_PRELUDE1_ID,
+            title = DEMO_BACH_WTC1_PRELUDE1_TITLE,
+            storedFileName = DEMO_BACH_WTC1_PRELUDE1_FILE,
+            originalName = DEMO_BACH_WTC1_PRELUDE1_ORIGINAL_NAME,
+            rawResourceId = R.raw.demo_bach_wtc1_prelude1,
             importedAtMs = 1L
         )
-        val demoIds = listOf(DEMO_CHOPIN_ANDANTE_ID, DEMO_CHOPIN_ETUDE_ID)
-        val files = snapshot.files.filterNot { it.id in demoIds } + listOf(andante, etude)
+        val demoIds = listOf(DEMO_BEETHOVEN_FUR_ELISE_ID, DEMO_BACH_WTC1_PRELUDE1_ID)
+        val replacedDemoIds = demoIds + LEGACY_DEMO_IDS
+        val files = snapshot.files.filterNot { it.id in replacedDemoIds } + listOf(furElise, bachPrelude)
         val samplePlaylist = MidiPlaylist(
             id = DEMO_PLAYLIST_ID,
-            name = "Sample Playlist: Two Chopin Pieces",
+            name = "Sample Playlist: Mutopia Public Domain Demos",
             itemIds = demoIds,
             createdAtMs = 0L,
             colorHex = snapshot.playlists.firstOrNull { it.id == DEMO_PLAYLIST_ID }?.colorHex
         )
-        val playlists = snapshot.playlists.filterNot { it.id == DEMO_PLAYLIST_ID } + samplePlaylist
+        val playlists = snapshot.playlists
+            .filterNot { it.id == DEMO_PLAYLIST_ID || it.itemIds.any { itemId -> itemId in LEGACY_DEMO_IDS } }
+            .plus(samplePlaylist)
         save(snapshot.copy(files = files, playlists = playlists))
     }
 
     private fun ensureDemoItem(
         existingFiles: List<MidiLibraryItem>,
         id: String,
+        title: String,
         storedFileName: String,
         originalName: String,
         rawResourceId: Int,
@@ -124,16 +143,15 @@ class MidiRepository(private val context: Context) {
         val bytes = outFile.readBytes()
         val parseResult = runCatching { MidiFileParser.parse(bytes, originalName) }
         val existing = existingFiles.firstOrNull { it.id == id }
+        val existingTitle = existing?.title?.trim().orEmpty()
         return MidiLibraryItem(
             id = id,
-            title = existing?.title?.takeIf { it.isNotBlank() }
-                ?: parseResult.getOrNull()?.title?.takeIf { it.isNotBlank() }
-                ?: originalName.removeMidiExtension(),
+            title = existingTitle.takeUnless { it.isBlank() || it.isPlaceholderMidiTitle() } ?: title,
             originalName = originalName,
             storedFileName = storedFileName,
             durationUs = parseResult.getOrNull()?.durationUs ?: existing?.durationUs ?: 0L,
             importedAtMs = importedAtMs,
-            notes = "Bundled demo"
+            notes = "Bundled Mutopia Project demo - Public Domain / no rights reserved"
         )
     }
 
@@ -612,6 +630,9 @@ class MidiRepository(private val context: Context) {
 
     private fun String.removeMidiExtension(): String =
         replace(Regex("\\.(mid|midi)$", RegexOption.IGNORE_CASE), "")
+
+    private fun String.isPlaceholderMidiTitle(): Boolean =
+        trim().equals("control track", ignoreCase = true)
 
     private fun String.removeZipExtension(): String =
         replace(Regex("\\.zip$", RegexOption.IGNORE_CASE), "")
