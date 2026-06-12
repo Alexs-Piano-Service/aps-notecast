@@ -1,12 +1,14 @@
 # APS NoteCast
 
-APS NoteCast is an Android app for playing Standard MIDI Files over Bluetooth LE MIDI to WIDI and compatible MIDI adapters connected to player-piano systems.
+APS NoteCast is an Android app for playing Standard MIDI Files over Bluetooth LE MIDI or Android USB MIDI to compatible MIDI adapters connected to player-piano systems.
 
-The primary path is:
+The primary wireless path is:
 
 `Android phone -> Bluetooth LE MIDI -> WIDI / compatible adapter -> DIN MIDI -> player piano`
 
-APS NoteCast is developed by Alex's Piano Service LLC for practical player-piano service workflows: importing MIDI files, organizing playlists, connecting to BLE MIDI hardware, recording incoming MIDI, and keeping playback controls accessible from both the app and Android media controls.
+USB MIDI adapters exposed through Android's MIDI API can also appear in the device list and be connected directly.
+
+APS NoteCast is developed by Alex's Piano Service LLC for practical player-piano service workflows: importing MIDI files, organizing playlists, connecting to MIDI hardware, recording incoming MIDI, and keeping playback controls accessible from both the app and Android media controls.
 
 APS NoteCast is free and open-source. It has no subscriptions, in-app purchases,
 advertising, or paid music catalog. It is independent and is not affiliated with
@@ -14,10 +16,11 @@ Yamaha, PianoStream, PianoDisc, QRS, Steinway, or Spirio.
 
 ## Highlights
 
-- First-run connection wizard for BLE MIDI.
+- First-run connection wizard for MIDI devices.
 - BLE MIDI connection guidance that supports both direct app scanning and Android Bluetooth pairing when Android requests it.
 - Bluetooth-off notices with a direct request to turn Bluetooth on.
 - BLE and Android MIDI device scan results in one connection flow.
+- USB MIDI adapters exposed by Android appear in the same device list.
 - Preferred-device memory and auto-reconnect while the app is open.
 - Real-time connection monitoring that marks the device disconnected when Android MIDI removal, Bluetooth state, or MIDI heartbeat checks indicate the adapter is gone.
 - Timed reconnect attempts after unexpected connection loss.
@@ -30,6 +33,7 @@ Yamaha, PianoStream, PianoDisc, QRS, Steinway, or Spirio.
 - MIDI panic that sends sustain off, sostenuto off, soft pedal off, all sound off, reset controllers, and all notes off on all 16 MIDI channels.
 - Tempo and transpose controls, including an option to leave channel 10 drums untransposed.
 - Advanced per-channel mute, solo, and volume controls.
+- Piano-channel routing options for two-channel piano files and pedal-controller channels.
 - BLE MIDI recording to Standard MIDI File with count-in, discard confirmation, silence trimming, and optional save-to-playlist.
 - MIDI file export/share and library backup/restore.
 - User-initiated import from local files, recordings, and clearly labeled external MIDI sources.
@@ -37,11 +41,11 @@ Yamaha, PianoStream, PianoDisc, QRS, Steinway, or Spirio.
 
 ## Hardware Notes
 
-APS NoteCast is designed around Android's MIDI API and the standard BLE MIDI service UUID:
+APS NoteCast is designed around Android's MIDI API. For Bluetooth devices, it uses the standard BLE MIDI service UUID:
 
 `03B80E5A-EDE8-4B33-A751-6CE34EC4C700`
 
-Most WIDI and compatible BLE MIDI adapters can be connected from APS NoteCast: scan, connect, then play. If Android asks to pair, pairing is okay; paired adapters remain visible and connectable in APS NoteCast.
+Most WIDI and compatible BLE MIDI adapters can be connected from APS NoteCast: scan, connect, then play. If Android asks to pair, pairing is okay; paired adapters remain visible and connectable in APS NoteCast. USB MIDI adapters that Android exposes through the MIDI API can appear in the same connection list.
 
 For reliable testing:
 
@@ -63,7 +67,7 @@ For reliable testing:
 2. Turn on Android Bluetooth.
 3. Open APS NoteCast.
 4. Grant Bluetooth/Nearby Devices permissions if prompted.
-5. Open BLE MIDI connection.
+5. Open MIDI connection.
 6. Tap Scan.
 7. Tap Connect on the target adapter.
 8. If Android displays a Bluetooth pairing request, pair the adapter.
@@ -80,7 +84,7 @@ For reliable testing:
 1. Power on the same adapter.
 2. Open APS NoteCast.
 3. Wait for auto-reconnect if it is enabled.
-4. If it does not reconnect automatically, open BLE MIDI connection.
+4. If it does not reconnect automatically, open MIDI connection.
 5. Tap Connect on the saved adapter.
 6. If APS NoteCast says the saved adapter is not currently available, tap Scan.
 7. Tap Connect when the adapter appears.
@@ -92,7 +96,7 @@ For reliable testing:
 
 1. Stop playback before changing adapters.
 2. Power on the adapter you want to use.
-3. Open BLE MIDI connection.
+3. Open MIDI connection.
 4. Tap Scan if the target adapter is not listed as ready.
 5. Tap Connect on the target adapter.
 6. Confirm APS NoteCast shows the new adapter as Connected.
@@ -109,15 +113,16 @@ Use copies of MIDI files whenever possible and keep backups of anything importan
 ## External MIDI Sources
 
 APS NoteCast is a MIDI player, recorder, and library tool. It can help users
-find, preview, and import MIDI files from external noncommercial archives such
-as the Kuhmann / Disklavier World source, but those files are not presented as
-an APS NoteCast catalog.
+find, preview, and import MIDI files from external sources such as the Kuhmann /
+Disklavier World source and the Mutopia Project, but those files are not
+presented as an APS NoteCast catalog.
 
-Kuhmann and similar sources may contain public-domain, open, community, or
-mixed-rights material. APS NoteCast does not own or license those files. Users
-should treat external-source access as personal/noncommercial unless the source
-clearly grants broader rights, and should download, import, and use only files
-they have the right to use.
+Kuhmann and similar community sources may contain public-domain, open,
+community, or mixed-rights material. Mutopia Project files shown by APS NoteCast
+are labeled Public Domain / no rights reserved on their source pages. APS
+NoteCast does not own those files. Users should treat external-source access as
+personal/noncommercial unless the source clearly grants broader rights, and
+should download, import, and use only files they have the right to use.
 
 Do not sell, redistribute, remaster, or use external-source files for
 paid/commercial playback unless allowed by the rights holder. A public-domain
@@ -176,7 +181,7 @@ Task**.
 ## Project Structure
 
 - `app/src/main/java/com/alexanderpeppe/pianobeam/MainActivity.kt`: Jetpack Compose UI, library, connection dialogs, transport, recording, and app info.
-- `app/src/main/java/com/alexanderpeppe/pianobeam/service/NoteCastService.kt`: BLE MIDI connection, MIDI playback, media session, notification, recording, reconnect, and diagnostics.
+- `app/src/main/java/com/alexanderpeppe/pianobeam/service/NoteCastService.kt`: MIDI connection, playback, media session, notification, recording, reconnect, and diagnostics.
 - `app/src/main/java/com/alexanderpeppe/pianobeam/data/`: Library metadata, settings models, and repository.
 - `app/src/main/java/com/alexanderpeppe/pianobeam/midi/`: Standard MIDI File parser and writer.
 - `app/src/main/java/com/alexanderpeppe/pianobeam/ui/`: Theme and settings UI.
@@ -185,7 +190,7 @@ Task**.
 
 ## Languages
 
-APS NoteCast declares Android locale support for the APS MIDI Prep Tool language set requested for this app, including Bulgarian:
+APS NoteCast declares Android locale support for the language set requested for this app, including Bulgarian:
 
 - English
 - Spanish

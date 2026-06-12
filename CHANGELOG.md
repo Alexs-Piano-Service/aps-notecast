@@ -4,12 +4,23 @@ All notable changes to APS NoteCast are documented here.
 
 ## Unreleased
 
+### Added
+
+- USB MIDI adapters exposed by Android now appear in the adapter list and can be connected like Bluetooth MIDI devices.
+- Mutopia Project is now available as a selectable External MIDI source alongside Kuhmann.
+
 ### Changed
 
 - Pedal controllers now fold into the detected piano output channel by default, with a Pedal Options switch to preserve source channels.
+- Pedal curves now default to stable 0/127 output using the standard MIDI pedal threshold, with continuous pedal output still available in settings.
+- Sustain pedal state now restores on resume when pausing in the middle of a sustained passage.
 - Kuhmann is now presented as an external noncommercial MIDI source with copyright and DMCA/removal guidance.
 - Bundled demo MIDI files now come from Mutopia Project public-domain sources.
 - Recommended battery settings now appear as a one-time startup dialog instead of inside the connection wizard.
+- Channel 2 to channel 1 piano routing is now a default-on playback setting.
+- General MIDI files can now switch between Alphabetical sections and the All Songs list.
+- Alphabetical MIDI sections now include an independent expand/collapse-all button beside the Alphabetical view selector.
+- External MIDI Piano/Ensemble filtering now treats channel 3 as piano-only only when it is pedal/controller-only, not when it carries instrument notes.
 
 ## 0.1.7
 
@@ -49,7 +60,7 @@ All notable changes to APS NoteCast are documented here.
 ### Changed
 
 - Ensemble Kuhmann search results now only show multi-channel ensemble candidates.
-- Disklavier playback now routes source channels 0/1 and Acoustic Grand Piano parts to MIDI channel 0.
+- Disklavier playback now routes MIDI channels 1/2 and Acoustic Grand Piano parts to MIDI channel 1.
 
 ## 0.1.4
 
@@ -70,7 +81,7 @@ All notable changes to APS NoteCast are documented here.
 - Recording settings for silence trim, count-in, metronome count-in, target playlist, and discard confirmation.
 - App info branding for Alex's Piano Service LLC, address, and website.
 - Apache 2.0 license, notice, contributing guide, security policy, and expanded README.
-- Android locale declarations for APS MIDI Prep Tool languages plus Bulgarian.
+- Android locale declarations for the requested app languages plus Bulgarian.
 - App-wide font size setting.
 
 ### Changed

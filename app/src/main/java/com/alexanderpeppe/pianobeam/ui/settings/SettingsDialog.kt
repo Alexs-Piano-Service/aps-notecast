@@ -36,6 +36,7 @@ import com.alexanderpeppe.pianobeam.data.AppThemeMode
 import com.alexanderpeppe.pianobeam.data.MidiChannelControl
 import com.alexanderpeppe.pianobeam.data.MidiPlaylist
 import com.alexanderpeppe.pianobeam.data.PedalOutputMode
+import com.alexanderpeppe.pianobeam.data.PedalValueMode
 import com.alexanderpeppe.pianobeam.data.PlaybackAdvanceMode
 import com.alexanderpeppe.pianobeam.data.RepeatMode
 import com.alexanderpeppe.pianobeam.data.VolumeControlMode
@@ -143,6 +144,24 @@ fun SettingsDialog(
                             subtitle = "Also send note 18 on/off for Virtual Roll-style systems",
                             selected = settings.pedalOutputMode == PedalOutputMode.StandardControllersAndRollNote18,
                             onClick = { onSettingsChange(settings.copy(pedalOutputMode = PedalOutputMode.StandardControllersAndRollNote18)) }
+                        )
+                        SwitchRow(
+                            title = "Stable pedal values",
+                            subtitle = "Convert pedal curves to clean 0/127 changes",
+                            checked = settings.pedalValueMode == PedalValueMode.Binary,
+                            onCheckedChange = {
+                                onSettingsChange(
+                                    settings.copy(
+                                        pedalValueMode = if (it) PedalValueMode.Binary else PedalValueMode.Continuous
+                                    )
+                                )
+                            }
+                        )
+                        SwitchRow(
+                            title = "Fold channel 2 into channel 1",
+                            subtitle = "Send two-channel piano files on piano output channel 1",
+                            checked = settings.foldChannel2IntoPianoChannel,
+                            onCheckedChange = { onSettingsChange(settings.copy(foldChannel2IntoPianoChannel = it)) }
                         )
                         SwitchRow(
                             title = "Fold pedals into piano channel",

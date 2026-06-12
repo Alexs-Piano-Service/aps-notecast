@@ -43,8 +43,9 @@ NoteCast immediately.
 ## External MIDI Sources
 
 APS NoteCast can search, preview, and import files from external MIDI sources
-such as the Kuhmann MIDI directory. Those files are not bundled in the APK/AAB
-and should not be treated as an APS NoteCast-owned or APS NoteCast-licensed
+such as the Kuhmann MIDI directory and the Mutopia Project. Those files are not
+bundled in the APK/AAB unless they are explicitly listed above as bundled demo
+files, and should not be treated as an APS NoteCast-owned or APS NoteCast-licensed
 catalog.
 
 Rights and permissions may vary by file and source. External-source access
@@ -52,6 +53,10 @@ should be treated as personal/noncommercial unless the source clearly grants
 broader rights. Users should download, import, and use only files they have the
 right to use. Do not sell, redistribute, remaster, or use external-source files
 for paid/commercial playback unless allowed by the rights holder.
+
+Mutopia Project files shown by APS NoteCast are labeled Public Domain / no
+rights reserved on their source pages. Kuhmann and similar community archives may
+contain public-domain, open, community, or mixed-rights material.
 
 Copyright concerns or removal requests can be sent through the published DMCA /
 removal policy:

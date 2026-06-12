@@ -66,6 +66,7 @@ import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.Download
 import androidx.compose.material.icons.filled.DriveFileRenameOutline
 import androidx.compose.material.icons.filled.ContentCopy
+import androidx.compose.material.icons.filled.ExpandLess
 import androidx.compose.material.icons.filled.ExpandMore
 import androidx.compose.material.icons.filled.FiberManualRecord
 import androidx.compose.material.icons.filled.Folder
@@ -144,6 +145,7 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalUriHandler
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.Density
 import androidx.compose.ui.unit.Dp
@@ -155,6 +157,7 @@ import com.alexanderpeppe.pianobeam.data.AppSettings
 import com.alexanderpeppe.pianobeam.data.AppUiState
 import com.alexanderpeppe.pianobeam.data.AppThemeMode
 import com.alexanderpeppe.pianobeam.data.BleMidiDeviceItem
+import com.alexanderpeppe.pianobeam.data.ExternalMidiSource
 import com.alexanderpeppe.pianobeam.data.KuhmannMidiResult
 import com.alexanderpeppe.pianobeam.data.KuhmannSearchUiState
 import com.alexanderpeppe.pianobeam.data.MidiChannelControl
@@ -180,6 +183,7 @@ import com.alexanderpeppe.pianobeam.ui.settings.SettingsDialog
 import com.alexanderpeppe.pianobeam.ui.theme.NoteCastTheme
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
+import java.util.Locale
 import kotlin.math.roundToInt
 
 private val midiImportMimeTypes = arrayOf(
@@ -837,7 +841,9 @@ private fun LibraryPane(
     var confirmDeleteSelected by rememberSaveable { mutableStateOf(false) }
     var playlistQuery by rememberSaveable { mutableStateOf("") }
     var selectedFileIds by rememberSaveable { mutableStateOf(emptyList<String>()) }
+    var midiFileDisplayModeName by rememberSaveable { mutableStateOf(MidiFileDisplayMode.Alphabetical.name) }
     val expandedPlaylists = remember { mutableStateMapOf<String, Boolean>() }
+    val expandedMidiLetters = remember { mutableStateMapOf<String, Boolean>() }
     val playlistBounds = remember { mutableStateMapOf<String, Rect>() }
     var draggingFiles by remember { mutableStateOf(emptyList<MidiLibraryItem>()) }
     var dragPosition by remember { mutableStateOf<Offset?>(null) }
@@ -849,6 +855,11 @@ private fun LibraryPane(
     val selectedFileIdSet = remember(selectedFileIds) { selectedFileIds.toSet() }
     val selectedFileItems = remember(state.files, selectedFileIdSet) { state.files.filter { it.id in selectedFileIdSet } }
     val selectionActive = selectedFileItems.isNotEmpty()
+    val midiFileGroups = remember(state.files) { midiFileLetterGroups(state.files) }
+    val midiFileDisplayMode = MidiFileDisplayMode.entries
+        .firstOrNull { it.name == midiFileDisplayModeName }
+        ?: MidiFileDisplayMode.Alphabetical
+    val allMidiLettersExpanded = midiFileGroups.all { expandedMidiLetters[it.key] ?: true }
     val showPlaylistSearch = state.playlists.size > 10
     val visiblePlaylists = remember(state.playlists, playlistQuery, filesById, showPlaylistSearch) {
         if (!showPlaylistSearch || playlistQuery.isBlank()) {
@@ -861,6 +872,8 @@ private fun LibraryPane(
     LaunchedEffect(state.files) {
         val validIds = state.files.map { it.id }.toSet()
         selectedFileIds = selectedFileIds.filter { it in validIds }
+        val validLetters = midiFileGroups.map { it.key }.toSet()
+        expandedMidiLetters.keys.filterNot { it in validLetters }.forEach { expandedMidiLetters.remove(it) }
     }
 
     LaunchedEffect(showPlaylistSearch, playlistQuery, visiblePlaylists) {
@@ -1018,48 +1031,117 @@ private fun LibraryPane(
                 }
 
                 if (state.files.isNotEmpty()) {
-                    item(span = { GridItemSpan(maxLineSpan) }) { SectionLabel("MIDI files") }
-                    gridItems(state.files, key = { it.id }) { item ->
-                        MidiFileRow(
-                            item = item,
-                            selected = selectedKind == "file" && selectedId == item.id,
-                            multiSelected = item.id in selectedFileIdSet,
-                            selectionActive = selectionActive,
-                            connected = state.connection.connected,
-                            preparing = state.playback.isPreparing && state.playback.currentItemId == item.id,
-                            playing = state.playback.isPlaying && state.playback.currentItemId == item.id,
-                            paused = state.playback.isPaused && state.playback.currentItemId == item.id,
-                            onSelect = { onSelectFile(item.id) },
-                            onToggleSelected = { toggleFileSelection(item.id) },
-                            onPlay = {
-                                onSelectFile(item.id)
-                                service.playFile(item.id)
-                            },
-                            onPause = { service.pausePlayback() },
-                            onResume = { service.resumePlayback() },
-                            onRename = { renameFileId = item.id },
-                            onExport = { onExportMidi(item) },
-                            onShare = { onShareMidi(item.id) },
-                            onDelete = { deleteFileId = item.id },
-                            onDragStart = { file, rootOffset ->
-                                draggingFiles = if (file.id in selectedFileIdSet && selectedFileItems.isNotEmpty()) {
-                                    selectedFileItems
-                                } else {
-                                    listOf(file)
+                    item(span = { GridItemSpan(maxLineSpan) }) {
+                        MidiFilesHeader(
+                            mode = midiFileDisplayMode,
+                            allLetterGroupsExpanded = allMidiLettersExpanded,
+                            onModeChange = { midiFileDisplayModeName = it.name },
+                            onToggleLetterGroups = {
+                                val nextExpanded = !allMidiLettersExpanded
+                                midiFileGroups.forEach { group ->
+                                    expandedMidiLetters[group.key] = nextExpanded
                                 }
-                                dragPosition = rootOffset
-                            },
-                            onDrag = { delta -> dragPosition = (dragPosition ?: Offset.Zero) + delta },
-                            onDragEnd = ::finishDrag,
-                            onDragCancel = {
-                                draggingFiles = emptyList()
-                                dragPosition = null
                             }
                         )
                     }
+                    if (midiFileDisplayMode == MidiFileDisplayMode.Alphabetical) {
+                        midiFileGroups.forEach { group ->
+                            item(key = "midi-letter-${group.key}", span = { GridItemSpan(maxLineSpan) }) {
+                                val expanded = expandedMidiLetters[group.key] ?: true
+                                MidiLetterHeader(
+                                    title = group.title,
+                                    count = group.files.size,
+                                    expanded = expanded,
+                                    onToggle = { expandedMidiLetters[group.key] = !expanded }
+                                )
+                            }
+                            if (expandedMidiLetters[group.key] ?: true) {
+                                group.files.forEach { midiItem ->
+                                    item(key = "midi-file-${midiItem.id}", span = { GridItemSpan(maxLineSpan) }) {
+                                        MidiFileRow(
+                                            item = midiItem,
+                                            selected = selectedKind == "file" && selectedId == midiItem.id,
+                                            multiSelected = midiItem.id in selectedFileIdSet,
+                                            selectionActive = selectionActive,
+                                            connected = state.connection.connected,
+                                            preparing = state.playback.isPreparing && state.playback.currentItemId == midiItem.id,
+                                            playing = state.playback.isPlaying && state.playback.currentItemId == midiItem.id,
+                                            paused = state.playback.isPaused && state.playback.currentItemId == midiItem.id,
+                                            onSelect = { onSelectFile(midiItem.id) },
+                                            onToggleSelected = { toggleFileSelection(midiItem.id) },
+                                            onPlay = {
+                                                onSelectFile(midiItem.id)
+                                                service.playFile(midiItem.id)
+                                            },
+                                            onPause = { service.pausePlayback() },
+                                            onResume = { service.resumePlayback() },
+                                            onRename = { renameFileId = midiItem.id },
+                                            onExport = { onExportMidi(midiItem) },
+                                            onShare = { onShareMidi(midiItem.id) },
+                                            onDelete = { deleteFileId = midiItem.id },
+                                            onDragStart = { file, rootOffset ->
+                                                draggingFiles = if (file.id in selectedFileIdSet && selectedFileItems.isNotEmpty()) {
+                                                    selectedFileItems
+                                                } else {
+                                                    listOf(file)
+                                                }
+                                                dragPosition = rootOffset
+                                            },
+                                            onDrag = { delta -> dragPosition = (dragPosition ?: Offset.Zero) + delta },
+                                            onDragEnd = ::finishDrag,
+                                            onDragCancel = {
+                                                draggingFiles = emptyList()
+                                                dragPosition = null
+                                            }
+                                        )
+                                    }
+                                }
+                            }
+                        }
+                    } else {
+                        state.files.forEach { midiItem ->
+                            item(key = "midi-file-${midiItem.id}", span = { GridItemSpan(maxLineSpan) }) {
+                                MidiFileRow(
+                                    item = midiItem,
+                                    selected = selectedKind == "file" && selectedId == midiItem.id,
+                                    multiSelected = midiItem.id in selectedFileIdSet,
+                                    selectionActive = selectionActive,
+                                    connected = state.connection.connected,
+                                    preparing = state.playback.isPreparing && state.playback.currentItemId == midiItem.id,
+                                    playing = state.playback.isPlaying && state.playback.currentItemId == midiItem.id,
+                                    paused = state.playback.isPaused && state.playback.currentItemId == midiItem.id,
+                                    onSelect = { onSelectFile(midiItem.id) },
+                                    onToggleSelected = { toggleFileSelection(midiItem.id) },
+                                    onPlay = {
+                                        onSelectFile(midiItem.id)
+                                        service.playFile(midiItem.id)
+                                    },
+                                    onPause = { service.pausePlayback() },
+                                    onResume = { service.resumePlayback() },
+                                    onRename = { renameFileId = midiItem.id },
+                                    onExport = { onExportMidi(midiItem) },
+                                    onShare = { onShareMidi(midiItem.id) },
+                                    onDelete = { deleteFileId = midiItem.id },
+                                    onDragStart = { file, rootOffset ->
+                                        draggingFiles = if (file.id in selectedFileIdSet && selectedFileItems.isNotEmpty()) {
+                                            selectedFileItems
+                                        } else {
+                                            listOf(file)
+                                        }
+                                        dragPosition = rootOffset
+                                    },
+                                    onDrag = { delta -> dragPosition = (dragPosition ?: Offset.Zero) + delta },
+                                    onDragEnd = ::finishDrag,
+                                    onDragCancel = {
+                                        draggingFiles = emptyList()
+                                        dragPosition = null
+                                    }
+                                )
+                            }
+                        }
+                    }
                 }
             }
-
             if (selectionActive) {
                 MidiSelectionToolbar(
                     count = selectedFileItems.size,
@@ -1327,17 +1409,19 @@ private fun AppInfoDialog(onDismiss: () -> Unit) {
         onDismissRequest = onDismiss,
         icon = { AboutIcon(modifier = Modifier.size(96.dp), contentDescription = "APS NoteCast") },
         title = {
-            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                Text("APS NoteCast")
-                PrimaryLogoBanner()
-            }
+            Text(
+                "APS NoteCast",
+                modifier = Modifier.fillMaxWidth(),
+                textAlign = TextAlign.Center
+            )
         },
         text = {
             ScrollableDialogColumn(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                PrimaryLogoBanner()
                 InfoLine("Version", BuildConfig.VERSION_NAME)
-                InfoLine("Built for", "BLE MIDI playback to WIDI and compatible player-piano adapters")
+                InfoLine("Built for", "Bluetooth LE MIDI or USB MIDI playback to compatible player-piano adapters")
                 InfoLine("Cost", "Free and open-source. No subscriptions, in-app purchases, ads, or paid music catalog.")
-                InfoLine("Library", "Import MIDI files, use bundled Mutopia demos, create playlists, or record BLE MIDI input")
+                InfoLine("Library", "Import MIDI files, use bundled Mutopia demos, create playlists, or record MIDI input")
                 InfoLine("External MIDI", "APS NoteCast can link to external MIDI sources for personal/noncommercial use. Rights vary by source.")
                 InfoLine("Playback", "Sequence or shuffle playlists with pause, stop, skip, panic, and channel volume")
                 InfoLine("Safety", "Stop and Panic send pedal-off, all-notes-off, reset controllers, and all-sound-off on all MIDI channels")
@@ -1597,6 +1681,255 @@ private fun SectionLabel(text: String) {
         color = MaterialTheme.colorScheme.onSurfaceVariant,
         modifier = Modifier.padding(top = 6.dp, start = 4.dp)
     )
+}
+
+private enum class MidiFileDisplayMode {
+    Alphabetical,
+    List
+}
+
+@Composable
+private fun MidiFilesHeader(
+    mode: MidiFileDisplayMode,
+    allLetterGroupsExpanded: Boolean,
+    onModeChange: (MidiFileDisplayMode) -> Unit,
+    onToggleLetterGroups: () -> Unit
+) {
+    BoxWithConstraints(
+        Modifier
+            .fillMaxWidth()
+            .padding(top = 6.dp, start = 4.dp, end = 4.dp, bottom = 2.dp)
+    ) {
+        if (maxWidth < 360.dp) {
+            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                MidiFilesTitle()
+                MidiFileDisplayModeControl(
+                    mode = mode,
+                    allLetterGroupsExpanded = allLetterGroupsExpanded,
+                    onModeChange = onModeChange,
+                    onToggleLetterGroups = onToggleLetterGroups,
+                    modifier = Modifier.fillMaxWidth()
+                )
+            }
+        } else {
+            Row(
+                Modifier.fillMaxWidth(),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(12.dp)
+            ) {
+                MidiFilesTitle(modifier = Modifier.weight(1f))
+                MidiFileDisplayModeControl(
+                    mode = mode,
+                    allLetterGroupsExpanded = allLetterGroupsExpanded,
+                    onModeChange = onModeChange,
+                    onToggleLetterGroups = onToggleLetterGroups,
+                    modifier = Modifier.widthIn(min = 226.dp, max = 280.dp)
+                )
+            }
+        }
+    }
+}
+
+@Composable
+private fun MidiFilesTitle(modifier: Modifier = Modifier) {
+    Text(
+        "MIDI files",
+        modifier = modifier,
+        style = MaterialTheme.typography.labelLarge,
+        fontWeight = FontWeight.Bold,
+        color = MaterialTheme.colorScheme.onSurfaceVariant
+    )
+}
+
+@Composable
+private fun MidiFileDisplayModeControl(
+    mode: MidiFileDisplayMode,
+    allLetterGroupsExpanded: Boolean,
+    onModeChange: (MidiFileDisplayMode) -> Unit,
+    onToggleLetterGroups: () -> Unit,
+    modifier: Modifier = Modifier
+) {
+    val alphabeticalSelected = mode == MidiFileDisplayMode.Alphabetical
+    Surface(
+        modifier = modifier,
+        shape = RoundedCornerShape(4.dp),
+        color = MaterialTheme.colorScheme.surfaceVariant
+    ) {
+        Row(
+            Modifier
+                .fillMaxWidth()
+                .padding(3.dp),
+            horizontalArrangement = Arrangement.spacedBy(3.dp)
+        ) {
+            if (alphabeticalSelected) {
+                MidiLetterGroupToggleButton(
+                    allLetterGroupsExpanded = allLetterGroupsExpanded,
+                    onToggleLetterGroups = onToggleLetterGroups
+                )
+            }
+            MidiFileDisplayModeSegment(
+                label = "Alphabetical",
+                selected = alphabeticalSelected,
+                onClick = { onModeChange(MidiFileDisplayMode.Alphabetical) },
+                modifier = Modifier.weight(1f)
+            )
+            MidiFileDisplayModeSegment(
+                label = "All Songs",
+                selected = mode == MidiFileDisplayMode.List,
+                onClick = { onModeChange(MidiFileDisplayMode.List) },
+                modifier = Modifier.weight(1f)
+            )
+        }
+    }
+}
+
+@Composable
+private fun MidiLetterGroupToggleButton(
+    allLetterGroupsExpanded: Boolean,
+    onToggleLetterGroups: () -> Unit
+) {
+    val contentDescription = if (allLetterGroupsExpanded) {
+        "Collapse all letter sections"
+    } else {
+        "Expand all letter sections"
+    }
+    Surface(
+        modifier = Modifier
+            .size(38.dp)
+            .clickable(onClick = onToggleLetterGroups),
+        shape = RoundedCornerShape(4.dp),
+        color = MaterialTheme.colorScheme.primaryContainer
+    ) {
+        Box(contentAlignment = Alignment.Center) {
+            Icon(
+                if (allLetterGroupsExpanded) Icons.Default.ExpandLess else Icons.Default.ExpandMore,
+                contentDescription = contentDescription,
+                modifier = Modifier.size(20.dp),
+                tint = MaterialTheme.colorScheme.onPrimaryContainer
+            )
+        }
+    }
+}
+
+@Composable
+private fun MidiFileDisplayModeSegment(
+    label: String,
+    selected: Boolean,
+    onClick: () -> Unit,
+    modifier: Modifier = Modifier
+) {
+    val containerColor = if (selected) MaterialTheme.colorScheme.primaryContainer else Color.Transparent
+    val contentColor = if (selected) {
+        MaterialTheme.colorScheme.onPrimaryContainer
+    } else {
+        MaterialTheme.colorScheme.onSurfaceVariant
+    }
+    Surface(
+        modifier = modifier
+            .height(38.dp)
+            .clickable(onClick = onClick),
+        shape = RoundedCornerShape(4.dp),
+        color = containerColor
+    ) {
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 8.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.Center
+        ) {
+            Text(
+                label,
+                style = MaterialTheme.typography.labelLarge,
+                fontWeight = if (selected) FontWeight.Bold else FontWeight.SemiBold,
+                color = contentColor,
+                maxLines = 1
+            )
+        }
+    }
+}
+
+private data class MidiLetterGroup(
+    val key: String,
+    val title: String,
+    val files: List<MidiLibraryItem>
+)
+
+private fun midiFileLetterGroups(files: List<MidiLibraryItem>): List<MidiLetterGroup> {
+    val sortedFiles = files.sortedWith(
+        compareBy<MidiLibraryItem> { it.title.lowercase(Locale.US) }
+            .thenBy { it.originalName.lowercase(Locale.US) }
+    )
+    return sortedFiles
+        .groupBy { midiFileLetterKey(it) }
+        .toList()
+        .sortedBy { (key, _) -> if (key == "#") "ZZZ" else key }
+        .map { (key, groupFiles) ->
+            MidiLetterGroup(
+                key = key,
+                title = if (key == "#") "Other" else key,
+                files = groupFiles
+            )
+        }
+}
+
+private fun midiFileLetterKey(item: MidiLibraryItem): String {
+    val first = item.title
+        .ifBlank { item.originalName }
+        .trim()
+        .firstOrNull { it.isLetter() }
+        ?: return "#"
+    val key = first.toString().uppercase(Locale.US)
+    return key.takeIf { it.length == 1 && it[0] in 'A'..'Z' } ?: "#"
+}
+
+@Composable
+private fun MidiLetterHeader(
+    title: String,
+    count: Int,
+    expanded: Boolean,
+    onToggle: () -> Unit
+) {
+    Column(
+        Modifier
+            .fillMaxWidth()
+            .padding(top = 8.dp)
+    ) {
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .clickable(onClick = onToggle)
+                .padding(horizontal = 4.dp, vertical = 8.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Icon(
+                if (expanded) Icons.Default.ExpandMore else Icons.AutoMirrored.Filled.KeyboardArrowRight,
+                contentDescription = if (expanded) "Collapse $title" else "Expand $title",
+                modifier = Modifier.size(24.dp),
+                tint = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+            Spacer(Modifier.width(8.dp))
+            Text(
+                title,
+                style = MaterialTheme.typography.titleMedium,
+                fontWeight = FontWeight.Bold
+            )
+            Spacer(Modifier.width(10.dp))
+            Spacer(Modifier.weight(1f))
+            Text(
+                "$count MIDI file${if (count == 1) "" else "s"}",
+                style = MaterialTheme.typography.labelMedium,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                maxLines = 1
+            )
+        }
+        Box(
+            Modifier
+                .fillMaxWidth()
+                .height(1.dp)
+                .background(MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.75f))
+        )
+    }
 }
 
 @Composable
@@ -2254,7 +2587,7 @@ private fun DevicePanel(
                 Icon(Icons.Default.Bluetooth, contentDescription = null)
                 Spacer(Modifier.width(10.dp))
                 Column(Modifier.weight(1f)) {
-                    Text("BLE MIDI", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
+                    Text("MIDI Devices", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
                     Text(state.connection.message, style = MaterialTheme.typography.bodySmall, maxLines = 1, overflow = TextOverflow.Ellipsis)
                 }
                 if (state.connection.connected) {
@@ -2267,8 +2600,7 @@ private fun DevicePanel(
                 permissionsGranted = permissionsGranted,
                 onRequestPermissions = onRequestPermissions,
                 onRequestBluetoothEnable = onRequestBluetoothEnable,
-                onOpenBluetoothPairing = onOpenBluetoothPairing,
-                compact = true
+                onOpenBluetoothPairing = onOpenBluetoothPairing
             )
         }
     }
@@ -3093,7 +3425,7 @@ private fun ConnectionPill(state: AppUiState, onClick: () -> Unit) {
             Column {
                 Text(label, style = MaterialTheme.typography.labelMedium, fontWeight = FontWeight.Bold)
                 Text(
-                    connection.deviceName ?: connection.rememberedDeviceName ?: "BLE MIDI",
+                    connection.deviceName ?: connection.rememberedDeviceName ?: "MIDI Device",
                     style = MaterialTheme.typography.labelSmall,
                     maxLines = 1,
                     overflow = TextOverflow.Ellipsis
@@ -3116,20 +3448,16 @@ private fun ConnectionWizardDialog(
 ) {
     AlertDialog(
         onDismissRequest = onDismiss,
-        icon = { BrandMark(modifier = Modifier.size(64.dp), contentDescription = "APS NoteCast") },
-        title = { Text("Connect BLE MIDI") },
+        title = { Text("MIDI adapter", style = MaterialTheme.typography.headlineSmall) },
         text = {
-            ScrollableDialogColumn(verticalArrangement = Arrangement.spacedBy(12.dp)) {
-                PrimaryLogoBanner()
-                Text("Choose your MIDI device to start. You can continue offline and connect later.")
+            ScrollableDialogColumn(maxHeight = 430.dp, verticalArrangement = Arrangement.spacedBy(10.dp)) {
                 DeviceConnectorContent(
                     state = state,
                     service = service,
                     permissionsGranted = permissionsGranted,
                     onRequestPermissions = onRequestPermissions,
                     onRequestBluetoothEnable = onRequestBluetoothEnable,
-                    onOpenBluetoothPairing = onOpenBluetoothPairing,
-                    compact = true
+                    onOpenBluetoothPairing = onOpenBluetoothPairing
                 )
             }
         },
@@ -3180,10 +3508,14 @@ private fun ConnectionDialog(
 ) {
     AlertDialog(
         onDismissRequest = onDismiss,
-        icon = { BrandMark(modifier = Modifier.size(56.dp), contentDescription = "APS NoteCast") },
-        title = { Text(if (state.connection.connected) "BLE MIDI connected" else "BLE MIDI connection") },
+        title = {
+            Text(
+                if (state.connection.connected) "MIDI adapter connected" else "MIDI adapter",
+                style = MaterialTheme.typography.headlineSmall
+            )
+        },
         text = {
-            ScrollableDialogColumn(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+            ScrollableDialogColumn(maxHeight = 430.dp, verticalArrangement = Arrangement.spacedBy(10.dp)) {
                 DeviceConnectorContent(
                     state = state,
                     service = service,
@@ -3209,42 +3541,53 @@ private fun DeviceConnectorContent(
     permissionsGranted: Boolean,
     onRequestPermissions: () -> Unit,
     onRequestBluetoothEnable: () -> Unit,
-    onOpenBluetoothPairing: () -> Unit,
-    compact: Boolean = false
+    onOpenBluetoothPairing: () -> Unit
 ) {
     var removeDeviceAddress by rememberSaveable { mutableStateOf<String?>(null) }
     var renameDeviceAddress by rememberSaveable { mutableStateOf<String?>(null) }
     var showScanDialog by rememberSaveable { mutableStateOf(false) }
     val connected = state.connection.connected
+    val hasUsbMidiDevice = state.bleDevices.any { isUsbMidiDevice(it) }
 
     if (!permissionsGranted) {
         Surface(shape = RoundedCornerShape(4.dp), color = MaterialTheme.colorScheme.tertiaryContainer) {
             Column(Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                Text("App access needed", fontWeight = FontWeight.SemiBold)
                 Text(
-                    "APS NoteCast needs Bluetooth, location, and internet access to find MIDI devices and contact Alex's Piano Service.",
+                    if (hasUsbMidiDevice) "Bluetooth access needed for WIDI adapters" else "App access needed",
+                    fontWeight = FontWeight.SemiBold
+                )
+                Text(
+                    if (hasUsbMidiDevice) {
+                        "USB MIDI adapters can still be used. Grant access to scan for WIDI adapters."
+                    } else {
+                        "APS NoteCast needs Bluetooth, location, and internet access to find MIDI devices and contact Alex's Piano Service."
+                    },
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onTertiaryContainer
                 )
                 Button(onClick = onRequestPermissions, modifier = Modifier.fillMaxWidth()) {
                     Icon(Icons.Default.Bluetooth, contentDescription = null)
                     Spacer(Modifier.width(8.dp))
-                    Text("Grant app access")
+                    Text(if (hasUsbMidiDevice) "Grant Bluetooth access" else "Grant app access")
                 }
             }
         }
-        return
+        if (!hasUsbMidiDevice) return
     }
 
     if (!state.connection.bluetoothAvailable) {
         Surface(shape = RoundedCornerShape(4.dp), color = MaterialTheme.colorScheme.errorContainer) {
             Text(
-                "This Android device does not report Bluetooth hardware.",
+                if (hasUsbMidiDevice) {
+                    "This Android device does not report Bluetooth hardware. USB MIDI adapters can still be used."
+                } else {
+                    "This Android device does not report Bluetooth hardware."
+                },
                 modifier = Modifier.padding(12.dp),
                 color = MaterialTheme.colorScheme.onErrorContainer
             )
         }
-        return
+        if (!hasUsbMidiDevice) return
     }
 
     if (!state.connection.bluetoothEnabled) {
@@ -3254,50 +3597,35 @@ private fun DeviceConnectorContent(
                 Spacer(Modifier.width(8.dp))
                 Column(Modifier.weight(1f)) {
                     Text("Bluetooth is off", fontWeight = FontWeight.SemiBold)
-                    Text("Turn it on to find MIDI devices.", style = MaterialTheme.typography.bodySmall)
+                    Text(
+                        if (hasUsbMidiDevice) {
+                            "USB MIDI adapters can still be used. Turn Bluetooth on for WIDI adapters."
+                        } else {
+                            "Turn it on to find WIDI adapters."
+                        },
+                        style = MaterialTheme.typography.bodySmall
+                    )
                 }
-                Button(onClick = onRequestBluetoothEnable) {
-                    Text("Turn on")
+                if (!hasUsbMidiDevice) {
+                    Button(onClick = onRequestBluetoothEnable) {
+                        Text("Turn on")
+                    }
+                } else {
+                    TextButton(onClick = onRequestBluetoothEnable) {
+                        Text("Turn on")
+                    }
                 }
             }
         }
-        return
+        if (!hasUsbMidiDevice) return
     }
 
     if (state.connection.rememberedDeviceName != null && !connected) {
-        val reconnect = { service.autoReconnectIfPossible(force = true) }
-        Surface(
-            modifier = Modifier
-                .fillMaxWidth()
-                .clickable(onClick = reconnect),
-            shape = RoundedCornerShape(4.dp),
-            color = MaterialTheme.colorScheme.surfaceVariant
-        ) {
-            Row(
-                Modifier
-                    .fillMaxWidth()
-                    .padding(12.dp),
-                verticalAlignment = Alignment.CenterVertically
-            ) {
-                Icon(Icons.Default.Refresh, contentDescription = null)
-                Spacer(Modifier.width(8.dp))
-                Text(
-                    if (state.connection.autoReconnectSuppressed) {
-                        "Reconnect paused: ${state.connection.rememberedDeviceName}"
-                    } else {
-                        "Auto-reconnect: ${state.connection.rememberedDeviceName}"
-                    },
-                    modifier = Modifier.weight(1f),
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis
-                )
-                TextButton(
-                    onClick = reconnect
-                ) {
-                    Text("Connect")
-                }
-            }
-        }
+        QuickReconnectPanel(
+            deviceName = state.connection.rememberedDeviceName,
+            reconnectPaused = state.connection.autoReconnectSuppressed,
+            onReconnect = { service.autoReconnectIfPossible(force = true) }
+        )
     }
 
     if (state.connection.connecting || state.connection.scanning) {
@@ -3334,16 +3662,10 @@ private fun DeviceConnectorContent(
             onRemove = { address -> removeDeviceAddress = address }
         )
     } else {
-        Surface(shape = RoundedCornerShape(4.dp), color = MaterialTheme.colorScheme.surfaceVariant) {
-            Column(Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                Text("Connect a MIDI adapter", fontWeight = FontWeight.SemiBold)
-                Text(
-                    "Scan for a nearby BLE MIDI adapter, then connect it. Saved adapters will appear here for quick reconnect.",
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant
-                )
-            }
-        }
+        ConnectionInfoPanel(
+            title = "No MIDI adapter connected",
+            message = "Connect to a nearby adapter now, or save one so it is easier to find later."
+        )
     }
 
     Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
@@ -3360,39 +3682,40 @@ private fun DeviceConnectorContent(
             Text(
                 when {
                     state.connection.scanning -> "Scanning..."
-                    connected -> "Scan for another device"
-                    else -> "Scan"
+                    connected -> "Find another adapter"
+                    else -> "Find MIDI adapters"
                 }
             )
         }
     }
 
-    val deviceResults = state.bleDevices
+    val savedDevices = state.bleDevices
         .filter { it.added }
         .filterNot { sameDeviceTarget(it.address, state.connection.address) }
+        .sortedWith(
+            compareByDescending<BleMidiDeviceItem> { it.connectable }
+                .thenBy { it.name }
+        )
+    val duplicateSavedNames = duplicateDeviceNames(savedDevices)
 
-    if (deviceResults.isEmpty() && !state.connection.scanning && !state.connection.connecting) {
+    if (savedDevices.isEmpty() && !state.connection.scanning && !state.connection.connecting) {
         if (!connected) {
             Text(
-                "No MIDI devices saved yet. Tap Scan to find one.",
+                "No saved adapters yet.",
                 color = MaterialTheme.colorScheme.onSurfaceVariant
             )
         }
-    } else if (deviceResults.isNotEmpty()) {
-        LazyColumn(
-            modifier = Modifier.heightIn(max = if (compact) 210.dp else 300.dp),
-            verticalArrangement = Arrangement.spacedBy(8.dp)
-        ) {
-            items(deviceResults, key = { it.address }) { device ->
+    } else if (savedDevices.isNotEmpty()) {
+        ConnectionSectionHeader(
+            title = "Saved adapters",
+            subtitle = "Remembered by APS NoteCast. It still needs to be nearby and powered on."
+        )
+        Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+            savedDevices.forEach { device ->
                 val canSearchForDevice = !state.connection.scanning && !state.connection.connecting
-                DeviceResultRow(
+                SavedDeviceRow(
                     device = device,
-                    actionLabel = when {
-                        connected && device.connectable -> "Switch"
-                        !device.connectable -> "Scan"
-                        else -> "Connect"
-                    },
-                    actionEnabled = device.connectable || canSearchForDevice,
+                    displayName = deviceDisplayName(device, duplicateSavedNames),
                     onConnect = {
                         if (device.connectable) {
                             service.connect(device.address)
@@ -3401,6 +3724,7 @@ private fun DeviceConnectorContent(
                             service.startBleScan()
                         }
                     },
+                    connectEnabled = device.connectable || canSearchForDevice,
                     onRename = { renameDeviceAddress = device.address },
                     onRemove = { removeDeviceAddress = device.address }
                 )
@@ -3459,6 +3783,92 @@ private fun DeviceConnectorContent(
 }
 
 @Composable
+private fun QuickReconnectPanel(
+    deviceName: String,
+    reconnectPaused: Boolean,
+    onReconnect: () -> Unit
+) {
+    Surface(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clickable(onClick = onReconnect),
+        shape = RoundedCornerShape(4.dp),
+        color = MaterialTheme.colorScheme.secondaryContainer
+    ) {
+        Row(
+            Modifier
+                .fillMaxWidth()
+                .padding(12.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Icon(Icons.Default.Refresh, contentDescription = null)
+            Spacer(Modifier.width(10.dp))
+            Column(Modifier.weight(1f)) {
+                Text(
+                    if (reconnectPaused) "Reconnect paused" else "Saved adapter",
+                    style = MaterialTheme.typography.labelLarge,
+                    color = MaterialTheme.colorScheme.onSecondaryContainer
+                )
+                Text(
+                    deviceName,
+                    fontWeight = FontWeight.SemiBold,
+                    maxLines = 1,
+                    softWrap = false,
+                    overflow = TextOverflow.Ellipsis
+                )
+            }
+            TextButton(onClick = onReconnect) {
+                Text("Connect")
+            }
+        }
+    }
+}
+
+@Composable
+private fun ConnectionInfoPanel(
+    title: String,
+    message: String
+) {
+    Surface(shape = RoundedCornerShape(4.dp), color = MaterialTheme.colorScheme.surfaceVariant) {
+        Row(
+            Modifier.padding(12.dp),
+            verticalAlignment = Alignment.Top
+        ) {
+            Icon(Icons.Default.Info, contentDescription = null, modifier = Modifier.size(20.dp))
+            Spacer(Modifier.width(10.dp))
+            Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                Text(title, fontWeight = FontWeight.SemiBold)
+                Text(
+                    message,
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+            }
+        }
+    }
+}
+
+@Composable
+private fun ConnectionSectionHeader(
+    title: String,
+    subtitle: String
+) {
+    Column(
+        Modifier
+            .fillMaxWidth()
+            .padding(top = 4.dp),
+        verticalArrangement = Arrangement.spacedBy(2.dp)
+    ) {
+        Text(title, fontWeight = FontWeight.SemiBold)
+        Text(
+            subtitle,
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant
+        )
+    }
+}
+
+@Composable
 private fun ScanDevicesDialog(
     state: AppUiState,
     service: NoteCastService,
@@ -3467,9 +3877,9 @@ private fun ScanDevicesDialog(
     onOpenBluetoothPairing: () -> Unit,
     onConnect: (String) -> Unit
 ) {
-    val scanResults = state.bleDevices
+    val availableResults = state.bleDevices
         .filterNot { sameDeviceTarget(it.address, state.connection.address) }
-        .filter { it.source != "Saved" || it.connectable }
+        .filter { it.source != "Saved" }
         .filter { it.likelyMidi || it.standardBleMidi || it.added || it.connectable }
         .sortedWith(
             compareByDescending<BleMidiDeviceItem> { it.connectable }
@@ -3477,18 +3887,30 @@ private fun ScanDevicesDialog(
                 .thenByDescending { it.likelyMidi }
                 .thenBy { it.name }
         )
+    val savedResults = state.bleDevices
+        .filterNot { sameDeviceTarget(it.address, state.connection.address) }
+        .filter { it.added && it.source == "Saved" }
+        .sortedWith(
+            compareByDescending<BleMidiDeviceItem> { it.connectable }
+                .thenBy { it.name }
+        )
+    val duplicateScanNames = duplicateDeviceNames(availableResults + savedResults)
     val connected = state.connection.connected
     AlertDialog(
         onDismissRequest = onDismiss,
-        icon = { Icon(Icons.AutoMirrored.Filled.BluetoothSearching, contentDescription = null) },
-        title = { Text(if (connected) "Switch MIDI device" else "Nearby MIDI devices") },
+        title = {
+            Text(
+                if (connected) "Switch MIDI adapter" else "Find MIDI adapter",
+                style = MaterialTheme.typography.headlineSmall
+            )
+        },
         text = {
-            Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+            ScrollableDialogColumn(maxHeight = 430.dp, verticalArrangement = Arrangement.spacedBy(10.dp)) {
                 if (state.connection.scanning) {
                     LoadingStatusPanel(
-                        title = if (connected) "Looking for another MIDI device" else "Looking for MIDI",
+                        title = if (connected) "Looking nearby" else "Looking nearby",
                         message = if (connected) {
-                            "The current connection stays active while APS NoteCast looks nearby."
+                            "Current adapter stays connected."
                         } else {
                             state.connection.message
                         },
@@ -3496,30 +3918,49 @@ private fun ScanDevicesDialog(
                         onAction = { service.stopBleScan() }
                     )
                 }
-                if (scanResults.isEmpty()) {
+                if (availableResults.isEmpty() && savedResults.isEmpty()) {
                     Text(
                         when {
                             state.connection.scanning -> "Searching..."
-                            connected -> "No other MIDI devices found. The current connection is unchanged."
-                            else -> "No MIDI adapters found. Make sure the adapter is powered on and nearby, then scan again."
+                            connected -> "No other adapters found. The current connection is unchanged."
+                            else -> "No adapters found. Make sure the adapter is powered on and nearby, then scan again."
                         },
                         color = MaterialTheme.colorScheme.onSurfaceVariant
                     )
                 } else {
-                    LazyColumn(
-                        modifier = Modifier.heightIn(max = 360.dp),
-                        verticalArrangement = Arrangement.spacedBy(8.dp)
-                    ) {
-                        items(scanResults, key = { it.address }) { device ->
-                            ScanDeviceRow(
-                                device = device,
-                                onAdd = { service.addDevice(device.address) },
-                                onConnect = { onConnect(device.address) },
-                                onRename = { onRename(device.address) },
-                                onPair = onOpenBluetoothPairing,
-                                connectLabel = if (connected) "Switch" else "Connect"
-                            )
-                        }
+                    if (availableResults.isNotEmpty()) {
+                        ConnectionSectionHeader(
+                            title = "Nearby now",
+                            subtitle = "Connect uses it now. Save remembers it for later."
+                        )
+                    }
+                    availableResults.forEach { device ->
+                        ScanDeviceRow(
+                            device = device,
+                            displayName = deviceDisplayName(device, duplicateScanNames),
+                            onSave = { service.addDevice(device.address) },
+                            onConnect = { onConnect(device.address) },
+                            onRename = { onRename(device.address) },
+                            onPair = onOpenBluetoothPairing,
+                            connectLabel = if (connected) "Switch" else "Connect"
+                        )
+                    }
+                    if (savedResults.isNotEmpty()) {
+                        ConnectionSectionHeader(
+                            title = "Saved for reconnect",
+                            subtitle = "Remembered or paired, but not always nearby."
+                        )
+                    }
+                    savedResults.forEach { device ->
+                        ScanDeviceRow(
+                            device = device,
+                            displayName = deviceDisplayName(device, duplicateScanNames),
+                            onSave = { service.addDevice(device.address) },
+                            onConnect = { onConnect(device.address) },
+                            onRename = { onRename(device.address) },
+                            onPair = onOpenBluetoothPairing,
+                            connectLabel = if (connected) "Switch" else "Connect"
+                        )
                     }
                 }
             }
@@ -3534,7 +3975,7 @@ private fun ScanDevicesDialog(
         },
         dismissButton = {
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                if (scanResults.isEmpty() && !state.connection.scanning && !state.connection.connecting) {
+                if (availableResults.isEmpty() && savedResults.isEmpty() && !state.connection.scanning && !state.connection.connecting) {
                     TextButton(onClick = onOpenBluetoothPairing) {
                         Text("Bluetooth settings")
                     }
@@ -3561,7 +4002,7 @@ private fun ConnectedDeviceRow(
                 Spacer(Modifier.width(10.dp))
                 Column(Modifier.weight(1f)) {
                     Text(
-                        state.connection.deviceName ?: "BLE MIDI Device",
+                        state.connection.deviceName ?: "MIDI Device",
                         fontWeight = FontWeight.SemiBold,
                         maxLines = 1,
                         softWrap = false,
@@ -3588,11 +4029,11 @@ private fun ConnectedDeviceRow(
 }
 
 @Composable
-private fun DeviceResultRow(
+private fun SavedDeviceRow(
     device: BleMidiDeviceItem,
-    actionLabel: String,
-    actionEnabled: Boolean,
+    displayName: String,
     onConnect: () -> Unit,
+    connectEnabled: Boolean,
     onRename: () -> Unit,
     onRemove: () -> Unit
 ) {
@@ -3603,40 +4044,29 @@ private fun DeviceResultRow(
                 Spacer(Modifier.width(10.dp))
                 Column(Modifier.weight(1f)) {
                     Text(
-                        device.name,
+                        displayName,
                         fontWeight = FontWeight.SemiBold,
                         maxLines = 1,
                         softWrap = false,
                         overflow = TextOverflow.Ellipsis
                     )
+                    DeviceStatusText(device)
+                }
+            }
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
+                Button(onClick = onConnect, enabled = connectEnabled, modifier = Modifier.weight(1f)) {
                     Text(
-                        listOfNotNull(
-                            if (device.added) "Added" else null,
-                            when {
-                                device.standardBleMidi -> "BLE MIDI"
-                                device.likelyMidi -> "Possible MIDI"
-                                else -> "BLE"
-                            },
-                            device.source,
-                            device.detail,
-                            device.rssi?.let { "$it dBm" }
-                        ).joinToString(" - "),
-                        style = MaterialTheme.typography.bodySmall,
+                        if (device.connectable) "Connect" else "Find nearby",
                         maxLines = 1,
                         softWrap = false,
                         overflow = TextOverflow.Ellipsis
                     )
                 }
-            }
-            Row(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
-                Button(onClick = onConnect, enabled = actionEnabled, modifier = Modifier.weight(1f)) {
-                    Text(actionLabel, maxLines = 1, softWrap = false, overflow = TextOverflow.Ellipsis)
-                }
                 IconButton(onClick = onRename) {
-                    Icon(Icons.Default.DriveFileRenameOutline, contentDescription = "Rename ${device.name}")
+                    Icon(Icons.Default.DriveFileRenameOutline, contentDescription = "Rename $displayName")
                 }
                 IconButton(onClick = onRemove) {
-                    Icon(Icons.Default.Delete, contentDescription = "Remove ${device.name}")
+                    Icon(Icons.Default.Delete, contentDescription = "Remove $displayName")
                 }
             }
         }
@@ -3646,7 +4076,8 @@ private fun DeviceResultRow(
 @Composable
 private fun ScanDeviceRow(
     device: BleMidiDeviceItem,
-    onAdd: () -> Unit,
+    displayName: String,
+    onSave: () -> Unit,
     onConnect: () -> Unit,
     onRename: () -> Unit,
     onPair: () -> Unit,
@@ -3659,38 +4090,22 @@ private fun ScanDeviceRow(
                 Spacer(Modifier.width(10.dp))
                 Column(Modifier.weight(1f)) {
                     Text(
-                        device.name,
+                        displayName,
                         fontWeight = FontWeight.SemiBold,
                         maxLines = 1,
                         softWrap = false,
                         overflow = TextOverflow.Ellipsis
                     )
-                    Text(
-                        listOfNotNull(
-                            if (device.added) "Added" else null,
-                            when {
-                                device.standardBleMidi -> "BLE MIDI"
-                                device.likelyMidi -> "Possible MIDI"
-                                else -> "BLE"
-                            },
-                            device.source,
-                            device.detail,
-                            device.rssi?.let { "$it dBm" }
-                        ).joinToString(" - "),
-                        style = MaterialTheme.typography.bodySmall,
-                        maxLines = 1,
-                        softWrap = false,
-                        overflow = TextOverflow.Ellipsis
-                    )
+                    DeviceStatusText(device)
                 }
                 IconButton(onClick = onRename) {
-                    Icon(Icons.Default.DriveFileRenameOutline, contentDescription = "Rename ${device.name}")
+                    Icon(Icons.Default.DriveFileRenameOutline, contentDescription = "Rename $displayName")
                 }
             }
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                 if (device.connectable && !device.added) {
-                    OutlinedButton(onClick = onAdd, modifier = Modifier.weight(1f)) {
-                        Text("Add", maxLines = 1, softWrap = false, overflow = TextOverflow.Ellipsis)
+                    OutlinedButton(onClick = onSave, modifier = Modifier.weight(1f)) {
+                        Text("Save", maxLines = 1, softWrap = false, overflow = TextOverflow.Ellipsis)
                     }
                 }
                 if (device.connectable) {
@@ -3708,6 +4123,66 @@ private fun ScanDeviceRow(
             }
         }
     }
+}
+
+@Composable
+private fun DeviceStatusText(device: BleMidiDeviceItem) {
+    Text(
+        deviceStatusLabel(device),
+        style = MaterialTheme.typography.bodySmall,
+        color = MaterialTheme.colorScheme.onSurfaceVariant,
+        maxLines = 2,
+        overflow = TextOverflow.Ellipsis
+    )
+}
+
+private fun deviceStatusLabel(device: BleMidiDeviceItem): String {
+    val type = when {
+        isUsbMidiDevice(device) -> "USB MIDI"
+        device.source == "Virtual MIDI" || device.detail.startsWith("Virtual MIDI") -> "Virtual MIDI"
+        device.source == "Android MIDI" -> "Android MIDI"
+        device.standardBleMidi -> "BLE MIDI"
+        device.likelyMidi -> "Possible MIDI"
+        else -> "Bluetooth"
+    }
+    val availability = when {
+        isUsbMidiDevice(device) && device.connectable -> "attached now"
+        isUsbMidiDevice(device) -> "not attached"
+        device.source == "Virtual MIDI" && device.connectable -> "available now"
+        device.source == "Saved" && device.connectable -> "saved, available"
+        device.source == "Saved" -> "saved, not seen nearby"
+        device.source == "Paired Bluetooth" && device.connectable -> "paired in Android, available"
+        device.source == "Paired Bluetooth" -> "paired in Android"
+        device.connectable -> "nearby now"
+        else -> "not ready to connect"
+    }
+    val signal = device.rssi?.let { " - $it dBm" }.orEmpty()
+    return "$type - $availability$signal"
+}
+
+private fun isUsbMidiDevice(device: BleMidiDeviceItem): Boolean =
+    device.source == "USB MIDI" || device.detail.startsWith("USB MIDI")
+
+private fun duplicateDeviceNames(devices: List<BleMidiDeviceItem>): Set<String> =
+    devices
+        .groupingBy { it.name.trim().lowercase(Locale.US) }
+        .eachCount()
+        .filterValues { it > 1 }
+        .keys
+
+private fun deviceDisplayName(device: BleMidiDeviceItem, duplicateNames: Set<String>): String {
+    val cleanName = device.name.ifBlank { "MIDI adapter" }
+    return if (cleanName.trim().lowercase(Locale.US) in duplicateNames) {
+        "$cleanName (${shortDeviceIdentifier(device.address)})"
+    } else {
+        cleanName
+    }
+}
+
+private fun shortDeviceIdentifier(address: String): String {
+    val bluetoothAddress = address.removePrefix("midi-bt:")
+    val parts = bluetoothAddress.split(':').filter { it.isNotBlank() }
+    return if (parts.size >= 2) parts.takeLast(2).joinToString(":") else bluetoothAddress.takeLast(5)
 }
 
 private fun sameDeviceTarget(left: String?, right: String?): Boolean {
@@ -3730,21 +4205,30 @@ private fun KuhmannMidiDialog(
     var query by rememberSaveable { mutableStateOf(state.query) }
     var limitText by rememberSaveable { mutableStateOf(state.limit.toString()) }
     var pianoOnly by rememberSaveable { mutableStateOf(state.pianoOnly) }
+    var selectedSourceKey by rememberSaveable { mutableStateOf(state.source.key) }
     var showLimitControl by rememberSaveable { mutableStateOf(false) }
     var showCopyrightInfo by rememberSaveable { mutableStateOf(false) }
     var showRemovalInfo by rememberSaveable { mutableStateOf(false) }
     val uriHandler = LocalUriHandler.current
-    val selected = remember { mutableStateMapOf<Int, Boolean>() }
-    LaunchedEffect(state.results) {
+    val availableSources = state.availableSources.ifEmpty { listOf(state.source) }
+    val selectedSource = availableSources.firstOrNull { it.key == selectedSourceKey }
+        ?: availableSources.firstOrNull { it.key == state.source.key }
+        ?: state.source
+    val selected = remember { mutableStateMapOf<String, Boolean>() }
+    LaunchedEffect(state.source, state.availableSources) {
+        selectedSourceKey = state.source.key
+    }
+    LaunchedEffect(state.results, state.source) {
         selected.clear()
     }
-    LaunchedEffect(state.lastImportedIds) {
-        state.lastImportedIds.forEach { selected.remove(it) }
+    LaunchedEffect(state.lastImportedKeys) {
+        state.lastImportedKeys.forEach { selected.remove(it) }
     }
-    val selectedResults = state.results.filter { selected[it.id] == true && it.id !in state.lastImportedIds }
+    val selectedResults = state.results.filter { selected[it.stableKey] == true && it.stableKey !in state.lastImportedKeys }
     val limitLabel = limitText.toIntOrNull()?.coerceIn(1, 999)?.toString() ?: "50"
     fun runSearch(searchPianoOnly: Boolean) {
-        service.searchKuhmannMidi(
+        service.searchExternalMidi(
+            source = selectedSource,
             query = query,
             format = null,
             pianoOnly = searchPianoOnly,
@@ -3758,6 +4242,11 @@ private fun KuhmannMidiDialog(
         if (query.isNotBlank() && !state.downloading) {
             runSearch(newPianoOnly)
         }
+    }
+    val sourceChangeAction: (ExternalMidiSource) -> Unit = { newSource ->
+        selectedSourceKey = newSource.key
+        selected.clear()
+        service.selectExternalMidiSource(newSource)
     }
     val importAction = { service.downloadKuhmannMidi(selectedResults) }
 
@@ -3802,7 +4291,7 @@ private fun KuhmannMidiDialog(
                         Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(1.dp)) {
                             Text("External MIDI", style = MaterialTheme.typography.titleLarge, maxLines = 1)
                             Text(
-                                "Kuhmann source - noncommercial only",
+                                selectedSource.dialogSubtitle,
                                 style = MaterialTheme.typography.bodySmall,
                                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                                 maxLines = 1,
@@ -3813,31 +4302,57 @@ private fun KuhmannMidiDialog(
                             Icon(Icons.Default.Close, contentDescription = "Close")
                         }
                     }
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.spacedBy(8.dp)
-                    ) {
-                        Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(1.dp)) {
-                            Text(
-                                "External source",
-                                style = MaterialTheme.typography.labelMedium,
-                                fontWeight = FontWeight.SemiBold,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                    if (compactControls) {
+                        Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                            ExternalSourceSelector(
+                                sources = availableSources,
+                                selectedSource = selectedSource,
+                                onSourceChange = sourceChangeAction,
+                                modifier = Modifier.fillMaxWidth()
                             )
                             Text(
-                                "Personal/noncommercial only. Check rights first.",
+                                selectedSource.rightsSummary,
                                 style = MaterialTheme.typography.bodySmall,
                                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                                 maxLines = 2,
                                 overflow = TextOverflow.Ellipsis
                             )
+                            Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+                                TextButton(onClick = { showCopyrightInfo = true }) {
+                                    Text("Copyright")
+                                }
+                                TextButton(onClick = { showRemovalInfo = true }) {
+                                    Text("DMCA")
+                                }
+                            }
                         }
-                        TextButton(onClick = { showCopyrightInfo = true }) {
-                            Text("Copyright")
-                        }
-                        TextButton(onClick = { showRemovalInfo = true }) {
-                            Text("DMCA")
+                    } else {
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(8.dp)
+                        ) {
+                            Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                                ExternalSourceSelector(
+                                    sources = availableSources,
+                                    selectedSource = selectedSource,
+                                    onSourceChange = sourceChangeAction,
+                                    modifier = Modifier.fillMaxWidth()
+                                )
+                                Text(
+                                    selectedSource.rightsSummary,
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                    maxLines = 1,
+                                    overflow = TextOverflow.Ellipsis
+                                )
+                            }
+                            TextButton(onClick = { showCopyrightInfo = true }) {
+                                Text("Copyright")
+                            }
+                            TextButton(onClick = { showRemovalInfo = true }) {
+                                Text("DMCA")
+                            }
                         }
                     }
                     OutlinedTextField(
@@ -3932,16 +4447,17 @@ private fun KuhmannMidiDialog(
                             horizontalArrangement = Arrangement.spacedBy(10.dp),
                             verticalArrangement = Arrangement.spacedBy(2.dp)
                         ) {
-                            gridItems(state.results, key = { it.id }) { result ->
-                                val isCurrentPreview = state.activePlaybackResultId == result.id ||
-                                    playback.currentItemId?.startsWith("kuhmann-preview-${result.id}-") == true
+                            gridItems(state.results, key = { it.stableKey }) { result ->
+                                val isCurrentPreview = state.activePlaybackResultKey == result.stableKey ||
+                                    playback.currentItemId?.startsWith("external-preview-${result.source.key}-${result.id}-") == true ||
+                                    (result.source.isKuhmann && playback.currentItemId?.startsWith("kuhmann-preview-${result.id}-") == true)
                                 val resultPlaybackMode = if (isCurrentPreview) playback.mode else PlaybackMode.Idle
                                 KuhmannResultRow(
                                     result = result,
-                                    checked = selected[result.id] == true,
-                                    imported = result.id in state.lastImportedIds,
+                                    checked = selected[result.stableKey] == true,
+                                    imported = result.stableKey in state.lastImportedKeys,
                                     enabled = !state.downloading,
-                                    onCheckedChange = { selected[result.id] = it },
+                                    onCheckedChange = { selected[result.stableKey] = it },
                                     playbackMode = resultPlaybackMode,
                                     onPlay = {
                                         when (resultPlaybackMode) {
@@ -4008,7 +4524,7 @@ private fun ExternalSourceCopyrightDialog(
         title = { Text("Copyright") },
         text = {
             ScrollableDialogColumn(verticalArrangement = Arrangement.spacedBy(10.dp)) {
-                Text("APS NoteCast is a MIDI playback and Bluetooth MIDI connection tool. It does not sell, license, or claim ownership of third-party MIDI or E-SEQ files.")
+                Text("APS NoteCast is a MIDI playback and connection tool. It does not sell, license, or claim ownership of third-party MIDI or E-SEQ files.")
                 Text("External archives may contain public-domain works, user-created sequences, live MIDI performances, arrangements, or files with unknown or mixed permissions.")
                 Text("A public-domain composition does not always mean every MIDI file, arrangement, or performance of that composition is unrestricted.")
                 Text("Use external files only for personal, noncommercial purposes unless you have permission or a separate license. Do not redistribute, sell, remaster, or use files for paid/commercial playback unless allowed by the rights holder.")
@@ -4033,7 +4549,7 @@ private fun ExternalSourceRemovalDialog(
         title = { Text("DMCA / Removal") },
         text = {
             ScrollableDialogColumn(verticalArrangement = Arrangement.spacedBy(10.dp)) {
-                Text("If you own rights to a MIDI, E-SEQ, arrangement, performance, or related file accessible through an external source shown in APS NoteCast and want it removed or delisted, please contact us.")
+                Text("If you own rights to a MIDI file, E-SEQ file, arrangement, performance, or related file accessible through an external source shown in APS NoteCast and want it removed or delisted, please contact us.")
                 Text("Include the file name or title, the source where it appears, your relationship to the work, and a good contact address. We will review removal requests promptly.")
                 Text("APS NoteCast does not claim ownership of third-party files and does not intend to encourage copyright infringement.")
             }
@@ -4045,6 +4561,66 @@ private fun ExternalSourceRemovalDialog(
             TextButton(onClick = onDismiss) { Text("Done") }
         }
     )
+}
+
+@Composable
+private fun ExternalSourceSelector(
+    sources: List<ExternalMidiSource>,
+    selectedSource: ExternalMidiSource,
+    onSourceChange: (ExternalMidiSource) -> Unit,
+    modifier: Modifier = Modifier
+) {
+    var expanded by rememberSaveable { mutableStateOf(false) }
+    Column(modifier = modifier, verticalArrangement = Arrangement.spacedBy(4.dp)) {
+        Text(
+            "Source",
+            style = MaterialTheme.typography.labelMedium,
+            fontWeight = FontWeight.SemiBold,
+            color = MaterialTheme.colorScheme.onSurfaceVariant
+        )
+        Box {
+            OutlinedButton(
+                onClick = { expanded = true },
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .height(40.dp),
+                contentPadding = PaddingValues(horizontal = 12.dp)
+            ) {
+                Text(
+                    selectedSource.displayName,
+                    modifier = Modifier.weight(1f),
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis
+                )
+                Icon(Icons.Default.ExpandMore, contentDescription = null, modifier = Modifier.size(18.dp))
+            }
+            DropdownMenu(
+                expanded = expanded,
+                onDismissRequest = { expanded = false }
+            ) {
+                sources.forEach { source ->
+                    DropdownMenuItem(
+                        text = {
+                            Text(
+                                source.displayName,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis
+                            )
+                        },
+                        leadingIcon = {
+                            if (source.key == selectedSource.key) {
+                                Icon(Icons.Default.Check, contentDescription = null)
+                            }
+                        },
+                        onClick = {
+                            expanded = false
+                            onSourceChange(source)
+                        }
+                    )
+                }
+            }
+        }
+    }
 }
 
 @Composable
@@ -4107,6 +4683,25 @@ private fun KuhmannSmallNumberField(
     )
 }
 
+private fun KuhmannMidiResult.externalResultFolderLine(): String {
+    return folder.ifBlank {
+        listOfNotNull(
+            sourceName.takeIf { it.isNotBlank() },
+            composer.takeIf { it.isNotBlank() },
+            instrument.takeIf { it.isNotBlank() }
+        ).joinToString(" / ").ifBlank { source.displayName }
+    }
+}
+
+private fun KuhmannMidiResult.externalResultDetailLine(): String {
+    return listOfNotNull(
+        license.takeIf { it.isNotBlank() },
+        style.takeIf { it.isNotBlank() },
+        fileSize.takeIf { it > 0L }?.formatFileSize(),
+        channels.takeIf { it.isNotEmpty() }?.joinToString(prefix = "ch ")
+    ).joinToString(" - ").ifBlank { source.rightsSummary }
+}
+
 @Composable
 private fun KuhmannResultRow(
     result: KuhmannMidiResult,
@@ -4161,17 +4756,14 @@ private fun KuhmannResultRow(
                 )
             }
             Text(
-                result.folder,
+                result.externalResultFolderLine(),
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                 maxLines = 1,
                 overflow = TextOverflow.Ellipsis
             )
             Text(
-                listOfNotNull(
-                    result.fileSize.takeIf { it > 0L }?.formatFileSize(),
-                    result.channels.takeIf { it.isNotEmpty() }?.joinToString(prefix = "ch ")
-                ).joinToString(" - "),
+                result.externalResultDetailLine(),
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                 maxLines = 1,
@@ -4695,7 +5287,7 @@ private fun RecordDialog(
                     }
                 }
                 if (!state.connection.connected) {
-                    Text("Connect BLE MIDI before recording.", color = MaterialTheme.colorScheme.error)
+                    Text("Connect a MIDI device before recording.", color = MaterialTheme.colorScheme.error)
                 }
             }
         },

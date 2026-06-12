@@ -49,12 +49,14 @@ import com.alexanderpeppe.pianobeam.data.AppSettings
 import com.alexanderpeppe.pianobeam.data.AppUiState
 import com.alexanderpeppe.pianobeam.data.BleMidiDeviceItem
 import com.alexanderpeppe.pianobeam.data.ConnectionUiState
+import com.alexanderpeppe.pianobeam.data.ExternalMidiSource
 import com.alexanderpeppe.pianobeam.data.KuhmannMidiResult
 import com.alexanderpeppe.pianobeam.data.KuhmannSearchUiState
 import com.alexanderpeppe.pianobeam.data.MidiChannelControl
 import com.alexanderpeppe.pianobeam.data.MidiLibraryItem
 import com.alexanderpeppe.pianobeam.data.MidiRepository
 import com.alexanderpeppe.pianobeam.data.PedalOutputMode
+import com.alexanderpeppe.pianobeam.data.PedalValueMode
 import com.alexanderpeppe.pianobeam.data.PlaybackAdvanceMode
 import com.alexanderpeppe.pianobeam.data.PlaybackChannelInfo
 import com.alexanderpeppe.pianobeam.data.PlaybackMode
@@ -93,6 +95,7 @@ import java.net.HttpURLConnection
 import java.net.URL
 import java.net.URLEncoder
 import java.security.MessageDigest
+import java.util.Locale
 import java.util.UUID
 import java.util.concurrent.Executors
 import java.util.concurrent.atomic.AtomicLong
@@ -111,7 +114,7 @@ class NoteCastService : Service() {
         private const val ACTION_DEBUG_SCAN = "com.alexanderpeppe.notecast.DEBUG_SCAN"
         private const val ACTION_DEBUG_DIAGNOSTICS = "com.alexanderpeppe.notecast.DEBUG_DIAGNOSTICS"
         private const val LOG_TAG = "NoteCastBle"
-        private const val KUHMANN_SEARCH_URL = "https://www.alexanderpeppe.com/kuhmann_midi_search.php"
+        private const val EXTERNAL_MIDI_SOURCES_ASSET = "external_midi_sources.json"
         private const val KUHMANN_SEARCH_MAX_LIMIT = 100
         private const val KUHMANN_MAX_DOWNLOAD_BYTES = 5 * 1024 * 1024
         private const val SCAN_WINDOW_MS = 12_000L
@@ -120,6 +123,7 @@ class NoteCastService : Service() {
         private const val CONNECTION_ATTACH_VERIFY_DELAY_MS = 1_500L
         private const val BLE_MIDI_READY_SETTLE_MS = 2_000L
         private const val ROLL_SUSTAIN_NOTE = 18
+        private const val PEDAL_BINARY_ON_THRESHOLD = 64
         private const val SCHEDULE_AHEAD_NS = 45_000_000L
         private const val START_DELAY_NS = 160_000_000L
         private const val PROGRESS_POST_INTERVAL_NS = 220_000_000L
@@ -256,6 +260,7 @@ class NoteCastService : Service() {
     private var skipRequest: Int = 0
     @Volatile
     private var seekRequestUs: Long = -1L
+    private val sustainPedalRestoreRequests = AtomicLong(0L)
 
     private data class PreparedSequenceCacheKey(
         val itemId: String,
@@ -268,6 +273,7 @@ class NoteCastService : Service() {
         val excludeDrumChannelFromTranspose: Boolean,
         val channelSignature: String,
         val instrumentOverrideSignature: String,
+        val foldChannel2IntoPianoChannel: Boolean,
         val foldPedalsIntoPianoChannel: Boolean
     )
 
@@ -309,6 +315,42 @@ class NoteCastService : Service() {
         }
     }
 
+    private inner class BinaryPedalValueState {
+        private val pressedByChannelAndController = Array(16) { BooleanArray(128) }
+
+        fun messagesFor(controllerMessage: ByteArray, enabled: Boolean): List<ByteArray> {
+            if (!enabled || !controllerMessage.isPedalControllerMessage()) return listOf(controllerMessage)
+            val channel = controllerMessage.midiChannelNumber() ?: return listOf(controllerMessage)
+            val channelIndex = channel - 1
+            if (channelIndex !in pressedByChannelAndController.indices) return listOf(controllerMessage)
+            val controller = controllerMessage[1].toInt() and 0xFF
+            if (controller !in 0..127) return listOf(controllerMessage)
+            val value = controllerMessage[2].toInt() and 0xFF
+            val currentlyPressed = pressedByChannelAndController[channelIndex][controller]
+            val nextPressed = value >= PEDAL_BINARY_ON_THRESHOLD
+            if (nextPressed == currentlyPressed) return emptyList()
+            pressedByChannelAndController[channelIndex][controller] = nextPressed
+            val copy = controllerMessage.copyOf()
+            copy[2] = (if (nextPressed) 127 else 0).toByte()
+            return listOf(copy)
+        }
+
+        fun clear() {
+            pressedByChannelAndController.forEach { it.fill(false) }
+        }
+
+        fun pressedControllerMessages(controller: Int): List<ByteArray> {
+            if (controller !in 0..127) return emptyList()
+            return pressedByChannelAndController.mapIndexedNotNull { channelIndex, pressedByController ->
+                if (pressedByController[controller]) {
+                    byteArrayOf((0xB0 or channelIndex).toByte(), controller.toByte(), 127.toByte())
+                } else {
+                    null
+                }
+            }
+        }
+    }
+
     private val sequenceCacheLock = Any()
     private val preparedSequenceCache = object : LinkedHashMap<PreparedSequenceCacheKey, PreparedPlaybackData>(8, 0.75f, true) {
         override fun removeEldestEntry(eldest: MutableMap.MutableEntry<PreparedSequenceCacheKey, PreparedPlaybackData>?): Boolean =
@@ -342,6 +384,7 @@ class NoteCastService : Service() {
         createNotificationChannel()
         createMediaSession()
         repository.ensureDemoMidi()
+        loadExternalMidiSources()
         restoreRememberedDevice()
         midiManager.registerDeviceCallback(midiDeviceCallback, mainHandler)
         registerBluetoothStateReceiver()
@@ -350,6 +393,28 @@ class NoteCastService : Service() {
     }
 
     override fun onBind(intent: Intent?): IBinder = binder
+
+    private fun loadExternalMidiSources() {
+        val sources = runCatching {
+            assets.open(EXTERNAL_MIDI_SOURCES_ASSET).use { input ->
+                ExternalMidiSource.fromJson(input.readBytes().toString(Charsets.UTF_8))
+            }
+        }.onFailure { t ->
+            Log.w(LOG_TAG, "Could not load $EXTERNAL_MIDI_SOURCES_ASSET; using built-in external MIDI sources.", t)
+        }.getOrElse {
+            ExternalMidiSource.DefaultSources
+        }
+        val selectedSource = sources.firstOrNull { it.key == _state.value.kuhmann.source.key } ?: sources.first()
+        _state.update {
+            it.copy(
+                kuhmann = it.kuhmann.copy(
+                    availableSources = sources,
+                    source = selectedSource,
+                    message = selectedSource.initialMessage
+                )
+            )
+        }
+    }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         when (intent?.action) {
@@ -404,14 +469,15 @@ class NoteCastService : Service() {
         appSettings = settings
         val volumeBehaviorChanged = previousSettings.volumeControlMode != settings.volumeControlMode
         val pedalOutputChanged = previousSettings.pedalOutputMode != settings.pedalOutputMode
+        val pedalValueChanged = previousSettings.pedalValueMode != settings.pedalValueMode
         val channelVolumesChanged = previousSettings.channelControls.volumeSignature() != settings.channelControls.volumeSignature()
         val muteSoloChanged = previousSettings.channelControls.muteSoloSignature() != settings.channelControls.muteSoloSignature()
         val activeSongId = _state.value.playback.currentItemId
         val instrumentOverridesChanged = activeSongId != null &&
             previousSettings.instrumentOverridesForSong(activeSongId) != settings.instrumentOverridesForSong(activeSongId)
-        if (_state.value.connection.connected && (volumeBehaviorChanged || pedalOutputChanged || channelVolumesChanged || muteSoloChanged || instrumentOverridesChanged)) {
+        if (_state.value.connection.connected && (volumeBehaviorChanged || pedalOutputChanged || pedalValueChanged || channelVolumesChanged || muteSoloChanged || instrumentOverridesChanged)) {
             serviceScope.launch(Dispatchers.IO) {
-                if (muteSoloChanged || pedalOutputChanged) {
+                if (muteSoloChanged || pedalOutputChanged || pedalValueChanged) {
                     sendPanicMessages()
                 } else {
                     sendActiveNoteOffMessagesIfNeeded()
@@ -429,7 +495,7 @@ class NoteCastService : Service() {
 
     fun playDiagnosticChromaticScale(velocity: Int, noteLengthMs: Int) {
         if (midiInputPort == null || !_state.value.connection.connected) {
-            postMessage("Connect to a BLE MIDI device before running the piano test.")
+            postMessage("Connect to a MIDI device before running the piano test.")
             return
         }
 
@@ -502,7 +568,7 @@ class NoteCastService : Service() {
 
     fun setPianoTestSustainPedal(pressed: Boolean, playSustainedChord: Boolean) {
         if (midiInputPort == null || !_state.value.connection.connected) {
-            postMessage("Connect to a BLE MIDI device before testing sustain.")
+            postMessage("Connect to a MIDI device before testing sustain.")
             return
         }
 
@@ -600,7 +666,7 @@ class NoteCastService : Service() {
                 it.copy(
                     playback = PlaybackUiState(),
                     playbackChannels = emptyList(),
-                    kuhmann = it.kuhmann.copy(activePlaybackResultId = null),
+                    kuhmann = it.kuhmann.copy(activePlaybackResultKey = null),
                     lastMessage = "Playback stopped for piano test."
                 )
             }
@@ -660,7 +726,31 @@ class NoteCastService : Service() {
         }
     }
 
+    fun selectExternalMidiSource(source: ExternalMidiSource) {
+        val current = _state.value.kuhmann
+        val selectedSource = externalMidiSourceForKey(source.key) ?: source
+        if (current.source.key == selectedSource.key) return
+        _state.update {
+            it.copy(
+                kuhmann = it.kuhmann.copy(
+                    searching = false,
+                    downloading = false,
+                    source = selectedSource,
+                    results = emptyList(),
+                    message = selectedSource.initialMessage,
+                    lastImportedKeys = emptyList(),
+                    activePlaybackResultKey = null
+                )
+            )
+        }
+    }
+
     fun searchKuhmannMidi(query: String, format: Int?, pianoOnly: Boolean, channel: Int?, limit: Int) {
+        searchExternalMidi(externalMidiSourceForKey(ExternalMidiSource.Kuhmann.key) ?: ExternalMidiSource.Kuhmann, query, format, pianoOnly, channel, limit)
+    }
+
+    fun searchExternalMidi(source: ExternalMidiSource, query: String, format: Int?, pianoOnly: Boolean, channel: Int?, limit: Int) {
+        val selectedSource = externalMidiSourceForKey(source.key) ?: source
         val cleanQuery = query.trim()
         val cleanChannel = channel?.coerceIn(1, 16)
         val cleanLimit = limit.coerceIn(1, 100)
@@ -668,11 +758,14 @@ class NoteCastService : Service() {
             _state.update {
                 it.copy(
                     kuhmann = it.kuhmann.copy(
+                        source = selectedSource,
                         query = cleanQuery,
                         format = format,
                         pianoOnly = pianoOnly,
                         channel = cleanChannel,
                         limit = cleanLimit,
+                        results = emptyList(),
+                        lastImportedKeys = emptyList(),
                         message = "Enter a search term."
                     )
                 )
@@ -681,12 +774,13 @@ class NoteCastService : Service() {
         }
         kuhmannSearchJob?.cancel()
         kuhmannSearchJob = null
-        cachedKuhmannSearchResults(cleanQuery, format, pianoOnly, cleanChannel, cleanLimit)?.let { response ->
-            val message = response.kuhmannSearchMessage()
+        cachedKuhmannSearchResults(selectedSource, cleanQuery, format, pianoOnly, cleanChannel, cleanLimit)?.let { response ->
+            val message = response.kuhmannSearchMessage(selectedSource)
             _state.update {
                 it.copy(
                     kuhmann = it.kuhmann.copy(
                         searching = false,
+                        source = selectedSource,
                         query = cleanQuery,
                         format = format,
                         pianoOnly = pianoOnly,
@@ -694,7 +788,7 @@ class NoteCastService : Service() {
                         limit = cleanLimit,
                         results = response.results,
                         message = message,
-                        lastImportedIds = emptyList()
+                        lastImportedKeys = emptyList()
                     ),
                     lastMessage = message
                 )
@@ -707,6 +801,7 @@ class NoteCastService : Service() {
                 it.copy(
                     kuhmann = it.kuhmann.copy(
                         searching = false,
+                        source = selectedSource,
                         query = cleanQuery,
                         format = format,
                         pianoOnly = pianoOnly,
@@ -723,28 +818,31 @@ class NoteCastService : Service() {
             it.copy(
                 kuhmann = it.kuhmann.copy(
                     searching = true,
+                    source = selectedSource,
                     query = cleanQuery,
                     format = format,
                     pianoOnly = pianoOnly,
                     channel = cleanChannel,
                     limit = cleanLimit,
-                    message = "Searching external noncommercial Kuhmann MIDI source..."
+                    results = emptyList(),
+                    message = selectedSource.searchMessage
                 )
             )
         }
         kuhmannSearchJob = serviceScope.launch(Dispatchers.IO) {
             runCatching {
-                fetchKuhmannSearchResults(cleanQuery, format, pianoOnly, cleanChannel, cleanLimit)
+                fetchKuhmannSearchResults(selectedSource, cleanQuery, format, pianoOnly, cleanChannel, cleanLimit)
             }.onSuccess { response ->
                 withContext(Dispatchers.Main) {
-                    val message = response.kuhmannSearchMessage()
+                    val message = response.kuhmannSearchMessage(selectedSource)
                     _state.update {
                         it.copy(
                             kuhmann = it.kuhmann.copy(
                                 searching = false,
+                                source = selectedSource,
                                 results = response.results,
                                 message = message,
-                                lastImportedIds = emptyList()
+                                lastImportedKeys = emptyList()
                             ),
                             lastMessage = message
                         )
@@ -766,8 +864,9 @@ class NoteCastService : Service() {
     }
 
     fun downloadKuhmannMidi(results: List<KuhmannMidiResult>) {
-        val uniqueResults = results.distinctBy { it.id }.filter { it.url.isNotBlank() }
+        val uniqueResults = results.distinctBy { it.stableKey }.filter { it.url.isNotBlank() }
         if (uniqueResults.isEmpty()) return
+            val source = uniqueResults.first().source
         if (!ApsNetworkStatus.canReachInternet(this)) {
             val message = ApsNetworkStatus.userMessage(this)
             _state.update {
@@ -783,7 +882,8 @@ class NoteCastService : Service() {
             it.copy(
                 kuhmann = it.kuhmann.copy(
                     downloading = true,
-                    message = "Importing ${uniqueResults.size} file${if (uniqueResults.size == 1) "" else "s"} from Kuhmann..."
+                    source = source,
+                    message = "Importing ${uniqueResults.size} file${if (uniqueResults.size == 1) "" else "s"} from ${source.displayName}..."
                 )
             )
         }
@@ -791,39 +891,39 @@ class NoteCastService : Service() {
             var imported = 0
             var failed = 0
             var networkFailure = false
-            val importedIds = mutableListOf<Int>()
-            val importedItemsByResultId = mutableMapOf<Int, MidiLibraryItem>()
+            val importedKeys = mutableListOf<String>()
+            val importedItemsByResultKey = mutableMapOf<String, MidiLibraryItem>()
             uniqueResults.forEach { result ->
                 ensureActive()
                 runCatching {
-                    val bytes = downloadKuhmannBytes(result)
+                    val bytes = downloadExternalMidiBytes(result)
                     val item = repository.importMidiBytes(
                         bytes = bytes,
                         displayName = result.filename.ifBlank { "${result.title}.mid" },
                         preferredTitle = result.title,
-                        notePrefix = "External Kuhmann MIDI: ${result.folder}"
+                        notePrefix = result.externalImportNote()
                     )
                     imported++
-                    importedIds += result.id
-                    importedItemsByResultId[result.id] = item
+                    importedKeys += result.stableKey
+                    importedItemsByResultKey[result.stableKey] = item
                 }.onFailure { t ->
                     failed++
                     if (ApsNetworkStatus.isLikelyNetworkFailure(t)) networkFailure = true
-                    logEvent("Kuhmann MIDI download failed id=${result.id} title=${result.title}: ${t.message ?: t::class.java.simpleName}")
+                    logEvent("${result.source.displayName} MIDI download failed key=${result.stableKey} title=${result.title}: ${t.message ?: t::class.java.simpleName}")
                 }
             }
             withContext(Dispatchers.Main) {
                 val message = when {
-                    imported > 0 && failed == 0 -> "Imported $imported file${if (imported == 1) "" else "s"} from Kuhmann."
-                    imported > 0 -> "Imported $imported file${if (imported == 1) "" else "s"} from Kuhmann; $failed failed."
+                    imported > 0 && failed == 0 -> "Imported $imported file${if (imported == 1) "" else "s"} from ${source.displayName}."
+                    imported > 0 -> "Imported $imported file${if (imported == 1) "" else "s"} from ${source.displayName}; $failed failed."
                     networkFailure -> ApsNetworkStatus.userMessage(this@NoteCastService)
-                    else -> "Could not import the selected Kuhmann file${if (failed == 1) "" else "s"}."
+                    else -> "Could not import the selected ${source.displayName} file${if (failed == 1) "" else "s"}."
                 }
                 reloadLibrary(message)
                 val previewItemId = _state.value.playback.currentItemId
                 val importedPlaybackItem = previewItemId
-                    ?.kuhmannPreviewResultId()
-                    ?.let { resultId -> importedItemsByResultId[resultId] }
+                    ?.externalPreviewResultKey()
+                    ?.let { resultKey -> importedItemsByResultKey[resultKey] }
                 if (previewItemId != null && importedPlaybackItem != null) {
                     aliasPlaybackItemId(previewItemId, importedPlaybackItem.id)
                 }
@@ -846,8 +946,9 @@ class NoteCastService : Service() {
                         playback = playback,
                         kuhmann = it.kuhmann.copy(
                             downloading = false,
+                            source = source,
                             message = message,
-                            lastImportedIds = importedIds
+                            lastImportedKeys = importedKeys
                         )
                     )
                 }
@@ -858,7 +959,7 @@ class NoteCastService : Service() {
     fun playKuhmannMidi(result: KuhmannMidiResult) {
         if (result.url.isBlank()) return
         if (midiInputPort == null || !_state.value.connection.connected) {
-            postMessage("Connect to a BLE MIDI device before playing.")
+            postMessage("Connect to a MIDI device before playing.")
             return
         }
         if (!ApsNetworkStatus.canReachInternet(this)) {
@@ -872,8 +973,8 @@ class NoteCastService : Service() {
             return
         }
 
-        val title = result.title.ifBlank { result.filename.ifBlank { "Kuhmann MIDI file" } }
-        val temporaryItemId = "kuhmann-preview-${result.id}-${SystemClock.elapsedRealtime()}"
+        val title = result.title.ifBlank { result.filename.ifBlank { "${result.source.displayName} MIDI file" } }
+        val temporaryItemId = "external-preview-${result.source.key}-${result.id}-${SystemClock.elapsedRealtime()}"
         val generation = playbackGeneration.incrementAndGet()
         val replacingActivePlayback = _state.value.playback.isActive || playbackJob?.isActive == true
         skipRequest = 0
@@ -892,8 +993,9 @@ class NoteCastService : Service() {
                 ),
                 playbackChannels = emptyList(),
                 kuhmann = it.kuhmann.copy(
+                    source = result.source,
                     message = "Preparing $title...",
-                    activePlaybackResultId = result.id
+                    activePlaybackResultKey = result.stableKey
                 ),
                 lastMessage = if (replacingActivePlayback) "Switching to $title..." else "Preparing $title..."
             )
@@ -904,7 +1006,7 @@ class NoteCastService : Service() {
                 withContext(Dispatchers.IO) { sendPanicMessages() }
                 delay(120)
             }
-            runKuhmannPreviewPlayback(result, title, temporaryItemId, generation)
+            runExternalPreviewPlayback(result, title, temporaryItemId, generation)
         }
     }
 
@@ -1261,6 +1363,7 @@ class NoteCastService : Service() {
     }
 
     fun connect(address: String) {
+        refreshAndroidMidiDevices()
         val resolvedAddress = availableConnectionAddress(address) ?: address
         val currentConnection = _state.value.connection
         if (
@@ -1596,7 +1699,12 @@ class NoteCastService : Service() {
         }
         val name = displayNameForMidiDevice(info)
         if (!isAvailableAndroidMidiConnection(connectionId)) {
-            postMessage("$name is not currently attached through Android Bluetooth. Use Scan + Connect, or pair/connect it in Android Bluetooth settings and return to APS NoteCast.")
+            val message = if (isBluetoothMidiConnection(connectionId, info)) {
+                "$name is not currently attached through Android Bluetooth. Use Scan + Connect, or pair/connect it in Android Bluetooth settings and return to APS NoteCast."
+            } else {
+                "$name is not currently attached. Plug it in, then open the adapter list again."
+            }
+            postMessage(message)
             return
         }
         val generation = connectionGeneration.incrementAndGet()
@@ -1623,7 +1731,8 @@ class NoteCastService : Service() {
 
         try {
             midiManager.openDevice(info, { openedDevice ->
-                if (!isCurrentConnectionAttempt(generation, connectionId) || !isBluetoothEnabled()) {
+                val needsBluetooth = isBluetoothMidiConnection(connectionId, info)
+                if (!isCurrentConnectionAttempt(generation, connectionId) || (needsBluetooth && !isBluetoothEnabled())) {
                     runCatching { openedDevice?.close() }
                     return@openDevice
                 }
@@ -1760,14 +1869,20 @@ class NoteCastService : Service() {
                 markMidiConnectionConnected(name, connectionId)
                 return@launch
             }
-            logEvent("$name opened as MIDI, but Android did not report an attached Bluetooth MIDI link.")
+            val needsBluetooth = isBluetoothMidiConnection(connectionId, connectedMidiDeviceInfo)
+            val message = if (needsBluetooth) {
+                "$name opened, but Android did not finish attaching the BLE MIDI link. Power-cycle the adapter, then scan or connect again."
+            } else {
+                "$name opened, but Android no longer reports it as attached. Unplug it, plug it back in, then connect again."
+            }
+            logEvent("$name opened as MIDI, but verification failed. needsBluetooth=$needsBluetooth")
             closeMidiConnection()
             _state.update {
                 it.copy(
-                    connection = rememberedConnection(message = "$name opened, but Android did not finish attaching the BLE MIDI link. Power-cycle the adapter, then scan or connect again."),
+                    connection = rememberedConnection(message = message),
                     playback = PlaybackUiState(),
                     playbackChannels = emptyList(),
-                    lastMessage = "$name BLE MIDI attach did not finish."
+                    lastMessage = if (needsBluetooth) "$name BLE MIDI attach did not finish." else "$name is no longer attached."
                 )
             }
             updatePlaybackSurfaces(updateNotification = true)
@@ -1802,16 +1917,20 @@ class NoteCastService : Service() {
 
     @SuppressLint("MissingPermission")
     private fun isConnectionHealthy(connectionId: String): Boolean {
-        refreshBluetoothState()
-        if (!isBluetoothEnabled()) return false
         if (midiInputPort == null || midiDevice == null) return false
+        val openedInfo = connectedMidiDeviceInfo
+        val needsBluetooth = isBluetoothMidiConnection(connectionId, openedInfo)
+        if (needsBluetooth) {
+            refreshBluetoothState()
+            if (!isBluetoothEnabled()) return false
+        }
         refreshAndroidMidiDevices()
-        val openedConnectionId = connectedMidiDeviceInfo?.let { midiConnectionId(it) }
+        val openedConnectionId = openedInfo?.let { midiConnectionId(it) }
         val midiDevicePresent = midiDevicesByConnectionId.keys.any { availableConnectionId ->
             sameConnectionTarget(availableConnectionId, connectionId) ||
                 sameConnectionTarget(availableConnectionId, openedConnectionId)
         }
-        return midiDevicePresent && isBluetoothMidiConnectionAttached(connectionId, connectedMidiDeviceInfo)
+        return midiDevicePresent && (!needsBluetooth || isBluetoothMidiConnectionAttached(connectionId, openedInfo))
     }
 
     private fun isBluetoothMidiConnection(connectionId: String, info: MidiDeviceInfo?): Boolean {
@@ -1992,7 +2111,7 @@ class NoteCastService : Service() {
                 connection = rememberedConnection(message = "$message Reconnecting for ${timeoutSeconds}s..."),
                 playback = PlaybackUiState(),
                 playbackChannels = emptyList(),
-                kuhmann = it.kuhmann.copy(activePlaybackResultId = null),
+                kuhmann = it.kuhmann.copy(activePlaybackResultKey = null),
                 lastMessage = "$deviceName connection lost."
             )
         }
@@ -2067,6 +2186,7 @@ class NoteCastService : Service() {
 
     fun resumePlayback() {
         if (!_state.value.playback.isPaused) return
+        sustainPedalRestoreRequests.incrementAndGet()
         _state.update {
             it.copy(
                 playback = it.playback.copy(mode = PlaybackMode.Playing),
@@ -2163,7 +2283,7 @@ class NoteCastService : Service() {
 
     fun startRecording(title: String) {
         if (!_state.value.connection.connected || midiOutputPort == null) {
-            postMessage("Connect to a BLE MIDI device with an output port before recording.")
+            postMessage("Connect to a MIDI device with an output port before recording.")
             return
         }
         if (_state.value.recording.isRecording || recordingCountdownJob?.isActive == true) return
@@ -2216,7 +2336,7 @@ class NoteCastService : Service() {
                         isRecording = true,
                         isCountingDown = false,
                         title = cleanTitle,
-                        message = "Waiting for BLE MIDI input..."
+                                message = "Waiting for MIDI input..."
                     ),
                     lastMessage = "Recording $cleanTitle."
                 )
@@ -2224,7 +2344,7 @@ class NoteCastService : Service() {
         }.onFailure {
             _state.update { state ->
                 state.copy(
-                    recording = RecordingUiState(message = "Could not listen to BLE MIDI input."),
+                    recording = RecordingUiState(message = "Could not listen to MIDI input."),
                     lastMessage = "Recording could not start."
                 )
             }
@@ -2316,7 +2436,7 @@ class NoteCastService : Service() {
                     it.copy(
                         playback = PlaybackUiState(),
                         playbackChannels = emptyList(),
-                        kuhmann = it.kuhmann.copy(activePlaybackResultId = null),
+                        kuhmann = it.kuhmann.copy(activePlaybackResultKey = null),
                         lastMessage = if (userRequested) "Playback stopped." else it.lastMessage
                     )
                 }
@@ -2356,7 +2476,7 @@ class NoteCastService : Service() {
 
     private fun playItems(items: List<MidiLibraryItem>, playlistName: String?) {
         if (midiInputPort == null || !_state.value.connection.connected) {
-            postMessage("Connect to a BLE MIDI device before playing.")
+            postMessage("Connect to a MIDI device before playing.")
             return
         }
         if (items.isEmpty()) {
@@ -2383,7 +2503,7 @@ class NoteCastService : Service() {
                     durationUs = firstItem.durationUs
                 ),
                 playbackChannels = emptyList(),
-                kuhmann = it.kuhmann.copy(activePlaybackResultId = null),
+                kuhmann = it.kuhmann.copy(activePlaybackResultKey = null),
                 lastMessage = if (replacingActivePlayback) "Switching to ${firstItem.title}..." else "Preparing ${firstItem.title}..."
             )
         }
@@ -2511,7 +2631,7 @@ class NoteCastService : Service() {
         }
     }
 
-    private suspend fun runKuhmannPreviewPlayback(
+    private suspend fun runExternalPreviewPlayback(
         result: KuhmannMidiResult,
         title: String,
         temporaryItemId: String,
@@ -2526,7 +2646,7 @@ class NoteCastService : Service() {
                 startForegroundForPlayback(title)
             }
 
-            val bytes = withContext(Dispatchers.IO) { downloadKuhmannBytes(result) }
+            val bytes = withContext(Dispatchers.IO) { downloadExternalMidiBytes(result) }
             coroutineContext.ensureActive()
             val parsed = MidiFileParser.parse(bytes, result.filename.ifBlank { title })
             val prepared = prepareSequence(parsed, appSettings, instrumentOverrides = emptyMap())
@@ -2538,6 +2658,7 @@ class NoteCastService : Service() {
                     sequence = parsed,
                     channels = channels,
                     instrumentOverrides = emptyMap(),
+                    foldChannel2IntoPianoChannel = appSettings.foldChannel2IntoPianoChannel,
                     foldPedalsIntoPianoChannel = appSettings.foldPedalsIntoPianoChannel
                 )
             )
@@ -2548,7 +2669,7 @@ class NoteCastService : Service() {
                 storedFileName = "",
                 durationUs = prepared.durationUs,
                 importedAtMs = System.currentTimeMillis(),
-                notes = "External Kuhmann MIDI preview"
+                notes = "External ${result.source.displayName} MIDI preview"
             )
 
             coroutineContext.ensureActive()
@@ -2567,8 +2688,9 @@ class NoteCastService : Service() {
                         ),
                         playbackChannels = playbackData.channels,
                         kuhmann = it.kuhmann.copy(
+                            source = result.source,
                             message = "Playing ${item.title}.",
-                            activePlaybackResultId = result.id
+                            activePlaybackResultKey = result.stableKey
                         ),
                         lastMessage = "Playing ${item.title}"
                     )
@@ -2601,7 +2723,7 @@ class NoteCastService : Service() {
                             it.copy(
                                 playback = PlaybackUiState(mode = PlaybackMode.Error, error = message),
                                 playbackChannels = emptyList(),
-                                kuhmann = it.kuhmann.copy(message = message, activePlaybackResultId = null),
+                                kuhmann = it.kuhmann.copy(message = message, activePlaybackResultKey = null),
                                 lastMessage = message
                             )
                         }
@@ -2618,7 +2740,7 @@ class NoteCastService : Service() {
                         it.copy(
                             playback = PlaybackUiState(mode = PlaybackMode.Error, error = message),
                             playbackChannels = emptyList(),
-                            kuhmann = it.kuhmann.copy(message = message, activePlaybackResultId = null),
+                            kuhmann = it.kuhmann.copy(message = message, activePlaybackResultKey = null),
                             lastMessage = message
                         )
                     }
@@ -2631,12 +2753,12 @@ class NoteCastService : Service() {
             withContext(Dispatchers.Main) {
                 if (!isCurrentPlayback(generation)) return@withContext
                 if (completedNormally) {
-                    val message = "External Kuhmann playback finished."
+                    val message = "External ${result.source.displayName} playback finished."
                     _state.update {
                         it.copy(
                             playback = PlaybackUiState(),
                             playbackChannels = emptyList(),
-                            kuhmann = it.kuhmann.copy(message = message, activePlaybackResultId = null),
+                            kuhmann = it.kuhmann.copy(message = message, activePlaybackResultKey = null),
                             lastMessage = message
                         )
                     }
@@ -2672,11 +2794,26 @@ class NoteCastService : Service() {
             playbackItemAliases[itemId] ?: itemId
         }
 
-    private fun String.kuhmannPreviewResultId(): Int? {
-        val prefix = "kuhmann-preview-"
-        if (!startsWith(prefix)) return null
-        val idText = removePrefix(prefix).substringBefore('-', missingDelimiterValue = "")
-        return idText.toIntOrNull()
+    private fun externalMidiSourceForKey(key: String): ExternalMidiSource? =
+        _state.value.kuhmann.availableSources.firstOrNull { it.key == key }
+            ?: ExternalMidiSource.defaultForKey(key)
+
+    private fun String.externalPreviewResultKey(): String? {
+        val externalPrefix = "external-preview-"
+        if (startsWith(externalPrefix)) {
+            val parts = removePrefix(externalPrefix).split('-', limit = 3)
+            val sourceKey = parts.getOrNull(0).orEmpty()
+            val id = parts.getOrNull(1)?.toIntOrNull() ?: return null
+            val source = externalMidiSourceForKey(sourceKey) ?: return null
+            return "${source.key}:$id"
+        }
+        val legacyKuhmannPrefix = "kuhmann-preview-"
+        if (startsWith(legacyKuhmannPrefix)) {
+            val idText = removePrefix(legacyKuhmannPrefix).substringBefore('-', missingDelimiterValue = "")
+            val id = idText.toIntOrNull() ?: return null
+            return "${ExternalMidiSource.Kuhmann.key}:$id"
+        }
+        return null
     }
 
     private suspend fun loadPreparedSequence(
@@ -2695,6 +2832,7 @@ class NoteCastService : Service() {
             excludeDrumChannelFromTranspose = settings.excludeDrumChannelFromTranspose,
             channelSignature = settings.channelControls.cacheSignature(),
             instrumentOverrideSignature = settings.instrumentOverrideSignatureForSong(item.id),
+            foldChannel2IntoPianoChannel = settings.foldChannel2IntoPianoChannel,
             foldPedalsIntoPianoChannel = settings.foldPedalsIntoPianoChannel
         )
         synchronized(sequenceCacheLock) { preparedSequenceCache[key] }?.let { cached ->
@@ -2712,6 +2850,7 @@ class NoteCastService : Service() {
                 sequence = parsed,
                 channels = channels,
                 instrumentOverrides = instrumentOverrides,
+                foldChannel2IntoPianoChannel = settings.foldChannel2IntoPianoChannel,
                 foldPedalsIntoPianoChannel = settings.foldPedalsIntoPianoChannel
             )
         )
@@ -2875,16 +3014,18 @@ class NoteCastService : Service() {
         outputChannelForSourceChannel(
             sourceChannel = sourceChannel,
             channelInfo = _state.value.playbackChannels.firstOrNull { it.channel == sourceChannel },
-            instrumentOverrides = appSettings.instrumentOverridesForSong(_state.value.playback.currentItemId)
+            instrumentOverrides = appSettings.instrumentOverridesForSong(_state.value.playback.currentItemId),
+            foldChannel2IntoPianoChannel = appSettings.foldChannel2IntoPianoChannel
         )
 
     private fun outputChannelForSourceChannel(
         sourceChannel: Int,
         channelInfo: PlaybackChannelInfo?,
-        instrumentOverrides: Map<Int, Int>
+        instrumentOverrides: Map<Int, Int>,
+        foldChannel2IntoPianoChannel: Boolean
     ): Int {
         if (sourceChannel !in 1..16) return sourceChannel
-        if (sourceChannel == 1 || sourceChannel == 2) return 1
+        if (sourceChannel == 1 || (sourceChannel == 2 && foldChannel2IntoPianoChannel)) return 1
         val overrideProgram = instrumentOverrides[sourceChannel]
         if (overrideProgram != null) {
             return if (GeneralMidi.isAcousticGrandPianoProgram(overrideProgram)) 1 else sourceChannel
@@ -2919,6 +3060,7 @@ class NoteCastService : Service() {
         sequence: MidiFileParser.MidiSequence,
         channels: List<PlaybackChannelInfo>,
         instrumentOverrides: Map<Int, Int>,
+        foldChannel2IntoPianoChannel: Boolean,
         foldPedalsIntoPianoChannel: Boolean
     ): PedalRouting {
         val pianoOutputChannels = channels
@@ -2927,7 +3069,8 @@ class NoteCastService : Service() {
                 outputChannelForSourceChannel(
                     sourceChannel = channelInfo.channel,
                     channelInfo = channelInfo,
-                    instrumentOverrides = instrumentOverrides
+                    instrumentOverrides = instrumentOverrides,
+                    foldChannel2IntoPianoChannel = foldChannel2IntoPianoChannel
                 )
             }
             .filter { channel -> channel in 1..16 }
@@ -3089,41 +3232,84 @@ class NoteCastService : Service() {
     private fun playbackMessagesForEvent(
         data: ByteArray,
         pedalRouting: PedalRouting,
-        rollSustainNoteState: RollSustainNoteState
+        rollSustainNoteState: RollSustainNoteState,
+        binaryPedalValueState: BinaryPedalValueState
     ): List<ByteArray> {
         if (!data.isPedalControllerMessage()) return listOf(data)
+        val rollNoteEnabled = appSettings.pedalOutputMode == PedalOutputMode.StandardControllersAndRollNote18
+        return routedPedalControllerMessages(data, pedalRouting).flatMap { message ->
+            playbackPedalMessages(message, rollSustainNoteState, binaryPedalValueState, rollNoteEnabled)
+        }
+    }
+
+    private fun routedPedalControllerMessages(
+        data: ByteArray,
+        pedalRouting: PedalRouting
+    ): List<ByteArray> {
         val sourceChannel = data.midiChannelNumber() ?: return listOf(data)
         val outputChannels = pedalRouting.sourceChannelToOutputChannels[sourceChannel]
             .orEmpty()
             .filter { outputChannel -> outputChannel in 1..16 }
             .distinct()
-        val rollNoteEnabled = appSettings.pedalOutputMode == PedalOutputMode.StandardControllersAndRollNote18
-        if (outputChannels.isEmpty()) {
-            return buildList {
-                add(data)
-                addAll(rollSustainNoteState.messagesFor(data, rollNoteEnabled))
-            }
-        }
-
-        if (pedalRouting.replaceSourceChannel) {
-            return buildList {
-                outputChannels.forEach { outputChannel ->
-                    val routedData = data.withMidiChannel(outputChannel)
-                    add(routedData)
-                    addAll(rollSustainNoteState.messagesFor(routedData, rollNoteEnabled))
-                }
-            }
-        }
-
         return buildList {
-            add(data)
-            outputChannels.forEach { outputChannel ->
-                if (outputChannel != sourceChannel) {
-                    val routedData = data.withMidiChannel(outputChannel)
-                    add(routedData)
-                    addAll(rollSustainNoteState.messagesFor(routedData, rollNoteEnabled))
+            if (outputChannels.isEmpty()) {
+                add(data)
+            } else if (pedalRouting.replaceSourceChannel) {
+                outputChannels.forEach { outputChannel ->
+                    add(data.withMidiChannel(outputChannel))
+                }
+            } else {
+                add(data)
+                outputChannels.forEach { outputChannel ->
+                    if (outputChannel != sourceChannel) {
+                        add(data.withMidiChannel(outputChannel))
+                    }
                 }
             }
+        }
+    }
+
+    private fun playbackPedalMessages(
+        controllerMessage: ByteArray,
+        rollSustainNoteState: RollSustainNoteState,
+        binaryPedalValueState: BinaryPedalValueState,
+        rollNoteEnabled: Boolean
+    ): List<ByteArray> = buildList {
+        val binaryEnabled = appSettings.pedalValueMode == PedalValueMode.Binary
+        binaryPedalValueState.messagesFor(controllerMessage, binaryEnabled).forEach { message ->
+            add(message)
+            addAll(rollSustainNoteState.messagesFor(message, rollNoteEnabled))
+        }
+    }
+
+    private fun primeBinaryPedalValueState(
+        sequence: MidiFileParser.MidiSequence,
+        progressUs: Long,
+        pedalRouting: PedalRouting,
+        binaryPedalValueState: BinaryPedalValueState
+    ) {
+        if (appSettings.pedalValueMode != PedalValueMode.Binary) return
+        sequence.events.asSequence()
+            .takeWhile { event -> event.timeUs <= progressUs }
+            .filter { event -> event.data.isPedalControllerMessage() }
+            .forEach { event ->
+                routedPedalControllerMessages(event.data, pedalRouting).forEach { message ->
+                    binaryPedalValueState.messagesFor(message, enabled = true)
+                }
+            }
+    }
+
+    private fun sustainPedalRestoreMessages(
+        rollSustainNoteState: RollSustainNoteState,
+        binaryPedalValueState: BinaryPedalValueState
+    ): List<ByteArray> {
+        if (appSettings.pedalValueMode != PedalValueMode.Binary) return emptyList()
+        val sustainMessages = binaryPedalValueState.pressedControllerMessages(64)
+        if (sustainMessages.isEmpty()) return emptyList()
+        val rollNoteEnabled = appSettings.pedalOutputMode == PedalOutputMode.StandardControllersAndRollNote18
+        rollSustainNoteState.clear()
+        return sustainMessages.flatMap { message ->
+            listOf(message) + rollSustainNoteState.messagesFor(message, rollNoteEnabled)
         }
     }
 
@@ -3162,11 +3348,28 @@ class NoteCastService : Service() {
         var pauseStartedNs = 0L
         var eventIndex = 0
         val rollSustainNoteState = RollSustainNoteState()
+        val binaryPedalValueState = BinaryPedalValueState()
+        var handledSustainPedalRestoreRequest = sustainPedalRestoreRequests.get()
+
+        fun sendCurrentSustainPedalState() {
+            sustainPedalRestoreMessages(rollSustainNoteState, binaryPedalValueState).forEach { message ->
+                sendPlaybackMidiData(message, System.nanoTime())
+            }
+        }
+
+        fun restoreSustainPedalAfterResumeIfRequested() {
+            val request = sustainPedalRestoreRequests.get()
+            if (request == handledSustainPedalRestoreRequest) return
+            handledSustainPedalRestoreRequest = request
+            sendCurrentSustainPedalState()
+        }
 
         suspend fun applySeek(progressUs: Long) {
             val cleanProgressUs = progressUs.coerceIn(0L, sequence.durationUs)
             sendPanicMessages()
             rollSustainNoteState.clear()
+            binaryPedalValueState.clear()
+            primeBinaryPedalValueState(sequence, cleanProgressUs, pedalRouting, binaryPedalValueState)
             sendProgramOverridesForSong(item.id)
             eventIndex = sequence.events.indexOfFirst { it.timeUs >= cleanProgressUs }.let { index ->
                 if (index < 0) sequence.events.size else index
@@ -3187,6 +3390,7 @@ class NoteCastService : Service() {
                 }
                 updatePlaybackSurfaces(updateNotification = true)
             }
+            if (!_state.value.playback.isPaused) sendCurrentSustainPedalState()
         }
 
         playback@ while (true) {
@@ -3214,6 +3418,7 @@ class NoteCastService : Service() {
                         pauseOffsetNs += System.nanoTime() - pauseStartedNs
                         pauseStartedNs = 0L
                     }
+                    restoreSustainPedalAfterResumeIfRequested()
                     val targetNs = startNs + event.timeUs * 1_000L + pauseOffsetNs
                     val scheduleAheadNs = scheduleAheadNsForEvent(event.data)
                     val sleepNs = targetNs - scheduleAheadNs - System.nanoTime()
@@ -3228,7 +3433,7 @@ class NoteCastService : Service() {
                 if (_state.value.playback.isPaused) continue@loop
                 val targetNs = startNs + event.timeUs * 1_000L + pauseOffsetNs
                 var sendInterrupted = false
-                for (message in playbackMessagesForEvent(event.data, pedalRouting, rollSustainNoteState)) {
+                for (message in playbackMessagesForEvent(event.data, pedalRouting, rollSustainNoteState, binaryPedalValueState)) {
                     val data = applyLiveVolume(message) ?: continue
                     val sendTimestampNs = if (scheduleAheadNsForEvent(data) == 0L) System.nanoTime() else targetNs
                     if (!sendPlaybackMidiData(data, sendTimestampNs)) {
@@ -3280,6 +3485,7 @@ class NoteCastService : Service() {
     }
 
     private data class KuhmannSearchNetworkKey(
+        val source: ExternalMidiSource,
         val query: String,
         val format: Int?,
         val channel: Int?,
@@ -3290,9 +3496,10 @@ class NoteCastService : Service() {
 
     private data class KuhmannSearchResponse(val count: Int, val results: List<KuhmannMidiResult>)
 
-    private fun fetchKuhmannSearchResults(query: String, format: Int?, pianoOnly: Boolean, channel: Int?, limit: Int): KuhmannSearchResponse {
+    private fun fetchKuhmannSearchResults(source: ExternalMidiSource, query: String, format: Int?, pianoOnly: Boolean, channel: Int?, limit: Int): KuhmannSearchResponse {
         val requestLimit = KUHMANN_SEARCH_MAX_LIMIT
         val cacheKey = KuhmannSearchNetworkKey(
+            source = source,
             query = query.trim(),
             format = format,
             channel = channel,
@@ -3310,11 +3517,11 @@ class NoteCastService : Service() {
     private fun fetchKuhmannRawSearchResults(cacheKey: KuhmannSearchNetworkKey): KuhmannRawSearchResponse {
         val params = buildList {
             if (cacheKey.query.isNotBlank()) add("q=${cacheKey.query.urlEncoded()}")
-            if (cacheKey.format != null) add("format=${cacheKey.format}")
-            if (cacheKey.channel != null) add("channel=${cacheKey.channel}")
+            if (cacheKey.source.supportsFormatFilter && cacheKey.format != null) add("format=${cacheKey.format}")
+            if (cacheKey.source.supportsChannelFilter && cacheKey.channel != null) add("channel=${cacheKey.channel}")
             add("limit=${cacheKey.requestLimit}")
         }
-        val response = httpGetText(URL("$KUHMANN_SEARCH_URL?${params.joinToString("&")}"))
+        val response = httpGetText(URL(cacheKey.source.searchUrl.withQueryParams(params)))
         val root = JSONObject(response)
         if (!root.optBoolean("ok", false)) {
             throw IOException(root.optString("error", "Search request was not accepted."))
@@ -3326,7 +3533,7 @@ class NoteCastService : Service() {
                 val obj = resultsArray.optJSONObject(index) ?: continue
                 val id = obj.optInt("id", -1)
                 val url = obj.optString("url")
-                val title = obj.optString("title", obj.optString("filename", "External Kuhmann MIDI file"))
+                val title = obj.optString("title", obj.optString("filename", "External ${cacheKey.source.displayName} MIDI file"))
                 if (id < 0 || url.isBlank()) continue
                 val channelsArray = obj.optJSONArray("channels")
                 val channels = buildList {
@@ -3337,8 +3544,20 @@ class NoteCastService : Service() {
                         }
                     }
                 }
+                val noteChannels = obj.optChannelList(
+                    "note_channels",
+                    "note_event_channels",
+                    "note_channels_by_event",
+                    "note_event_counts_by_channel"
+                )
+                val pedalOnlyChannels = obj.optChannelList(
+                    "pedal_only_channels",
+                    "pedal_controller_only_channels",
+                    "controller_only_pedal_channels"
+                )
                 add(
                     KuhmannMidiResult(
+                        source = cacheKey.source,
                         id = id,
                         title = title,
                         folder = obj.optString("folder"),
@@ -3348,17 +3567,80 @@ class NoteCastService : Service() {
                         midiFormat = if (obj.has("midi_format") && !obj.isNull("midi_format")) obj.optInt("midi_format") else null,
                         channelCount = obj.optInt("channel_count", channels.size),
                         channels = channels,
+                        noteChannels = noteChannels,
+                        pedalOnlyChannels = pedalOnlyChannels,
                         fileSize = obj.optLong("file_size", 0L),
-                        sha256 = obj.optString("sha256")
+                        sha256 = obj.optString("sha256"),
+                        sourceName = obj.optString("source", cacheKey.source.displayName),
+                        composer = obj.optString("composer"),
+                        instrument = obj.optString("instrument"),
+                        style = obj.optString("style"),
+                        opus = obj.optString("opus"),
+                        license = obj.optString("license"),
+                        licenseUrl = obj.optString("license_url"),
+                        maintainer = obj.optString("maintainer"),
+                        sourceUrl = obj.optString("source_url"),
+                        ftpUrl = obj.optString("ftp_url")
                     )
                 )
             }
         }
-        return KuhmannRawSearchResponse(count = root.optInt("count", results.size), results = results)
+        return KuhmannRawSearchResponse(
+            count = root.optInt("count", results.size),
+            results = results.map { result -> result.withDownloadedChannelAnalysisIfNeeded() }
+        )
     }
 
-    private fun cachedKuhmannSearchResults(query: String, format: Int?, pianoOnly: Boolean, channel: Int?, limit: Int): KuhmannSearchResponse? {
+    private fun JSONObject.optChannelList(vararg names: String): List<Int> {
+        names.forEach { name ->
+            optJSONArray(name)?.let { array ->
+                return buildList {
+                    for (index in 0 until array.length()) {
+                        val value = array.optInt(index, -1)
+                        if (value in 1..16) add(value)
+                    }
+                }.distinct().sorted()
+            }
+            optJSONObject(name)?.let { obj ->
+                return buildList {
+                    val keys = obj.keys()
+                    while (keys.hasNext()) {
+                        val key = keys.next()
+                        val channel = key.toIntOrNull()
+                        val count = obj.optInt(key, 0)
+                        if (channel != null && channel in 1..16 && count > 0) add(channel)
+                    }
+                }.distinct().sorted()
+            }
+        }
+        return emptyList()
+    }
+
+    private fun KuhmannMidiResult.withDownloadedChannelAnalysisIfNeeded(): KuhmannMidiResult {
+        if (!needsDownloadedChannelAnalysis()) return this
+        return runCatching {
+            val parsed = MidiFileParser.parse(downloadExternalMidiBytes(this), filename)
+            copy(
+                noteChannels = parsed.pedalAnalysis.noteEventCountsByChannel.keys.sorted(),
+                pedalOnlyChannels = parsed.pedalAnalysis.pedalOnlyChannels.sorted()
+            )
+        }.getOrElse {
+            this
+        }
+    }
+
+    private fun KuhmannMidiResult.needsDownloadedChannelAnalysis(): Boolean {
+        if (noteChannels.isNotEmpty() || pedalOnlyChannels.isNotEmpty()) return false
+        if (hasKnownNonPianoInstrumentation()) return false
+        val cleanChannels = channels.cleanMidiChannels()
+        if (cleanChannels.isEmpty() || 3 !in cleanChannels) return false
+        if (cleanChannels.any { it !in 1..3 }) return false
+        return channelCount <= 3 || channelCount == cleanChannels.size
+    }
+
+    private fun cachedKuhmannSearchResults(source: ExternalMidiSource, query: String, format: Int?, pianoOnly: Boolean, channel: Int?, limit: Int): KuhmannSearchResponse? {
         val cacheKey = KuhmannSearchNetworkKey(
+            source = source,
             query = query.trim(),
             format = format,
             channel = channel,
@@ -3380,29 +3662,81 @@ class NoteCastService : Service() {
         )
     }
 
-    private fun KuhmannSearchResponse.kuhmannSearchMessage(): String {
+    private fun KuhmannSearchResponse.kuhmannSearchMessage(source: ExternalMidiSource): String {
+        val suffix = source.foundMessageSuffix
+            .takeIf { it.isNotBlank() }
+            ?.let { " $it" }
+            .orEmpty()
         return if (results.isEmpty()) {
-            "No external Kuhmann MIDI files matched."
+            "No ${source.resultLabel}s matched."
         } else {
-            "Found ${results.size} of $count external Kuhmann MIDI file${if (count == 1) "" else "s"}. Personal/noncommercial unless permitted."
+            "Found ${results.size} of $count ${source.resultLabel}${if (count == 1) "" else "s"}.$suffix"
         }
     }
 
     private fun KuhmannMidiResult.isPianoOnlyCandidate(): Boolean {
-        val cleanChannels = channels.distinct().sorted()
-        val reportedCount = if (channelCount > 0) channelCount else cleanChannels.size
-        return reportedCount <= 3 && (cleanChannels.isEmpty() || cleanChannels.all { it in 1..3 })
+        if (hasKnownNonPianoInstrumentation()) return false
+        val cleanChannels = channels.cleanMidiChannels()
+        val cleanNoteChannels = noteChannels.cleanMidiChannels()
+        val cleanPedalOnlyChannels = pedalOnlyChannels.cleanMidiChannels()
+        if (cleanNoteChannels.isNotEmpty()) {
+            if (cleanNoteChannels.any { it !in 1..2 }) return false
+            val nonNoteChannels = cleanChannels.filterNot { it in cleanNoteChannels }
+            return nonNoteChannels.all { channel ->
+                channel in 1..2 || (channel == 3 && channel in cleanPedalOnlyChannels)
+            }
+        }
+        if (cleanChannels.isEmpty()) return false
+        if (cleanPedalOnlyChannels.any { it !in 1..3 }) return false
+        val musicalChannels = cleanChannels.filterNot { it in cleanPedalOnlyChannels }
+        return musicalChannels.isNotEmpty() && musicalChannels.all { it in 1..2 }
     }
 
     private fun KuhmannMidiResult.isEnsembleCandidate(): Boolean {
-        val cleanChannels = channels.distinct()
-        val reportedCount = if (channelCount > 0) channelCount else cleanChannels.size
-        return reportedCount > 1 && !isPianoOnlyCandidate()
+        return !isPianoOnlyCandidate()
     }
 
-    private fun downloadKuhmannBytes(result: KuhmannMidiResult): ByteArray {
+    private fun KuhmannMidiResult.hasKnownNonPianoInstrumentation(): Boolean {
+        if (!source.useInstrumentPianoFilter || instrument.isBlank()) return false
+        return instrument
+            .split(',', '/', ';', '&')
+            .flatMap { segment -> segment.split(Regex("\\band\\b", RegexOption.IGNORE_CASE)) }
+            .map { it.trim() }
+            .filter { it.isNotBlank() }
+            .any { segment -> !segment.isLikelyKeyboardPianoLabel() }
+    }
+
+    private fun String.isLikelyKeyboardPianoLabel(): Boolean {
+        val clean = lowercase()
+        return "piano" in clean || "harpsichord" in clean || "clavier" in clean
+    }
+
+    private fun List<Int>.cleanMidiChannels(): List<Int> =
+        filter { it in 1..16 }.distinct().sorted()
+
+    private fun KuhmannMidiResult.externalImportNote(): String {
+        val details = if (source.isKuhmann) {
+            listOf(folder)
+        } else {
+            listOfNotNull(
+                folder.takeIf { it.isNotBlank() },
+                composer.takeIf { it.isNotBlank() }?.let { "Composer: $it" },
+                instrument.takeIf { it.isNotBlank() }?.let { "Instrument: $it" },
+                style.takeIf { it.isNotBlank() }?.let { "Style: $it" },
+                opus.takeIf { it.isNotBlank() }?.let { "Opus: $it" },
+                license.takeIf { it.isNotBlank() }?.let { "License: $it" },
+                sourceUrl.takeIf { it.isNotBlank() }?.let { "Source: $it" }
+            )
+        }.filter { it.isNotBlank() }
+        return buildString {
+            append("External ${source.displayName} MIDI")
+            if (details.isNotEmpty()) append(": ").append(details.joinToString(" | "))
+        }
+    }
+
+    private fun downloadExternalMidiBytes(result: KuhmannMidiResult): ByteArray {
         val url = URL(result.url)
-        if (url.protocol != "https" || !url.host.endsWith("alexanderpeppe.com")) {
+        if (url.protocol != "https" || !result.source.allowsDownloadHost(url.host)) {
             throw IOException("Unexpected download host.")
         }
         val connection = (url.openConnection() as HttpURLConnection).apply {
@@ -3410,7 +3744,7 @@ class NoteCastService : Service() {
             readTimeout = 30_000
             instanceFollowRedirects = true
             setRequestProperty("Accept", "audio/midi, audio/x-midi, application/octet-stream")
-            setRequestProperty("User-Agent", "APS NoteCast/${_state.value.kuhmann.query.ifBlank { "kuhmann" }}")
+            setRequestProperty("User-Agent", "APS NoteCast/${result.source.key}/${_state.value.kuhmann.query.ifBlank { result.source.key }}")
         }
         return try {
             val status = connection.responseCode
@@ -3466,6 +3800,27 @@ class NoteCastService : Service() {
         MessageDigest.getInstance("SHA-256")
             .digest(this)
             .joinToString("") { "%02x".format(it.toInt() and 0xff) }
+
+    private fun ExternalMidiSource.allowsDownloadHost(rawHost: String): Boolean {
+        val host = rawHost.trim().lowercase(Locale.US)
+        val allowedHosts = allowedDownloadHosts.ifEmpty {
+            listOfNotNull(runCatching { URL(searchUrl).host.lowercase(Locale.US) }.getOrNull())
+        }
+        return allowedHosts.any { allowed ->
+            val normalized = allowed.trim().removePrefix("*.").lowercase(Locale.US)
+            normalized.isNotBlank() && (host == normalized || host.endsWith(".$normalized"))
+        }
+    }
+
+    private fun String.withQueryParams(params: List<String>): String {
+        if (params.isEmpty()) return this
+        val separator = when {
+            endsWith("?") || endsWith("&") -> ""
+            contains("?") -> "&"
+            else -> "?"
+        }
+        return "$this$separator${params.joinToString("&")}"
+    }
 
     private fun String.urlEncoded(): String = URLEncoder.encode(this, Charsets.UTF_8.name())
 
@@ -3568,13 +3923,21 @@ class NoteCastService : Service() {
         val devices = midiManager.devices
             .filter { info ->
                 info.ports.any { it.type == MidiDeviceInfo.PortInfo.TYPE_INPUT } &&
-                    (info.type == MidiDeviceInfo.TYPE_BLUETOOTH || nameLooksLikeMidi(midiDeviceName(info))) &&
+                    isDisplayableAndroidMidiDevice(info) &&
                     !isDeviceHidden(midiConnectionId(info))
             }
         midiDevicesByConnectionId.clear()
         devices.forEach { info -> midiDevicesByConnectionId[midiConnectionId(info)] = info }
         _state.update { it.copy(bleDevices = mergedDeviceList()) }
     }
+
+    private fun isDisplayableAndroidMidiDevice(info: MidiDeviceInfo): Boolean =
+        when (info.type) {
+            MidiDeviceInfo.TYPE_BLUETOOTH,
+            MidiDeviceInfo.TYPE_USB -> true
+            MidiDeviceInfo.TYPE_VIRTUAL -> nameLooksLikeMidi(midiDeviceName(info))
+            else -> nameLooksLikeMidi(midiDeviceName(info))
+        }
 
     private fun midiConnectionId(info: MidiDeviceInfo): String {
         val bluetoothAddress = midiBluetoothDevice(info)?.let { device ->
@@ -3766,7 +4129,12 @@ class NoteCastService : Service() {
                 standardBleMidi = info.type == MidiDeviceInfo.TYPE_BLUETOOTH,
                 connectable = isAvailableAndroidMidiConnection(connectionId),
                 added = isKnownDeviceAddress(connectionId),
-                source = if (info.type == MidiDeviceInfo.TYPE_BLUETOOTH) "Android Bluetooth MIDI" else "Android MIDI",
+                source = when (info.type) {
+                    MidiDeviceInfo.TYPE_BLUETOOTH -> "Android Bluetooth MIDI"
+                    MidiDeviceInfo.TYPE_USB -> "USB MIDI"
+                    MidiDeviceInfo.TYPE_VIRTUAL -> "Virtual MIDI"
+                    else -> "Android MIDI"
+                },
                 detail = midiDeviceDetail(info)
             )
         }

@@ -4,9 +4,9 @@
 
 Use a short, simple piano MIDI file before testing dense or expressive files. A C-major scale MIDI file is ideal because it makes stuck notes, missing note-off events, and timing problems obvious.
 
-## BLE MIDI connection integrity test
+## MIDI connection integrity test
 
-Use this sequence when validating a new build against one or more real WIDI or compatible BLE MIDI adapters. Normal users do not need to forget devices before every use; the forget/remove steps are only for clean-slate testing.
+Use this sequence when validating a new build against one or more real WIDI, compatible BLE MIDI, or Android USB MIDI adapters. Normal users do not need to forget devices before every use; the forget/remove steps are only for clean-slate testing.
 
 ### Setup
 
@@ -21,13 +21,13 @@ Use this sequence when validating a new build against one or more real WIDI or c
 
 1. Stop any active playback in APS NoteCast.
 2. In Android Bluetooth settings, open each test adapter and choose Forget or Unpair.
-3. In APS NoteCast, open the BLE MIDI connection panel.
+3. In APS NoteCast, open the MIDI connection panel.
 4. Remove each saved MIDI adapter from APS NoteCast.
 5. Power-cycle each adapter.
 
 ### First adapter
 
-1. Open the BLE MIDI connection panel.
+1. Open the MIDI connection panel.
 2. Tap Scan.
 3. If the target adapter appears with Connect enabled, tap Connect.
 4. If the target adapter does not appear, or appears but cannot connect, open Android Bluetooth settings.
@@ -43,14 +43,14 @@ Use this sequence when validating a new build against one or more real WIDI or c
 ### Second adapter and switching
 
 1. Power on the second adapter and keep the first adapter powered on.
-2. Open the BLE MIDI connection panel.
+2. Open the MIDI connection panel.
 3. Tap Scan.
 4. Connect to the second adapter, using Android Bluetooth settings only if Scan cannot produce a connectable device.
 5. Confirm APS NoteCast shows the second adapter as Connected.
 6. Play the short test MIDI file.
 7. Confirm only the intended receiving instrument responds.
 8. Tap Stop and confirm all notes and pedals stop.
-9. Reconnect to the first adapter from the BLE MIDI connection panel.
+9. Reconnect to the first adapter from the MIDI connection panel.
 10. Play the short test MIDI file again.
 11. Tap Stop and confirm all notes and pedals stop.
 
@@ -77,6 +77,33 @@ Use this sequence when validating a new build against one or more real WIDI or c
 5. Panic clears any stuck notes or pedals.
 6. Switching adapters does not leave the previous adapter receiving new playback.
 7. Unexpected adapter power loss is reflected in the app instead of leaving a stale Connected state.
+
+## Pedal regression test
+
+Use at least one expressive player-piano roll and one dense classical MIDI file with pedal data. Good regression candidates are the Piano Man track that previously showed inconsistent pedal engagement and a Rachmaninoff etude with pedal events before the first note.
+
+1. In Settings, leave Stable pedal values enabled.
+2. Leave Fold pedals into piano channel enabled.
+3. Leave Fold channel 2 into channel 1 enabled unless testing an unusual receiver.
+4. Connect the WIDI, BLE MIDI adapter, or USB MIDI adapter that feeds the receiving instrument.
+5. Play the first test file and watch the sustain pedal throughout the first minute.
+6. Confirm pedal motion changes at musical points instead of rapidly fluttering or staying down through unrelated passages.
+7. Pause during a sustained section and confirm sustain releases while paused.
+8. Resume and confirm sustain returns if the playback position is still inside that sustained section.
+9. Pause when sustain is not active and confirm it stays released.
+10. Stop during a sustained section and confirm sustain releases and does not return.
+11. Run Panic and confirm sustain, sostenuto, and soft pedal are released.
+12. Repeat with the second test file.
+13. Disable Fold pedals into piano channel and repeat if validating source-channel preservation.
+14. Disable Stable pedal values only when testing a receiver known to handle continuous pedal curves correctly.
+
+### Pedal pass criteria
+
+1. Sustain output is binary 0/127 by default.
+2. Pause temporarily releases sustain and resume restores it only when the current playback position calls for sustain.
+3. Stop, Panic, seek, skip, and song completion send pedal-off cleanup.
+4. Pedal-only channels can drive the detected piano output channel.
+5. Channel 3 is treated as piano-only only when it carries pedal/controller data without instrument note events.
 
 ## Test sequence
 

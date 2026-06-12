@@ -5,6 +5,7 @@ import com.alexanderpeppe.pianobeam.data.AppSettings
 import com.alexanderpeppe.pianobeam.data.AppThemeMode
 import com.alexanderpeppe.pianobeam.data.MidiChannelControl
 import com.alexanderpeppe.pianobeam.data.PedalOutputMode
+import com.alexanderpeppe.pianobeam.data.PedalValueMode
 import com.alexanderpeppe.pianobeam.data.PlaybackAdvanceMode
 import com.alexanderpeppe.pianobeam.data.RepeatMode
 import com.alexanderpeppe.pianobeam.data.SongInstrumentOverrides
@@ -57,6 +58,8 @@ class AppSettingsStore(context: Context) {
             .putBoolean(KEY_SHUFFLE_PLAYLISTS, cleanSettings.shufflePlaylistsByDefault)
             .putString(KEY_VOLUME_CONTROL_MODE, cleanSettings.volumeControlMode.preferenceValue)
             .putString(KEY_PEDAL_OUTPUT_MODE, cleanSettings.pedalOutputMode.preferenceValue)
+            .putString(KEY_PEDAL_VALUE_MODE, cleanSettings.pedalValueMode.preferenceValue)
+            .putBoolean(KEY_FOLD_CHANNEL_2_INTO_PIANO_CHANNEL, cleanSettings.foldChannel2IntoPianoChannel)
             .putBoolean(KEY_FOLD_PEDALS_INTO_PIANO_CHANNEL, cleanSettings.foldPedalsIntoPianoChannel)
             .putBoolean(KEY_APP_CONTROLS_VOLUME, cleanSettings.volumeControlMode == VolumeControlMode.LegacyVolumeScaling)
             .putBoolean(KEY_VELOCITY_SCALING_ENABLED, cleanSettings.velocityScalingEnabled)
@@ -97,6 +100,8 @@ class AppSettingsStore(context: Context) {
             volumeControlMode = VolumeControlMode.fromPreference(preferences.getString(KEY_VOLUME_CONTROL_MODE, null))
                 ?: VolumeControlMode.fromLegacyPreference(preferences.getBoolean(KEY_APP_CONTROLS_VOLUME, true)),
             pedalOutputMode = PedalOutputMode.fromPreference(preferences.getString(KEY_PEDAL_OUTPUT_MODE, null)),
+            pedalValueMode = PedalValueMode.fromPreference(preferences.getString(KEY_PEDAL_VALUE_MODE, null)),
+            foldChannel2IntoPianoChannel = preferences.getBoolean(KEY_FOLD_CHANNEL_2_INTO_PIANO_CHANNEL, true),
             foldPedalsIntoPianoChannel = preferences.getBoolean(KEY_FOLD_PEDALS_INTO_PIANO_CHANNEL, true),
             velocityScalingEnabled = preferences.getBoolean(KEY_VELOCITY_SCALING_ENABLED, true),
             minimumNoteVelocity = preferences.getInt(KEY_MINIMUM_NOTE_VELOCITY, 32).coerceIn(1, 127),
@@ -205,6 +210,8 @@ class AppSettingsStore(context: Context) {
         private const val KEY_SHUFFLE_PLAYLISTS = "shuffle_playlists"
         private const val KEY_VOLUME_CONTROL_MODE = "volume_control_mode"
         private const val KEY_PEDAL_OUTPUT_MODE = "pedal_output_mode"
+        private const val KEY_PEDAL_VALUE_MODE = "pedal_value_mode"
+        private const val KEY_FOLD_CHANNEL_2_INTO_PIANO_CHANNEL = "fold_channel_2_into_piano_channel"
         private const val KEY_FOLD_PEDALS_INTO_PIANO_CHANNEL = "fold_pedals_into_piano_channel"
         private const val KEY_APP_CONTROLS_VOLUME = "app_controls_volume"
         private const val KEY_VELOCITY_SCALING_ENABLED = "velocity_scaling_enabled"

@@ -1,6 +1,6 @@
-APS NoteCast is an Android app for practical player-piano and BLE MIDI workflows.
+APS NoteCast is an Android app for practical player-piano and MIDI workflows.
 
-It lets you scan for compatible Bluetooth LE MIDI adapters, connect to the selected MIDI device, import Standard MIDI Files, organize playlists, and send playback to a player piano or other MIDI receiver.
+It lets you connect to compatible Bluetooth LE MIDI and Android USB MIDI adapters, import Standard MIDI Files, organize playlists, and send playback to a player piano or other MIDI receiver.
 
 APS NoteCast is free and open-source. It has no subscriptions, in-app purchases, advertising, or paid music catalog.
 
@@ -8,17 +8,18 @@ Demo MIDI files are from the Mutopia Project and are marked Public Domain / no r
 
 It is not a streaming service, subscription catalog, or licensed music platform. APS NoteCast plays user-supplied MIDI files, recordings, and files the user has the right to download, import, and use.
 
-When APS NoteCast links to external MIDI sources, those sources are labeled as external. Rights and permissions vary by source; users should treat external-source access as personal/noncommercial unless broader rights are clearly granted. Do not sell, redistribute, remaster, or use external-source files for paid/commercial playback unless allowed by the rights holder.
+When APS NoteCast links to external MIDI sources such as Kuhmann and Mutopia, those sources are labeled as external. Rights and permissions vary by source; users should treat external-source access as personal/noncommercial unless broader rights are clearly granted. Mutopia Project files shown by APS NoteCast are marked Public Domain / no rights reserved on their source pages. Do not sell, redistribute, remaster, or use external-source files for paid/commercial playback unless allowed by the rights holder.
 
 Core features:
 
-* Scan-first BLE MIDI connection flow
+* Unified MIDI connection flow for Bluetooth LE MIDI and Android USB MIDI
 * Saved MIDI devices with quick reconnect and switching
 * Local MIDI library and playlists
 * User-initiated import from local files, recordings, and external MIDI sources
 * Single-file and playlist playback
 * Shuffle, repeat, stop-after-current, and stop-after-playlist modes
 * Tempo, transpose, volume, mute, solo, and per-channel controls
+* Piano-channel routing options for two-channel piano files and pedal controllers
 * Panic controls for all notes, sound, controllers, and pedals
 * BLE MIDI recording to Standard MIDI File
 * MIDI export/share and library backup/restore

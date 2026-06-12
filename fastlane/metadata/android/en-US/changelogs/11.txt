@@ -1,0 +1,1 @@
+Adds USB MIDI adapter support in the device list, Mutopia as an External MIDI source, public-domain demo MIDI files from Mutopia, improved external-source copyright/DMCA labeling, safer binary pedal output with pause/resume sustain restore, default-on channel 2 to channel 1 routing with a setting, and cleaner library/external-source organization.

@@ -1,0 +1,38 @@
+{
+  "sources": [
+    {
+      "key": "kuhmann",
+      "displayName": "Kuhmann",
+      "dialogSubtitle": "Kuhmann source - noncommercial only",
+      "rightsSummary": "Personal/noncommercial unless permitted. Check rights first.",
+      "initialMessage": "Search the external Kuhmann MIDI source. Personal/noncommercial unless permitted.",
+      "searchMessage": "Searching external noncommercial Kuhmann MIDI source...",
+      "resultLabel": "external Kuhmann MIDI file",
+      "searchUrl": "https://www.alexanderpeppe.com/kuhmann_midi_search.php",
+      "foundMessageSuffix": "Personal/noncommercial unless permitted.",
+      "allowedDownloadHosts": [
+        "alexanderpeppe.com"
+      ],
+      "supportsFormatFilter": true,
+      "supportsChannelFilter": true,
+      "useInstrumentPianoFilter": false
+    },
+    {
+      "key": "mutopia",
+      "displayName": "Mutopia",
+      "dialogSubtitle": "Mutopia Project - public domain",
+      "rightsSummary": "Public Domain / no rights reserved on source pages.",
+      "initialMessage": "Search the Mutopia Project MIDI source. Files are marked Public Domain / no rights reserved on their source pages.",
+      "searchMessage": "Searching Mutopia Project public-domain MIDI source...",
+      "resultLabel": "Mutopia Project MIDI file",
+      "searchUrl": "https://www.alexanderpeppe.com/mutopia_midi_search.php",
+      "foundMessageSuffix": "Public Domain / no rights reserved on source pages.",
+      "allowedDownloadHosts": [
+        "alexanderpeppe.com"
+      ],
+      "supportsFormatFilter": false,
+      "supportsChannelFilter": false,
+      "useInstrumentPianoFilter": true
+    }
+  ]
+}

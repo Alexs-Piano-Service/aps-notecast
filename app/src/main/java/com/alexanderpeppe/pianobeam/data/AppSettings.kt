@@ -56,6 +56,16 @@ enum class PedalOutputMode(val preferenceValue: String) {
     }
 }
 
+enum class PedalValueMode(val preferenceValue: String) {
+    Binary("binary"),
+    Continuous("continuous");
+
+    companion object {
+        fun fromPreference(value: String?): PedalValueMode =
+            values().firstOrNull { it.preferenceValue == value } ?: Binary
+    }
+}
+
 data class MidiChannelControl(
     val channel: Int,
     val muted: Boolean = false,
@@ -80,6 +90,8 @@ data class AppSettings(
     val shufflePlaylistsByDefault: Boolean = false,
     val volumeControlMode: VolumeControlMode = VolumeControlMode.LegacyVolumeScaling,
     val pedalOutputMode: PedalOutputMode = PedalOutputMode.StandardControllers,
+    val pedalValueMode: PedalValueMode = PedalValueMode.Binary,
+    val foldChannel2IntoPianoChannel: Boolean = true,
     val foldPedalsIntoPianoChannel: Boolean = true,
     val velocityScalingEnabled: Boolean = true,
     val minimumNoteVelocity: Int = 32,

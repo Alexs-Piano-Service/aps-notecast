@@ -1,1 +1,1 @@
-Adds ZIP playlist imports, cached external Kuhmann search filtering, stricter Ensemble results, and Disklavier channel routing for source channels 0/1 plus Acoustic Grand Piano parts.
+Adds ZIP playlist imports, cached external Kuhmann search filtering, stricter Ensemble results, and Disklavier channel routing for MIDI channels 1/2 plus Acoustic Grand Piano parts.

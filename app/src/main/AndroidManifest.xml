@@ -4,6 +4,12 @@
     <uses-feature
         android:name="android.hardware.bluetooth_le"
         android:required="false" />
+    <uses-feature
+        android:name="android.hardware.usb.host"
+        android:required="false" />
+    <uses-feature
+        android:name="android.software.midi"
+        android:required="false" />
 
     <uses-permission
         android:name="android.permission.BLUETOOTH"

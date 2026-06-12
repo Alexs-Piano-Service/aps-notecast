@@ -1,1 +1,1 @@
-Play, organize, and record MIDI over Bluetooth LE.
+Play, organize, and record MIDI over Bluetooth LE or USB.
