@@ -264,6 +264,7 @@ data class PlaybackUiState(
     val totalTracks: Int = 0,
     val progressUs: Long = 0,
     val durationUs: Long = 0,
+    val sustainPedalPressed: Boolean = false,
     val error: String? = null
 ) {
     val isPreparing: Boolean get() = mode == PlaybackMode.Preparing
@@ -271,6 +272,15 @@ data class PlaybackUiState(
     val isPaused: Boolean get() = mode == PlaybackMode.Paused
     val isActive: Boolean get() = mode == PlaybackMode.Preparing || mode == PlaybackMode.Playing || mode == PlaybackMode.Paused
 }
+
+data class ImportUiState(
+    val importing: Boolean = false,
+    val processedItems: Int = 0,
+    val totalItems: Int = 0,
+    val importedFiles: Int = 0,
+    val failedItems: Int = 0,
+    val message: String = ""
+)
 
 data class RecordingUiState(
     val isRecording: Boolean = false,
@@ -299,6 +309,7 @@ data class AppUiState(
     val playback: PlaybackUiState = PlaybackUiState(),
     val playbackChannels: List<PlaybackChannelInfo> = emptyList(),
     val recording: RecordingUiState = RecordingUiState(),
+    val importState: ImportUiState = ImportUiState(),
     val kuhmann: KuhmannSearchUiState = KuhmannSearchUiState(),
     val volumePercent: Int = 88,
     val lastMessage: String = "Ready"

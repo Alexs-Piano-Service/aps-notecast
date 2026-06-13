@@ -16,6 +16,7 @@ object CrashReportStore {
         if (installed) return
         installed = true
         val appContext = context.applicationContext
+        AppEventLog.install(appContext)
         val previous = Thread.getDefaultUncaughtExceptionHandler()
         Thread.setDefaultUncaughtExceptionHandler { thread, throwable ->
             save(appContext, thread, throwable)
@@ -47,6 +48,7 @@ object CrashReportStore {
             appendLine(stack)
         }.take(64_000)
         AppEventLog.append("Uncaught exception: ${throwable.javaClass.simpleName}: ${throwable.message.orEmpty()}")
+        AppEventLog.flush()
         context.applicationContext
             .getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
             .edit()

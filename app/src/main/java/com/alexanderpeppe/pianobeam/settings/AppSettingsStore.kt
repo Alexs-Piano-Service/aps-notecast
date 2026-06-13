@@ -3,7 +3,10 @@ package com.alexanderpeppe.pianobeam.settings
 import android.content.Context
 import com.alexanderpeppe.pianobeam.data.AppSettings
 import com.alexanderpeppe.pianobeam.data.AppThemeMode
+import com.alexanderpeppe.pianobeam.data.DEFAULT_MIDI_LIBRARY_PAGE_SIZE
+import com.alexanderpeppe.pianobeam.data.MAX_MIDI_LIBRARY_PAGE_SIZE
 import com.alexanderpeppe.pianobeam.data.MidiChannelControl
+import com.alexanderpeppe.pianobeam.data.MIN_MIDI_LIBRARY_PAGE_SIZE
 import com.alexanderpeppe.pianobeam.data.PedalOutputMode
 import com.alexanderpeppe.pianobeam.data.PedalValueMode
 import com.alexanderpeppe.pianobeam.data.PlaybackAdvanceMode
@@ -37,6 +40,10 @@ class AppSettingsStore(context: Context) {
     fun updateSettings(settings: AppSettings) {
         val cleanSettings = settings.copy(
             fontScalePercent = settings.fontScalePercent.coerceIn(80, 110),
+            midiLibraryPageSize = settings.midiLibraryPageSize.coerceIn(
+                MIN_MIDI_LIBRARY_PAGE_SIZE,
+                MAX_MIDI_LIBRARY_PAGE_SIZE
+            ),
             reconnectIntervalSeconds = settings.reconnectIntervalSeconds.coerceIn(3, 60),
             reconnectTimeoutSeconds = settings.reconnectTimeoutSeconds.coerceIn(10, 180),
             minimumNoteVelocity = settings.minimumNoteVelocity.coerceIn(1, 127),
@@ -49,6 +56,7 @@ class AppSettingsStore(context: Context) {
         preferences.edit()
             .putString(KEY_THEME_MODE, cleanSettings.themeMode.preferenceValue)
             .putInt(KEY_FONT_SCALE_PERCENT, cleanSettings.fontScalePercent)
+            .putInt(KEY_MIDI_LIBRARY_PAGE_SIZE, cleanSettings.midiLibraryPageSize)
             .putBoolean(KEY_AUTO_RECONNECT, cleanSettings.autoReconnectEnabled)
             .putBoolean(KEY_SCAN_ON_LAUNCH, cleanSettings.scanOnLaunch)
             .putInt(KEY_RECONNECT_INTERVAL_SECONDS, cleanSettings.reconnectIntervalSeconds)
@@ -90,6 +98,9 @@ class AppSettingsStore(context: Context) {
         AppSettings(
             themeMode = AppThemeMode.fromPreference(preferences.getString(KEY_THEME_MODE, null)),
             fontScalePercent = preferences.getInt(KEY_FONT_SCALE_PERCENT, 100).coerceIn(80, 110),
+            midiLibraryPageSize = preferences
+                .getInt(KEY_MIDI_LIBRARY_PAGE_SIZE, DEFAULT_MIDI_LIBRARY_PAGE_SIZE)
+                .coerceIn(MIN_MIDI_LIBRARY_PAGE_SIZE, MAX_MIDI_LIBRARY_PAGE_SIZE),
             autoReconnectEnabled = preferences.getBoolean(KEY_AUTO_RECONNECT, true),
             scanOnLaunch = preferences.getBoolean(KEY_SCAN_ON_LAUNCH, false),
             reconnectIntervalSeconds = preferences.getInt(KEY_RECONNECT_INTERVAL_SECONDS, 8).coerceIn(3, 60),
@@ -201,6 +212,7 @@ class AppSettingsStore(context: Context) {
         private const val PREFERENCES_NAME = "pianobeam_settings"
         private const val KEY_THEME_MODE = "theme_mode"
         private const val KEY_FONT_SCALE_PERCENT = "font_scale_percent"
+        private const val KEY_MIDI_LIBRARY_PAGE_SIZE = "midi_library_page_size"
         private const val KEY_AUTO_RECONNECT = "auto_reconnect"
         private const val KEY_SCAN_ON_LAUNCH = "scan_on_launch"
         private const val KEY_RECONNECT_INTERVAL_SECONDS = "reconnect_interval_seconds"

@@ -44,6 +44,21 @@ class MidiRepository(private val context: Context) {
         val createdPlaylist: MidiPlaylist? = null
     )
 
+    data class BatchImportProgress(
+        val processedItems: Int,
+        val totalItems: Int,
+        val importedFiles: Int,
+        val failedItems: Int,
+        val currentName: String
+    )
+
+    data class BatchImportResult(
+        val importedItems: List<MidiLibraryItem>,
+        val createdPlaylists: List<MidiPlaylist>,
+        val failedItems: Int,
+        val zipWithoutMidiItems: Int
+    )
+
     private data class ZipMidiEntry(
         val displayName: String,
         val bytes: ByteArray
@@ -180,37 +195,72 @@ class MidiRepository(private val context: Context) {
     }
 
     @Synchronized
-    fun importZipBytes(bytes: ByteArray, displayName: String): ImportResult {
-        val cleanDisplayName = displayName
-            .ifBlank { "Imported ZIP ${System.currentTimeMillis()}.zip" }
-            .normalizeImportedFileName(
-                extension = MidiFileExtension.Zip,
-                replaceHyphenSymbols = true
-            )
-        val entries = readMidiEntriesFromZip(bytes)
-        if (entries.isEmpty()) throw ZipWithoutMidiException(cleanDisplayName)
-
-        val importedAtMs = System.currentTimeMillis()
-        val importedItems = entries.mapIndexed { index, entry ->
-            createMidiItem(
-                bytes = entry.bytes,
-                displayName = entry.displayName,
-                notePrefix = "Imported from $cleanDisplayName",
-                preferredTitle = null,
-                importedAtMs = importedAtMs + index,
-                preferDisplayNameTitle = true,
-                replaceTitleSeparators = true
+    fun importMidiOrZipBatch(
+        uris: List<Uri>,
+        onProgress: (BatchImportProgress) -> Unit = {}
+    ): BatchImportResult {
+        val cleanUris = uris.filterNot { it == Uri.EMPTY }
+        if (cleanUris.isEmpty()) {
+            return BatchImportResult(
+                importedItems = emptyList(),
+                createdPlaylists = emptyList(),
+                failedItems = 0,
+                zipWithoutMidiItems = 0
             )
         }
-        val playlist = MidiPlaylist(
-            id = UUID.randomUUID().toString(),
-            name = cleanDisplayName.toZipPlaylistTitle(),
-            itemIds = importedItems.map { it.id },
-            createdAtMs = System.currentTimeMillis()
-        )
         val snapshot = load()
-        save(snapshot.copy(files = snapshot.files + importedItems, playlists = snapshot.playlists + playlist))
-        return ImportResult(importedItems = importedItems, createdPlaylist = playlist)
+        val importedItems = mutableListOf<MidiLibraryItem>()
+        val createdPlaylists = mutableListOf<MidiPlaylist>()
+        var failedItems = 0
+        var zipWithoutMidiItems = 0
+        var nextImportedAtMs = System.currentTimeMillis()
+
+        cleanUris.forEachIndexed { index, uri ->
+            val displayName = queryDisplayName(uri) ?: "Imported MIDI ${System.currentTimeMillis()}.mid"
+            runCatching {
+                importMidiOrZipWithoutSaving(uri, displayName, nextImportedAtMs)
+            }.onSuccess { result ->
+                importedItems += result.importedItems
+                result.createdPlaylist?.let { createdPlaylists += it }
+                nextImportedAtMs += result.importedItems.size.coerceAtLeast(1)
+            }.onFailure { t ->
+                failedItems++
+                if (t is ZipWithoutMidiException) zipWithoutMidiItems++
+            }
+            onProgress(
+                BatchImportProgress(
+                    processedItems = index + 1,
+                    totalItems = cleanUris.size,
+                    importedFiles = importedItems.size,
+                    failedItems = failedItems,
+                    currentName = displayName
+                )
+            )
+        }
+
+        if (importedItems.isNotEmpty() || createdPlaylists.isNotEmpty()) {
+            save(
+                snapshot.copy(
+                    files = snapshot.files + importedItems,
+                    playlists = snapshot.playlists + createdPlaylists
+                )
+            )
+        }
+
+        return BatchImportResult(
+            importedItems = importedItems,
+            createdPlaylists = createdPlaylists,
+            failedItems = failedItems,
+            zipWithoutMidiItems = zipWithoutMidiItems
+        )
+    }
+
+    @Synchronized
+    fun importZipBytes(bytes: ByteArray, displayName: String): ImportResult {
+        val result = importZipBytesWithoutSaving(bytes, displayName, System.currentTimeMillis())
+        val snapshot = load()
+        save(snapshot.copy(files = snapshot.files + result.importedItems, playlists = snapshot.playlists + listOfNotNull(result.createdPlaylist)))
+        return result
     }
 
     @Synchronized
@@ -232,6 +282,65 @@ class MidiRepository(private val context: Context) {
         val snapshot = load()
         save(snapshot.copy(files = snapshot.files + item))
         return item
+    }
+
+    private fun importMidiOrZipWithoutSaving(uri: Uri, displayName: String, importedAtMs: Long): ImportResult {
+        val mimeType = runCatching { context.contentResolver.getType(uri) }.getOrNull().orEmpty()
+        val bytes = context.contentResolver.openInputStream(uri).use { input ->
+            requireNotNull(input) { "Could not open $displayName" }
+            input.readBytes()
+        }
+        return if (displayName.isZipFileName() || mimeType.isZipMimeType() || bytes.hasZipHeader()) {
+            importZipBytesWithoutSaving(bytes, displayName, importedAtMs)
+        } else {
+            ImportResult(
+                importedItems = listOf(
+                    createMidiItem(
+                        bytes = bytes,
+                        displayName = displayName,
+                        notePrefix = "",
+                        preferredTitle = null,
+                        importedAtMs = importedAtMs,
+                        preferDisplayNameTitle = false,
+                        replaceTitleSeparators = false
+                    )
+                )
+            )
+        }
+    }
+
+    private fun importZipBytesWithoutSaving(
+        bytes: ByteArray,
+        displayName: String,
+        importedAtMs: Long
+    ): ImportResult {
+        val cleanDisplayName = displayName
+            .ifBlank { "Imported ZIP ${System.currentTimeMillis()}.zip" }
+            .normalizeImportedFileName(
+                extension = MidiFileExtension.Zip,
+                replaceHyphenSymbols = true
+            )
+        val entries = readMidiEntriesFromZip(bytes)
+        if (entries.isEmpty()) throw ZipWithoutMidiException(cleanDisplayName)
+
+        val importedItems = entries.mapIndexed { index, entry ->
+            createMidiItem(
+                bytes = entry.bytes,
+                displayName = entry.displayName,
+                notePrefix = "Imported from $cleanDisplayName",
+                preferredTitle = null,
+                importedAtMs = importedAtMs + index,
+                preferDisplayNameTitle = true,
+                replaceTitleSeparators = true
+            )
+        }
+        val playlist = MidiPlaylist(
+            id = UUID.randomUUID().toString(),
+            name = cleanDisplayName.toZipPlaylistTitle(),
+            itemIds = importedItems.map { it.id },
+            createdAtMs = System.currentTimeMillis()
+        )
+        return ImportResult(importedItems = importedItems, createdPlaylist = playlist)
     }
 
     private fun createMidiItem(

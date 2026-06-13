@@ -78,9 +78,14 @@ data class SongInstrumentOverrides(
     val channelPrograms: Map<Int, Int> = emptyMap()
 )
 
+const val DEFAULT_MIDI_LIBRARY_PAGE_SIZE = 75
+const val MIN_MIDI_LIBRARY_PAGE_SIZE = 50
+const val MAX_MIDI_LIBRARY_PAGE_SIZE = 500
+
 data class AppSettings(
     val themeMode: AppThemeMode = AppThemeMode.System,
     val fontScalePercent: Int = 100,
+    val midiLibraryPageSize: Int = DEFAULT_MIDI_LIBRARY_PAGE_SIZE,
     val autoReconnectEnabled: Boolean = true,
     val scanOnLaunch: Boolean = false,
     val reconnectIntervalSeconds: Int = 8,

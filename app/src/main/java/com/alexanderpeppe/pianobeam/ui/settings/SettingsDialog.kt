@@ -33,8 +33,10 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import com.alexanderpeppe.pianobeam.data.AppSettings
 import com.alexanderpeppe.pianobeam.data.AppThemeMode
+import com.alexanderpeppe.pianobeam.data.MAX_MIDI_LIBRARY_PAGE_SIZE
 import com.alexanderpeppe.pianobeam.data.MidiChannelControl
 import com.alexanderpeppe.pianobeam.data.MidiPlaylist
+import com.alexanderpeppe.pianobeam.data.MIN_MIDI_LIBRARY_PAGE_SIZE
 import com.alexanderpeppe.pianobeam.data.PedalOutputMode
 import com.alexanderpeppe.pianobeam.data.PedalValueMode
 import com.alexanderpeppe.pianobeam.data.PlaybackAdvanceMode
@@ -381,6 +383,17 @@ fun SettingsDialog(
 
                 item {
                     SettingSection("Library") {
+                        SliderRow(
+                            title = "MIDI files per load",
+                            valueLabel = settings.midiLibraryPageSize.toString(),
+                            value = settings.midiLibraryPageSize.toFloat(),
+                            range = MIN_MIDI_LIBRARY_PAGE_SIZE.toFloat()..MAX_MIDI_LIBRARY_PAGE_SIZE.toFloat(),
+                            steps = 17,
+                            onValueChange = {
+                                onSettingsChange(settings.copy(midiLibraryPageSize = it.roundToInt().snapMidiLibraryPageSize()))
+                            }
+                        )
+                        CompactDivider()
                         Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                             Button(onClick = onBackupLibrary, modifier = Modifier.weight(1f)) {
                                 Text("Backup")
@@ -540,6 +553,9 @@ private fun List<MidiChannelControl>.updatedChannel(updated: MidiChannelControl)
     byChannel[updated.channel] = updated
     return (1..16).map { channel -> byChannel[channel] ?: MidiChannelControl(channel = channel) }
 }
+
+private fun Int.snapMidiLibraryPageSize(): Int =
+    (((this + 12) / 25) * 25).coerceIn(MIN_MIDI_LIBRARY_PAGE_SIZE, MAX_MIDI_LIBRARY_PAGE_SIZE)
 
 private val AppThemeMode.title: String
     get() = when (this) {

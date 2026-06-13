@@ -44,6 +44,7 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.lazy.grid.GridCells
 import androidx.compose.foundation.lazy.grid.GridItemSpan
 import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
@@ -100,6 +101,7 @@ import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.ElevatedCard
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.FilledTonalButton
+import androidx.compose.material3.FloatingActionButton
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.LinearProgressIndicator
@@ -117,6 +119,7 @@ import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
+import androidx.compose.runtime.derivedStateOf
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateMapOf
 import androidx.compose.runtime.mutableStateOf
@@ -158,11 +161,14 @@ import com.alexanderpeppe.pianobeam.data.AppUiState
 import com.alexanderpeppe.pianobeam.data.AppThemeMode
 import com.alexanderpeppe.pianobeam.data.BleMidiDeviceItem
 import com.alexanderpeppe.pianobeam.data.ExternalMidiSource
+import com.alexanderpeppe.pianobeam.data.ImportUiState
 import com.alexanderpeppe.pianobeam.data.KuhmannMidiResult
 import com.alexanderpeppe.pianobeam.data.KuhmannSearchUiState
+import com.alexanderpeppe.pianobeam.data.MAX_MIDI_LIBRARY_PAGE_SIZE
 import com.alexanderpeppe.pianobeam.data.MidiChannelControl
 import com.alexanderpeppe.pianobeam.data.MidiLibraryItem
 import com.alexanderpeppe.pianobeam.data.MidiPlaylist
+import com.alexanderpeppe.pianobeam.data.MIN_MIDI_LIBRARY_PAGE_SIZE
 import com.alexanderpeppe.pianobeam.data.PlaybackChannelInfo
 import com.alexanderpeppe.pianobeam.data.PlaybackMode
 import com.alexanderpeppe.pianobeam.data.PlaybackUiState
@@ -181,8 +187,10 @@ import com.alexanderpeppe.pianobeam.settings.AppSettingsStore
 import com.alexanderpeppe.pianobeam.service.NoteCastService
 import com.alexanderpeppe.pianobeam.ui.settings.SettingsDialog
 import com.alexanderpeppe.pianobeam.ui.theme.NoteCastTheme
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import java.util.Locale
 import kotlin.math.roundToInt
 
@@ -197,6 +205,8 @@ private val midiImportMimeTypes = arrayOf(
     "application/octet-stream",
     "*/*"
 )
+
+private const val MIDI_SEARCH_DEBOUNCE_MS = 140L
 
 class MainActivity : ComponentActivity() {
     private var service by mutableStateOf<NoteCastService?>(null)
@@ -840,26 +850,70 @@ private fun LibraryPane(
     var deletePlaylistId by rememberSaveable { mutableStateOf<String?>(null) }
     var confirmDeleteSelected by rememberSaveable { mutableStateOf(false) }
     var playlistQuery by rememberSaveable { mutableStateOf("") }
+    var midiFileSearchText by rememberSaveable { mutableStateOf("") }
+    var appliedMidiFileQuery by rememberSaveable { mutableStateOf("") }
+    var showMidiSearch by rememberSaveable { mutableStateOf(false) }
+    var midiFilePageStart by rememberSaveable { mutableStateOf(0) }
     var selectedFileIds by rememberSaveable { mutableStateOf(emptyList<String>()) }
     var midiFileDisplayModeName by rememberSaveable { mutableStateOf(MidiFileDisplayMode.Alphabetical.name) }
     val expandedPlaylists = remember { mutableStateMapOf<String, Boolean>() }
     val expandedMidiLetters = remember { mutableStateMapOf<String, Boolean>() }
+    val midiLetterPageStarts = remember { mutableStateMapOf<String, Int>() }
     val playlistBounds = remember { mutableStateMapOf<String, Rect>() }
     var draggingFiles by remember { mutableStateOf(emptyList<MidiLibraryItem>()) }
     var dragPosition by remember { mutableStateOf<Offset?>(null) }
     var paneOrigin by remember { mutableStateOf(Offset.Zero) }
     var listBounds by remember { mutableStateOf<Rect?>(null) }
-    val gridState = rememberLazyGridState()
+    val gridState = rememberLazyListState()
+    val libraryScope = rememberCoroutineScope()
     val density = LocalDensity.current
     val filesById = remember(state.files) { state.files.associateBy { it.id } }
     val selectedFileIdSet = remember(selectedFileIds) { selectedFileIds.toSet() }
     val selectedFileItems = remember(state.files, selectedFileIdSet) { state.files.filter { it.id in selectedFileIdSet } }
     val selectionActive = selectedFileItems.isNotEmpty()
-    val midiFileGroups = remember(state.files) { midiFileLetterGroups(state.files) }
+    var visibleMidiFiles by remember(state.files) { mutableStateOf(state.files) }
+    val midiLibraryPageSize = settings.midiLibraryPageSize.coerceIn(
+        MIN_MIDI_LIBRARY_PAGE_SIZE,
+        MAX_MIDI_LIBRARY_PAGE_SIZE
+    )
     val midiFileDisplayMode = MidiFileDisplayMode.entries
         .firstOrNull { it.name == midiFileDisplayModeName }
         ?: MidiFileDisplayMode.Alphabetical
-    val allMidiLettersExpanded = midiFileGroups.all { expandedMidiLetters[it.key] ?: true }
+    val midiSearchFiltering = midiFileSearchText.isNotBlank() && appliedMidiFileQuery != midiFileSearchText
+    val forceFlatMidiList = midiFileSearchText.isNotBlank()
+    val effectiveMidiFileDisplayMode = if (forceFlatMidiList) MidiFileDisplayMode.List else midiFileDisplayMode
+    val sortedVisibleMidiFiles = remember(visibleMidiFiles) { visibleMidiFiles.sortedForMidiDisplay() }
+    val midiDisplaySourceFiles = remember(visibleMidiFiles) { visibleMidiFiles }
+    val normalizedMidiPageStart = midiFilePageStart.coercedPageStart(midiDisplaySourceFiles.size, midiLibraryPageSize)
+    val displayedMidiFiles = remember(midiDisplaySourceFiles, normalizedMidiPageStart, midiLibraryPageSize) {
+        midiDisplaySourceFiles
+            .drop(normalizedMidiPageStart)
+            .take(midiLibraryPageSize)
+    }
+    val midiDisplayStartNumber = if (displayedMidiFiles.isEmpty()) 0 else normalizedMidiPageStart + 1
+    val midiDisplayEndNumber = normalizedMidiPageStart + displayedMidiFiles.size
+    val midiFileGroups = remember(sortedVisibleMidiFiles, effectiveMidiFileDisplayMode) {
+        if (effectiveMidiFileDisplayMode == MidiFileDisplayMode.Alphabetical) {
+            midiFileLetterGroups(sortedVisibleMidiFiles)
+        } else {
+            emptyList()
+        }
+    }
+    val allMidiLettersExpanded = midiFileGroups.all { group ->
+        expandedMidiLetters[group.key] ?: group.defaultExpanded(midiLibraryPageSize)
+    }
+    val midiHeaderRangeStart = if (effectiveMidiFileDisplayMode == MidiFileDisplayMode.List) {
+        midiDisplayStartNumber
+    } else if (visibleMidiFiles.isNotEmpty()) {
+        1
+    } else {
+        0
+    }
+    val midiHeaderRangeEnd = if (effectiveMidiFileDisplayMode == MidiFileDisplayMode.List) {
+        midiDisplayEndNumber
+    } else {
+        visibleMidiFiles.size
+    }
     val showPlaylistSearch = state.playlists.size > 10
     val visiblePlaylists = remember(state.playlists, playlistQuery, filesById, showPlaylistSearch) {
         if (!showPlaylistSearch || playlistQuery.isBlank()) {
@@ -868,12 +922,72 @@ private fun LibraryPane(
             state.playlists.filter { playlist -> playlist.matchesPlaylistSearch(playlistQuery, filesById) }
         }
     }
+    val midiHeaderItemIndex = remember(
+        state.importState.importing,
+        state.files.isEmpty(),
+        state.playlists.isEmpty(),
+        showPlaylistSearch,
+        visiblePlaylists.size
+    ) {
+        var index = 1
+        if (state.importState.importing) index += 1
+        if (state.files.isEmpty() && state.playlists.isEmpty()) index += 1
+        if (state.playlists.isNotEmpty()) {
+            index += 1
+            if (showPlaylistSearch) index += 1
+            index += if (visiblePlaylists.isEmpty()) 1 else visiblePlaylists.size
+        }
+        index
+    }
+    val showScrollToTopButton by remember {
+        derivedStateOf {
+            midiFilePageStart > 0 ||
+                midiLetterPageStarts.values.any { it > 0 } ||
+                gridState.firstVisibleItemIndex > 2
+        }
+    }
+
+    LaunchedEffect(state.files, midiFileSearchText) {
+        val filesSnapshot = state.files
+        val query = midiFileSearchText
+        if (query.isBlank()) {
+            appliedMidiFileQuery = ""
+            visibleMidiFiles = filesSnapshot
+        } else {
+            delay(MIDI_SEARCH_DEBOUNCE_MS)
+            val result = withContext(Dispatchers.Default) {
+                filesSnapshot.filterMidiFiles(query)
+            }
+            appliedMidiFileQuery = query
+            visibleMidiFiles = result
+        }
+    }
+
+    LaunchedEffect(appliedMidiFileQuery, visibleMidiFiles.size, midiLibraryPageSize) {
+        midiFilePageStart = 0
+        midiLetterPageStarts.clear()
+    }
+
+    LaunchedEffect(appliedMidiFileQuery) {
+        if (appliedMidiFileQuery.isNotBlank()) gridState.scrollToItem(0)
+    }
 
     LaunchedEffect(state.files) {
         val validIds = state.files.map { it.id }.toSet()
         selectedFileIds = selectedFileIds.filter { it in validIds }
+    }
+
+    LaunchedEffect(midiFileGroups, midiLibraryPageSize) {
         val validLetters = midiFileGroups.map { it.key }.toSet()
         expandedMidiLetters.keys.filterNot { it in validLetters }.forEach { expandedMidiLetters.remove(it) }
+        midiLetterPageStarts.keys.filterNot { it in validLetters }.forEach { midiLetterPageStarts.remove(it) }
+        midiFileGroups.forEach { group ->
+            val currentStart = midiLetterPageStarts[group.key] ?: 0
+            val cleanStart = currentStart.coercedPageStart(group.files.size, midiLibraryPageSize)
+            if (currentStart != cleanStart) {
+                midiLetterPageStarts[group.key] = cleanStart
+            }
+        }
     }
 
     LaunchedEffect(showPlaylistSearch, playlistQuery, visiblePlaylists) {
@@ -926,6 +1040,35 @@ private fun LibraryPane(
         dragPosition = null
     }
 
+    fun showMidiPage(startIndex: Int) {
+        midiFilePageStart = startIndex.coercedPageStart(midiDisplaySourceFiles.size, midiLibraryPageSize)
+        libraryScope.launch { gridState.scrollToItem(midiHeaderItemIndex) }
+    }
+
+    fun midiLetterHeaderIndex(letterKey: String): Int {
+        var index = midiHeaderItemIndex + 1
+        if (showMidiSearch || midiFileSearchText.isNotBlank()) index += 1
+        if (visibleMidiFiles.isEmpty()) return midiHeaderItemIndex
+        midiFileGroups.forEach { group ->
+            if (group.key == letterKey) return index
+            index += 1
+            val expanded = expandedMidiLetters[group.key] ?: group.defaultExpanded(midiLibraryPageSize)
+            if (expanded) {
+                val pageStart = (midiLetterPageStarts[group.key] ?: 0)
+                    .coercedPageStart(group.files.size, midiLibraryPageSize)
+                index += group.files.drop(pageStart).take(midiLibraryPageSize).size
+                if (group.files.size > midiLibraryPageSize) index += 1
+            }
+        }
+        return midiHeaderItemIndex
+    }
+
+    fun showMidiLetterPage(letterKey: String, startIndex: Int) {
+        val group = midiFileGroups.firstOrNull { it.key == letterKey } ?: return
+        midiLetterPageStarts[letterKey] = startIndex.coercedPageStart(group.files.size, midiLibraryPageSize)
+        libraryScope.launch { gridState.scrollToItem(midiLetterHeaderIndex(letterKey)) }
+    }
+
     Surface(
         modifier = modifier,
         shape = RoundedCornerShape(8.dp),
@@ -937,17 +1080,15 @@ private fun LibraryPane(
                 .fillMaxSize()
                 .onGloballyPositioned { paneOrigin = it.localToRoot(Offset.Zero) }
         ) {
-            LazyVerticalGrid(
-                columns = GridCells.Adaptive(minSize = 320.dp),
+            LazyColumn(
                 state = gridState,
                 modifier = Modifier
                     .fillMaxSize()
                     .onGloballyPositioned { listBounds = it.boundsInRoot() },
                 contentPadding = PaddingValues(10.dp),
-                horizontalArrangement = Arrangement.spacedBy(8.dp),
                 verticalArrangement = Arrangement.spacedBy(6.dp)
             ) {
-                item(span = { GridItemSpan(maxLineSpan) }) {
+                item {
                     LibraryHero(
                         fileCount = state.files.size,
                         playlistCount = state.playlists.size,
@@ -958,9 +1099,14 @@ private fun LibraryPane(
                         onOpenConnection = onOpenConnection
                     )
                 }
+                if (state.importState.importing) {
+                    item {
+                        ImportProgressCard(importState = state.importState)
+                    }
+                }
 
                 if (state.files.isEmpty() && state.playlists.isEmpty()) {
-                    item(span = { GridItemSpan(maxLineSpan) }) {
+                    item {
                         EmptyLibraryCard(
                             onImport = { importLauncher.launch(midiImportMimeTypes) },
                             onCreatePlaylist = { showPlaylistDialog = true }
@@ -969,9 +1115,9 @@ private fun LibraryPane(
                 }
 
                 if (state.playlists.isNotEmpty()) {
-                    item(span = { GridItemSpan(maxLineSpan) }) { SectionLabel("Playlists") }
+                    item { SectionLabel("Playlists") }
                     if (showPlaylistSearch) {
-                        item(span = { GridItemSpan(maxLineSpan) }) {
+                        item {
                             PlaylistSearchField(
                                 query = playlistQuery,
                                 onQueryChange = { playlistQuery = it },
@@ -981,7 +1127,7 @@ private fun LibraryPane(
                         }
                     }
                     if (visiblePlaylists.isEmpty()) {
-                        item(span = { GridItemSpan(maxLineSpan) }) {
+                        item {
                             Text(
                                 "No matching playlists.",
                                 style = MaterialTheme.typography.bodyMedium,
@@ -990,7 +1136,7 @@ private fun LibraryPane(
                             )
                         }
                     }
-                    gridItems(visiblePlaylists, key = { it.id }) { playlist ->
+                    items(visiblePlaylists, key = { it.id }) { playlist ->
                         DisposableEffect(playlist.id) {
                             onDispose { playlistBounds.remove(playlist.id) }
                         }
@@ -1031,67 +1177,127 @@ private fun LibraryPane(
                 }
 
                 if (state.files.isNotEmpty()) {
-                    item(span = { GridItemSpan(maxLineSpan) }) {
+                    item {
                         MidiFilesHeader(
-                            mode = midiFileDisplayMode,
+                            mode = effectiveMidiFileDisplayMode,
                             allLetterGroupsExpanded = allMidiLettersExpanded,
+                            searchExpanded = showMidiSearch || midiFileSearchText.isNotBlank(),
+                            queryActive = midiFileSearchText.isNotBlank(),
+                            totalCount = visibleMidiFiles.size,
+                            rangeStart = midiHeaderRangeStart,
+                            rangeEnd = midiHeaderRangeEnd,
+                            forceFlatList = forceFlatMidiList,
                             onModeChange = { midiFileDisplayModeName = it.name },
                             onToggleLetterGroups = {
                                 val nextExpanded = !allMidiLettersExpanded
                                 midiFileGroups.forEach { group ->
                                     expandedMidiLetters[group.key] = nextExpanded
                                 }
-                            }
+                                if (!nextExpanded) midiLetterPageStarts.clear()
+                            },
+                            onToggleSearch = { showMidiSearch = !showMidiSearch }
                         )
                     }
-                    if (midiFileDisplayMode == MidiFileDisplayMode.Alphabetical) {
+                    if (showMidiSearch || midiFileSearchText.isNotBlank()) {
+                        item {
+                            MidiSearchField(
+                                query = midiFileSearchText,
+                                onQueryChange = {
+                                    midiFilePageStart = 0
+                                    midiFileSearchText = it
+                                },
+                                totalCount = state.files.size,
+                                visibleCount = visibleMidiFiles.size,
+                                filtering = midiSearchFiltering
+                            )
+                        }
+                    }
+                    if (visibleMidiFiles.isEmpty()) {
+                        item {
+                            Text(
+                                "No matching MIDI files.",
+                                style = MaterialTheme.typography.bodyMedium,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                modifier = Modifier.padding(horizontal = 4.dp, vertical = 8.dp)
+                            )
+                        }
+                    } else if (effectiveMidiFileDisplayMode == MidiFileDisplayMode.Alphabetical) {
                         midiFileGroups.forEach { group ->
-                            item(key = "midi-letter-${group.key}", span = { GridItemSpan(maxLineSpan) }) {
-                                val expanded = expandedMidiLetters[group.key] ?: true
+                            item(key = "midi-letter-${group.key}") {
+                                val expanded = expandedMidiLetters[group.key] ?: group.defaultExpanded(midiLibraryPageSize)
                                 MidiLetterHeader(
                                     title = group.title,
                                     count = group.files.size,
                                     expanded = expanded,
-                                    onToggle = { expandedMidiLetters[group.key] = !expanded }
+                                    onToggle = {
+                                        val nextExpanded = !expanded
+                                        expandedMidiLetters[group.key] = nextExpanded
+                                        if (!nextExpanded) midiLetterPageStarts.remove(group.key)
+                                    }
                                 )
                             }
-                            if (expandedMidiLetters[group.key] ?: true) {
-                                group.files.forEach { midiItem ->
-                                    item(key = "midi-file-${midiItem.id}", span = { GridItemSpan(maxLineSpan) }) {
-                                        MidiFileRow(
-                                            item = midiItem,
-                                            selected = selectedKind == "file" && selectedId == midiItem.id,
-                                            multiSelected = midiItem.id in selectedFileIdSet,
-                                            selectionActive = selectionActive,
-                                            connected = state.connection.connected,
-                                            preparing = state.playback.isPreparing && state.playback.currentItemId == midiItem.id,
-                                            playing = state.playback.isPlaying && state.playback.currentItemId == midiItem.id,
-                                            paused = state.playback.isPaused && state.playback.currentItemId == midiItem.id,
-                                            onSelect = { onSelectFile(midiItem.id) },
-                                            onToggleSelected = { toggleFileSelection(midiItem.id) },
-                                            onPlay = {
-                                                onSelectFile(midiItem.id)
-                                                service.playFile(midiItem.id)
+                            val expanded = expandedMidiLetters[group.key] ?: group.defaultExpanded(midiLibraryPageSize)
+                            if (expanded) {
+                                val letterPageStart = (midiLetterPageStarts[group.key] ?: 0)
+                                    .coercedPageStart(group.files.size, midiLibraryPageSize)
+                                val letterPageFiles = group.files
+                                    .drop(letterPageStart)
+                                    .take(midiLibraryPageSize)
+                                items(
+                                    letterPageFiles,
+                                    key = { "midi-file-${it.id}" },
+                                    contentType = { "midi-file" }
+                                ) { midiItem ->
+                                    MidiFileRow(
+                                        item = midiItem,
+                                        selected = selectedKind == "file" && selectedId == midiItem.id,
+                                        multiSelected = midiItem.id in selectedFileIdSet,
+                                        selectionActive = selectionActive,
+                                        connected = state.connection.connected,
+                                        preparing = state.playback.isPreparing && state.playback.currentItemId == midiItem.id,
+                                        playing = state.playback.isPlaying && state.playback.currentItemId == midiItem.id,
+                                        paused = state.playback.isPaused && state.playback.currentItemId == midiItem.id,
+                                        onSelect = { onSelectFile(midiItem.id) },
+                                        onToggleSelected = { toggleFileSelection(midiItem.id) },
+                                        onPlay = {
+                                            onSelectFile(midiItem.id)
+                                            service.playFile(midiItem.id)
+                                        },
+                                        onPause = { service.pausePlayback() },
+                                        onResume = { service.resumePlayback() },
+                                        onRename = { renameFileId = midiItem.id },
+                                        onExport = { onExportMidi(midiItem) },
+                                        onShare = { onShareMidi(midiItem.id) },
+                                        onDelete = { deleteFileId = midiItem.id },
+                                        onDragStart = { file, rootOffset ->
+                                            draggingFiles = if (file.id in selectedFileIdSet && selectedFileItems.isNotEmpty()) {
+                                                selectedFileItems
+                                            } else {
+                                                listOf(file)
+                                            }
+                                            dragPosition = rootOffset
+                                        },
+                                        onDrag = { delta -> dragPosition = (dragPosition ?: Offset.Zero) + delta },
+                                        onDragEnd = ::finishDrag,
+                                        onDragCancel = {
+                                            draggingFiles = emptyList()
+                                            dragPosition = null
+                                        }
+                                    )
+                                }
+                                if (group.files.size > midiLibraryPageSize) {
+                                    item(key = "midi-letter-page-${group.key}") {
+                                        MidiFilePagingFooter(
+                                            rangeStart = letterPageStart + 1,
+                                            rangeEnd = letterPageStart + letterPageFiles.size,
+                                            totalCount = group.files.size,
+                                            canPageBackward = letterPageStart > 0,
+                                            canPageForward = letterPageStart + letterPageFiles.size < group.files.size,
+                                            onPrevious = {
+                                                showMidiLetterPage(group.key, letterPageStart - midiLibraryPageSize)
                                             },
-                                            onPause = { service.pausePlayback() },
-                                            onResume = { service.resumePlayback() },
-                                            onRename = { renameFileId = midiItem.id },
-                                            onExport = { onExportMidi(midiItem) },
-                                            onShare = { onShareMidi(midiItem.id) },
-                                            onDelete = { deleteFileId = midiItem.id },
-                                            onDragStart = { file, rootOffset ->
-                                                draggingFiles = if (file.id in selectedFileIdSet && selectedFileItems.isNotEmpty()) {
-                                                    selectedFileItems
-                                                } else {
-                                                    listOf(file)
-                                                }
-                                                dragPosition = rootOffset
-                                            },
-                                            onDrag = { delta -> dragPosition = (dragPosition ?: Offset.Zero) + delta },
-                                            onDragEnd = ::finishDrag,
-                                            onDragCancel = {
-                                                draggingFiles = emptyList()
-                                                dragPosition = null
+                                            onNext = {
+                                                showMidiLetterPage(group.key, letterPageStart + midiLibraryPageSize)
                                             }
                                         )
                                     }
@@ -1099,45 +1305,62 @@ private fun LibraryPane(
                             }
                         }
                     } else {
-                        state.files.forEach { midiItem ->
-                            item(key = "midi-file-${midiItem.id}", span = { GridItemSpan(maxLineSpan) }) {
-                                MidiFileRow(
-                                    item = midiItem,
-                                    selected = selectedKind == "file" && selectedId == midiItem.id,
-                                    multiSelected = midiItem.id in selectedFileIdSet,
-                                    selectionActive = selectionActive,
-                                    connected = state.connection.connected,
-                                    preparing = state.playback.isPreparing && state.playback.currentItemId == midiItem.id,
-                                    playing = state.playback.isPlaying && state.playback.currentItemId == midiItem.id,
-                                    paused = state.playback.isPaused && state.playback.currentItemId == midiItem.id,
-                                    onSelect = { onSelectFile(midiItem.id) },
-                                    onToggleSelected = { toggleFileSelection(midiItem.id) },
-                                    onPlay = {
-                                        onSelectFile(midiItem.id)
-                                        service.playFile(midiItem.id)
-                                    },
-                                    onPause = { service.pausePlayback() },
-                                    onResume = { service.resumePlayback() },
-                                    onRename = { renameFileId = midiItem.id },
-                                    onExport = { onExportMidi(midiItem) },
-                                    onShare = { onShareMidi(midiItem.id) },
-                                    onDelete = { deleteFileId = midiItem.id },
-                                    onDragStart = { file, rootOffset ->
-                                        draggingFiles = if (file.id in selectedFileIdSet && selectedFileItems.isNotEmpty()) {
-                                            selectedFileItems
-                                        } else {
-                                            listOf(file)
-                                        }
-                                        dragPosition = rootOffset
-                                    },
-                                    onDrag = { delta -> dragPosition = (dragPosition ?: Offset.Zero) + delta },
-                                    onDragEnd = ::finishDrag,
-                                    onDragCancel = {
-                                        draggingFiles = emptyList()
-                                        dragPosition = null
+                        items(
+                            displayedMidiFiles,
+                            key = { "midi-file-${it.id}" },
+                            contentType = { "midi-file" }
+                        ) { midiItem ->
+                            MidiFileRow(
+                                item = midiItem,
+                                selected = selectedKind == "file" && selectedId == midiItem.id,
+                                multiSelected = midiItem.id in selectedFileIdSet,
+                                selectionActive = selectionActive,
+                                connected = state.connection.connected,
+                                preparing = state.playback.isPreparing && state.playback.currentItemId == midiItem.id,
+                                playing = state.playback.isPlaying && state.playback.currentItemId == midiItem.id,
+                                paused = state.playback.isPaused && state.playback.currentItemId == midiItem.id,
+                                onSelect = { onSelectFile(midiItem.id) },
+                                onToggleSelected = { toggleFileSelection(midiItem.id) },
+                                onPlay = {
+                                    onSelectFile(midiItem.id)
+                                    service.playFile(midiItem.id)
+                                },
+                                onPause = { service.pausePlayback() },
+                                onResume = { service.resumePlayback() },
+                                onRename = { renameFileId = midiItem.id },
+                                onExport = { onExportMidi(midiItem) },
+                                onShare = { onShareMidi(midiItem.id) },
+                                onDelete = { deleteFileId = midiItem.id },
+                                onDragStart = { file, rootOffset ->
+                                    draggingFiles = if (file.id in selectedFileIdSet && selectedFileItems.isNotEmpty()) {
+                                        selectedFileItems
+                                    } else {
+                                        listOf(file)
                                     }
-                                )
-                            }
+                                    dragPosition = rootOffset
+                                },
+                                onDrag = { delta -> dragPosition = (dragPosition ?: Offset.Zero) + delta },
+                                onDragEnd = ::finishDrag,
+                                onDragCancel = {
+                                    draggingFiles = emptyList()
+                                    dragPosition = null
+                                }
+                            )
+                        }
+                    }
+                    if (effectiveMidiFileDisplayMode == MidiFileDisplayMode.List &&
+                        visibleMidiFiles.size > midiLibraryPageSize
+                    ) {
+                        item {
+                            MidiFilePagingFooter(
+                                rangeStart = midiDisplayStartNumber,
+                                rangeEnd = midiDisplayEndNumber,
+                                totalCount = visibleMidiFiles.size,
+                                canPageBackward = normalizedMidiPageStart > 0,
+                                canPageForward = midiDisplayEndNumber < visibleMidiFiles.size,
+                                onPrevious = { showMidiPage(normalizedMidiPageStart - midiLibraryPageSize) },
+                                onNext = { showMidiPage(normalizedMidiPageStart + midiLibraryPageSize) }
+                            )
                         }
                     }
                 }
@@ -1153,6 +1376,24 @@ private fun LibraryPane(
                         .padding(10.dp)
                         .fillMaxWidth()
                 )
+            }
+
+            if (showScrollToTopButton && draggingFiles.isEmpty()) {
+                FloatingActionButton(
+                    onClick = {
+                        midiFilePageStart = 0
+                        midiLetterPageStarts.clear()
+                        libraryScope.launch { gridState.scrollToItem(0) }
+                    },
+                    modifier = Modifier
+                        .align(Alignment.BottomEnd)
+                        .navigationBarsPadding()
+                        .padding(end = 14.dp, bottom = if (selectionActive) 82.dp else 14.dp),
+                    containerColor = MaterialTheme.colorScheme.primaryContainer,
+                    contentColor = MaterialTheme.colorScheme.onPrimaryContainer
+                ) {
+                    Icon(Icons.Default.ExpandLess, contentDescription = "Scroll to top")
+                }
             }
 
             if (draggingFiles.isNotEmpty()) {
@@ -1370,6 +1611,36 @@ private fun LibraryHero(
                     )
                 }
             }
+        }
+    }
+}
+
+@Composable
+private fun ImportProgressCard(importState: ImportUiState) {
+    val total = importState.totalItems.coerceAtLeast(1)
+    val processed = importState.processedItems.coerceIn(0, total)
+    val progress = processed.toFloat() / total.toFloat()
+    Surface(
+        modifier = Modifier.fillMaxWidth(),
+        shape = RoundedCornerShape(4.dp),
+        color = MaterialTheme.colorScheme.secondaryContainer
+    ) {
+        Column(Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+            Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                LoadingIndicator(contentDescription = importState.message.ifBlank { "Importing MIDI files" })
+                Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                    Text("Importing MIDI", style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.Bold)
+                    Text(
+                        "${importState.processedItems}/${importState.totalItems} items - ${importState.importedFiles} files imported" +
+                            if (importState.failedItems > 0) " - ${importState.failedItems} failed" else "",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSecondaryContainer,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis
+                    )
+                }
+            }
+            LinearProgressIndicator(progress = { progress }, modifier = Modifier.fillMaxWidth())
         }
     }
 }
@@ -1692,8 +1963,15 @@ private enum class MidiFileDisplayMode {
 private fun MidiFilesHeader(
     mode: MidiFileDisplayMode,
     allLetterGroupsExpanded: Boolean,
+    searchExpanded: Boolean,
+    queryActive: Boolean,
+    totalCount: Int,
+    rangeStart: Int,
+    rangeEnd: Int,
+    forceFlatList: Boolean,
     onModeChange: (MidiFileDisplayMode) -> Unit,
-    onToggleLetterGroups: () -> Unit
+    onToggleLetterGroups: () -> Unit,
+    onToggleSearch: () -> Unit
 ) {
     BoxWithConstraints(
         Modifier
@@ -1702,12 +1980,21 @@ private fun MidiFilesHeader(
     ) {
         if (maxWidth < 360.dp) {
             Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                MidiFilesTitle()
+                MidiFilesTitle(
+                    rangeStart = rangeStart,
+                    rangeEnd = rangeEnd,
+                    totalCount = totalCount,
+                    modifier = Modifier.fillMaxWidth()
+                )
                 MidiFileDisplayModeControl(
                     mode = mode,
                     allLetterGroupsExpanded = allLetterGroupsExpanded,
+                    forceFlatList = forceFlatList,
                     onModeChange = onModeChange,
                     onToggleLetterGroups = onToggleLetterGroups,
+                    searchExpanded = searchExpanded,
+                    queryActive = queryActive,
+                    onToggleSearch = onToggleSearch,
                     modifier = Modifier.fillMaxWidth()
                 )
             }
@@ -1717,12 +2004,21 @@ private fun MidiFilesHeader(
                 verticalAlignment = Alignment.CenterVertically,
                 horizontalArrangement = Arrangement.spacedBy(12.dp)
             ) {
-                MidiFilesTitle(modifier = Modifier.weight(1f))
+                MidiFilesTitle(
+                    rangeStart = rangeStart,
+                    rangeEnd = rangeEnd,
+                    totalCount = totalCount,
+                    modifier = Modifier.weight(1f)
+                )
                 MidiFileDisplayModeControl(
                     mode = mode,
                     allLetterGroupsExpanded = allLetterGroupsExpanded,
+                    forceFlatList = forceFlatList,
                     onModeChange = onModeChange,
                     onToggleLetterGroups = onToggleLetterGroups,
+                    searchExpanded = searchExpanded,
+                    queryActive = queryActive,
+                    onToggleSearch = onToggleSearch,
                     modifier = Modifier.widthIn(min = 226.dp, max = 280.dp)
                 )
             }
@@ -1731,22 +2027,40 @@ private fun MidiFilesHeader(
 }
 
 @Composable
-private fun MidiFilesTitle(modifier: Modifier = Modifier) {
-    Text(
-        "MIDI files",
-        modifier = modifier,
-        style = MaterialTheme.typography.labelLarge,
-        fontWeight = FontWeight.Bold,
-        color = MaterialTheme.colorScheme.onSurfaceVariant
-    )
+private fun MidiFilesTitle(
+    rangeStart: Int,
+    rangeEnd: Int,
+    totalCount: Int,
+    modifier: Modifier = Modifier
+) {
+    Column(modifier, verticalArrangement = Arrangement.spacedBy(1.dp)) {
+        Text(
+            "MIDI files",
+            style = MaterialTheme.typography.labelLarge,
+            fontWeight = FontWeight.Bold,
+            color = MaterialTheme.colorScheme.onSurfaceVariant
+        )
+        if (rangeStart > 0 && (rangeStart != 1 || rangeEnd != totalCount)) {
+            Text(
+                "$rangeStart-$rangeEnd of $totalCount shown",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                maxLines = 1
+            )
+        }
+    }
 }
 
 @Composable
 private fun MidiFileDisplayModeControl(
     mode: MidiFileDisplayMode,
     allLetterGroupsExpanded: Boolean,
+    forceFlatList: Boolean,
     onModeChange: (MidiFileDisplayMode) -> Unit,
     onToggleLetterGroups: () -> Unit,
+    searchExpanded: Boolean,
+    queryActive: Boolean,
+    onToggleSearch: () -> Unit,
     modifier: Modifier = Modifier
 ) {
     val alphabeticalSelected = mode == MidiFileDisplayMode.Alphabetical
@@ -1767,10 +2081,15 @@ private fun MidiFileDisplayModeControl(
                     onToggleLetterGroups = onToggleLetterGroups
                 )
             }
+            MidiSearchToggleButton(
+                active = searchExpanded || queryActive,
+                onClick = onToggleSearch
+            )
             MidiFileDisplayModeSegment(
                 label = "Alphabetical",
-                selected = alphabeticalSelected,
-                onClick = { onModeChange(MidiFileDisplayMode.Alphabetical) },
+                selected = alphabeticalSelected && !forceFlatList,
+                enabled = !forceFlatList,
+                onClick = { if (!forceFlatList) onModeChange(MidiFileDisplayMode.Alphabetical) },
                 modifier = Modifier.weight(1f)
             )
             MidiFileDisplayModeSegment(
@@ -1778,6 +2097,29 @@ private fun MidiFileDisplayModeControl(
                 selected = mode == MidiFileDisplayMode.List,
                 onClick = { onModeChange(MidiFileDisplayMode.List) },
                 modifier = Modifier.weight(1f)
+            )
+        }
+    }
+}
+
+@Composable
+private fun MidiSearchToggleButton(
+    active: Boolean,
+    onClick: () -> Unit
+) {
+    Surface(
+        modifier = Modifier
+            .size(38.dp)
+            .clickable(onClick = onClick),
+        shape = RoundedCornerShape(4.dp),
+        color = if (active) MaterialTheme.colorScheme.primaryContainer else Color.Transparent
+    ) {
+        Box(contentAlignment = Alignment.Center) {
+            Icon(
+                Icons.Default.Search,
+                contentDescription = if (active) "Hide MIDI search" else "Search MIDI files",
+                modifier = Modifier.size(20.dp),
+                tint = if (active) MaterialTheme.colorScheme.onPrimaryContainer else MaterialTheme.colorScheme.onSurfaceVariant
             )
         }
     }
@@ -1815,6 +2157,7 @@ private fun MidiLetterGroupToggleButton(
 private fun MidiFileDisplayModeSegment(
     label: String,
     selected: Boolean,
+    enabled: Boolean = true,
     onClick: () -> Unit,
     modifier: Modifier = Modifier
 ) {
@@ -1827,7 +2170,7 @@ private fun MidiFileDisplayModeSegment(
     Surface(
         modifier = modifier
             .height(38.dp)
-            .clickable(onClick = onClick),
+            .clickable(enabled = enabled, onClick = onClick),
         shape = RoundedCornerShape(4.dp),
         color = containerColor
     ) {
@@ -1842,9 +2185,89 @@ private fun MidiFileDisplayModeSegment(
                 label,
                 style = MaterialTheme.typography.labelLarge,
                 fontWeight = if (selected) FontWeight.Bold else FontWeight.SemiBold,
-                color = contentColor,
+                color = if (enabled) contentColor else contentColor.copy(alpha = 0.45f),
                 maxLines = 1
             )
+        }
+    }
+}
+
+@Composable
+private fun MidiSearchField(
+    query: String,
+    onQueryChange: (String) -> Unit,
+    totalCount: Int,
+    visibleCount: Int,
+    filtering: Boolean
+) {
+    OutlinedTextField(
+        value = query,
+        onValueChange = onQueryChange,
+        modifier = Modifier.fillMaxWidth(),
+        singleLine = true,
+        label = { Text("Search MIDI files") },
+        placeholder = { Text("Title or filename") },
+        leadingIcon = { Icon(Icons.Default.Search, contentDescription = null) },
+        trailingIcon = {
+            if (filtering) {
+                LoadingIndicator(
+                    contentDescription = "Filtering MIDI files",
+                    modifier = Modifier
+                        .padding(end = 12.dp)
+                        .size(18.dp)
+                )
+            } else if (query.isNotEmpty()) {
+                IconButton(onClick = { onQueryChange("") }) {
+                    Icon(Icons.Default.Close, contentDescription = "Clear MIDI search")
+                }
+            } else {
+                Text(
+                    "$visibleCount/$totalCount",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier.padding(end = 12.dp)
+                )
+            }
+        }
+    )
+}
+
+@Composable
+private fun MidiFilePagingFooter(
+    rangeStart: Int,
+    rangeEnd: Int,
+    totalCount: Int,
+    canPageBackward: Boolean,
+    canPageForward: Boolean,
+    onPrevious: () -> Unit,
+    onNext: () -> Unit
+) {
+    Surface(
+        modifier = Modifier.fillMaxWidth(),
+        shape = RoundedCornerShape(4.dp),
+        color = MaterialTheme.colorScheme.surfaceVariant
+    ) {
+        Row(
+            modifier = Modifier.padding(horizontal = 10.dp, vertical = 8.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(10.dp)
+        ) {
+            Text(
+                "$rangeStart-$rangeEnd of $totalCount",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                modifier = Modifier.weight(1f)
+            )
+            FilledTonalButton(onClick = onPrevious, enabled = canPageBackward) {
+                Icon(Icons.Default.ExpandLess, contentDescription = null, modifier = Modifier.size(18.dp))
+                Spacer(Modifier.width(6.dp))
+                Text("Previous")
+            }
+            FilledTonalButton(onClick = onNext, enabled = canPageForward) {
+                Icon(Icons.Default.ExpandMore, contentDescription = null, modifier = Modifier.size(18.dp))
+                Spacer(Modifier.width(6.dp))
+                Text("Next")
+            }
         }
     }
 }
@@ -1855,12 +2278,17 @@ private data class MidiLetterGroup(
     val files: List<MidiLibraryItem>
 )
 
-private fun midiFileLetterGroups(files: List<MidiLibraryItem>): List<MidiLetterGroup> {
-    val sortedFiles = files.sortedWith(
+private fun MidiLetterGroup.defaultExpanded(pageSize: Int): Boolean =
+    files.size <= pageSize
+
+private fun List<MidiLibraryItem>.sortedForMidiDisplay(): List<MidiLibraryItem> =
+    sortedWith(
         compareBy<MidiLibraryItem> { it.title.lowercase(Locale.US) }
             .thenBy { it.originalName.lowercase(Locale.US) }
     )
-    return sortedFiles
+
+private fun midiFileLetterGroups(files: List<MidiLibraryItem>): List<MidiLetterGroup> =
+    files
         .groupBy { midiFileLetterKey(it) }
         .toList()
         .sortedBy { (key, _) -> if (key == "#") "ZZZ" else key }
@@ -1871,7 +2299,6 @@ private fun midiFileLetterGroups(files: List<MidiLibraryItem>): List<MidiLetterG
                 files = groupFiles
             )
         }
-}
 
 private fun midiFileLetterKey(item: MidiLibraryItem): String {
     val first = item.title
@@ -2141,7 +2568,7 @@ private fun MidiFileRow(
     onDragEnd: () -> Unit,
     onDragCancel: () -> Unit
 ) {
-    var coordinates by remember { mutableStateOf<LayoutCoordinates?>(null) }
+    val coordinatesHolder = remember { LayoutCoordinatesHolder() }
     var showMenu by remember { mutableStateOf(false) }
     val containerColor = when {
         multiSelected -> MaterialTheme.colorScheme.primaryContainer
@@ -2151,9 +2578,9 @@ private fun MidiFileRow(
     Surface(
         modifier = Modifier
             .fillMaxWidth()
-            .onGloballyPositioned { coordinates = it }
+            .onGloballyPositioned { coordinatesHolder.coordinates = it }
             .clickable(onClick = onSelect)
-            .dragFile(item, coordinates, onDragStart, onDrag, onDragEnd, onDragCancel),
+            .dragFile(item, coordinatesHolder, onDragStart, onDrag, onDragEnd, onDragCancel),
         shape = RoundedCornerShape(4.dp),
         color = containerColor
     ) {
@@ -2187,9 +2614,13 @@ private fun MidiFileRow(
                     maxLines = 1,
                     overflow = TextOverflow.Ellipsis
                 )
-                if (item.notes.isNotBlank()) {
-                    Text(item.notes, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.error, maxLines = 1)
-                }
+                Text(
+                    item.notes.ifBlank { " " },
+                    style = MaterialTheme.typography.bodySmall,
+                    color = if (item.notes.isNotBlank()) MaterialTheme.colorScheme.error else Color.Transparent,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis
+                )
             }
             IconButton(
                 onClick = {
@@ -2326,14 +2757,13 @@ private fun DraggedMidiFilePreview(items: List<MidiLibraryItem>, modifier: Modif
 @Composable
 private fun Modifier.dragFile(
     item: MidiLibraryItem,
-    coordinates: LayoutCoordinates?,
+    coordinatesHolder: LayoutCoordinatesHolder,
     onDragStart: (MidiLibraryItem, Offset) -> Unit,
     onDrag: (Offset) -> Unit,
     onDragEnd: () -> Unit,
     onDragCancel: () -> Unit
 ): Modifier {
     val currentItem by rememberUpdatedState(item)
-    val currentCoordinates by rememberUpdatedState(coordinates)
     val currentOnDragStart by rememberUpdatedState(onDragStart)
     val currentOnDrag by rememberUpdatedState(onDrag)
     val currentOnDragEnd by rememberUpdatedState(onDragEnd)
@@ -2342,13 +2772,17 @@ private fun Modifier.dragFile(
     return pointerInput(item.id) {
         detectDragGesturesAfterLongPress(
             onDragStart = { localOffset ->
-                currentOnDragStart(currentItem, currentCoordinates?.localToRoot(localOffset) ?: Offset.Zero)
+                currentOnDragStart(currentItem, coordinatesHolder.coordinates?.localToRoot(localOffset) ?: Offset.Zero)
             },
             onDrag = { _, dragAmount -> currentOnDrag(dragAmount) },
             onDragEnd = { currentOnDragEnd() },
             onDragCancel = { currentOnDragCancel() }
         )
     }
+}
+
+private class LayoutCoordinatesHolder {
+    var coordinates: LayoutCoordinates? = null
 }
 
 @Composable
@@ -2784,10 +3218,25 @@ private fun PlaybackProgressSlider(
         )
         Row(verticalAlignment = Alignment.CenterVertically) {
             Text(displayedProgress.formatClockTime(), style = MaterialTheme.typography.bodySmall)
+            if (playback.sustainPedalPressed) {
+                Spacer(Modifier.width(8.dp))
+                PedalPressDot()
+            }
             Spacer(Modifier.weight(1f))
             Text(durationUs.formatClockTime(), style = MaterialTheme.typography.bodySmall)
         }
     }
+}
+
+@Composable
+private fun PedalPressDot(modifier: Modifier = Modifier) {
+    Surface(
+        modifier = modifier
+            .size(8.dp)
+            .semantics { contentDescription = "Sustain pedal pressed" },
+        shape = CircleShape,
+        color = MaterialTheme.colorScheme.primary
+    ) {}
 }
 
 @Composable
@@ -4990,21 +5439,37 @@ private fun PlaylistFilePickerRow(
 
 private fun MidiLibraryItem.matchesPlaylistFileSearch(query: String): Boolean {
     val searchable = "$title $originalName $notes".lowercase()
-    return query
-        .lowercase()
-        .split(Regex("\\s+"))
-        .filter { it.isNotBlank() }
-        .all { it in searchable }
+    return searchTokens(query).all { it in searchable }
+}
+
+private fun List<MidiLibraryItem>.filterMidiFiles(query: String): List<MidiLibraryItem> {
+    val tokens = searchTokens(query)
+    if (tokens.isEmpty()) return this
+    return filter { it.matchesMidiFileSearch(tokens) }
+}
+
+private fun MidiLibraryItem.matchesMidiFileSearch(tokens: List<String>): Boolean {
+    val searchable = "$title $originalName $notes ${durationUs.formatDuration()}".lowercase(Locale.US)
+    return tokens.all { it in searchable }
 }
 
 private fun MidiPlaylist.matchesPlaylistSearch(query: String, filesById: Map<String, MidiLibraryItem>): Boolean {
     val trackTitles = itemIds.mapNotNull { filesById[it]?.title }.joinToString(" ")
-    val searchable = "$name $trackTitles".lowercase()
-    return query
-        .lowercase()
+    val searchable = "$name $trackTitles".lowercase(Locale.US)
+    return searchTokens(query).all { it in searchable }
+}
+
+private fun searchTokens(query: String): List<String> =
+    query
+        .lowercase(Locale.US)
         .split(Regex("\\s+"))
         .filter { it.isNotBlank() }
-        .all { it in searchable }
+
+private fun Int.coercedPageStart(totalCount: Int, pageSize: Int): Int {
+    if (totalCount <= 0) return 0
+    val cleanPageSize = pageSize.coerceAtLeast(1)
+    val maxStart = ((totalCount - 1) / cleanPageSize) * cleanPageSize
+    return coerceIn(0, maxStart)
 }
 
 private fun Long.formatFileSize(): String {

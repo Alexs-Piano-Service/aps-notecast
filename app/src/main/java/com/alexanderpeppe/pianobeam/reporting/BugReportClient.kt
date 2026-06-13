@@ -67,15 +67,23 @@ object BugReportClient {
     ): JSONObject {
         val pendingCrash = CrashReportStore.pendingCrash(context)
         val includeLogs = input.includeLogs || pendingCrash.isNotBlank()
-        val logText = buildString {
-            if (pendingCrash.isNotBlank()) {
+        val pendingCrashBlock = if (pendingCrash.isNotBlank()) {
+            buildString {
                 appendLine("Pending crash from previous run")
                 appendLine("-------------------------------")
                 appendLine(pendingCrash)
                 appendLine()
             }
-            if (includeLogs) append(AppEventLog.tailText(LOG_TAIL_CHARS))
+        } else {
+            ""
         }
+        val eventLogText = if (includeLogs) AppEventLog.tailText(LOG_TAIL_CHARS) else ""
+        val eventLogTotalChars = if (includeLogs) AppEventLog.totalTextChars() else 0
+        val logText = buildString {
+            append(pendingCrashBlock)
+            append(eventLogText)
+        }
+        val totalAvailableLogChars = pendingCrashBlock.length + eventLogTotalChars
         return JSONObject().apply {
             put("report_id", reportId)
             put("created_at", Instant.now().toString())
@@ -90,8 +98,8 @@ object BugReportClient {
                 JSONObject().apply {
                     put("included", includeLogs)
                     put("tail_chars", logText.length)
-                    put("total_chars", AppEventLog.totalTextChars())
-                    put("truncated", AppEventLog.totalTextChars() > logText.length)
+                    put("total_chars", totalAvailableLogChars)
+                    put("truncated", eventLogTotalChars > eventLogText.length)
                     put("text", logText)
                 }
             )
