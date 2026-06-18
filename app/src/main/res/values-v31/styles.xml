@@ -8,6 +8,6 @@
         <item name="android:statusBarColor">#FCFBFF</item>
         <item name="android:windowDisablePreview">true</item>
         <item name="android:windowSplashScreenBackground">#FBFDFF</item>
-        <item name="android:windowSplashScreenAnimatedIcon">@drawable/loading_icon</item>
+        <item name="android:windowSplashScreenAnimatedIcon">@drawable/splash_icon</item>
     </style>
 </resources>

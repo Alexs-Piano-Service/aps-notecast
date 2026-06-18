@@ -90,6 +90,7 @@ import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import org.json.JSONObject
+import java.io.File
 import java.io.IOException
 import java.io.InputStream
 import java.net.HttpURLConnection
@@ -117,6 +118,8 @@ class NoteCastService : Service() {
         private const val ACTION_DEBUG_DIAGNOSTICS = "com.alexanderpeppe.notecast.DEBUG_DIAGNOSTICS"
         private const val LOG_TAG = "NoteCastBle"
         private const val EXTERNAL_MIDI_SOURCES_ASSET = "external_midi_sources.json"
+        private const val EXTERNAL_MIDI_SOURCES_ASSET_DIR = "external_midi_sources"
+        private const val EXTERNAL_MIDI_SOURCES_LOCAL_DIR = "external_midi_sources"
         private const val KUHMANN_SEARCH_MAX_LIMIT = 100
         private const val KUHMANN_MAX_DOWNLOAD_BYTES = 5 * 1024 * 1024
         private const val SCAN_WINDOW_MS = 12_000L
@@ -404,15 +407,11 @@ class NoteCastService : Service() {
     override fun onBind(intent: Intent?): IBinder = binder
 
     private fun loadExternalMidiSources() {
-        val sources = runCatching {
-            assets.open(EXTERNAL_MIDI_SOURCES_ASSET).use { input ->
-                ExternalMidiSource.fromJson(input.readBytes().toString(Charsets.UTF_8))
-            }
-        }.onFailure { t ->
-            Log.w(LOG_TAG, "Could not load $EXTERNAL_MIDI_SOURCES_ASSET; using built-in external MIDI sources.", t)
-        }.getOrElse {
-            ExternalMidiSource.DefaultSources
-        }
+        val sources = buildList {
+            addAll(loadBundledExternalMidiSources())
+            addAll(loadBundledExternalMidiSourceDirectory())
+            addAll(loadLocalExternalMidiSources())
+        }.mergedExternalMidiSources()
         val selectedSource = sources.firstOrNull { it.key == _state.value.kuhmann.source.key } ?: sources.first()
         _state.update {
             it.copy(
@@ -423,6 +422,74 @@ class NoteCastService : Service() {
                 )
             )
         }
+    }
+
+    private fun loadBundledExternalMidiSources(): List<ExternalMidiSource> =
+        runCatching {
+            assets.open(EXTERNAL_MIDI_SOURCES_ASSET).use { input ->
+                ExternalMidiSource.fromJson(input.readBytes().toString(Charsets.UTF_8))
+            }
+        }.onFailure { t ->
+            Log.w(LOG_TAG, "Could not load $EXTERNAL_MIDI_SOURCES_ASSET; using built-in external MIDI sources.", t)
+        }.getOrElse {
+            ExternalMidiSource.DefaultSources
+        }
+
+    private fun loadBundledExternalMidiSourceDirectory(): List<ExternalMidiSource> =
+        runCatching {
+            assets.list(EXTERNAL_MIDI_SOURCES_ASSET_DIR)
+                .orEmpty()
+                .filter { it.endsWith(".json", ignoreCase = true) }
+                .sorted()
+                .flatMap { fileName ->
+                    assets.open("$EXTERNAL_MIDI_SOURCES_ASSET_DIR/$fileName").use { input ->
+                        ExternalMidiSource.fromJsonOrEmpty(input.readBytes().toString(Charsets.UTF_8))
+                    }
+                }
+        }.onFailure { t ->
+            Log.w(LOG_TAG, "Could not load bundled external MIDI source extensions.", t)
+        }.getOrElse {
+            emptyList()
+        }
+
+    private fun loadLocalExternalMidiSources(): List<ExternalMidiSource> =
+        externalMidiSourceDirectories().flatMap { directory ->
+            runCatching {
+                directory.mkdirs()
+                directory
+                    .listFiles { file -> file.isFile && file.extension.equals("json", ignoreCase = true) }
+                    .orEmpty()
+                    .sortedBy { it.name.lowercase(Locale.US) }
+                    .flatMap { file ->
+                        runCatching {
+                            ExternalMidiSource.fromJsonOrEmpty(file.readText(Charsets.UTF_8))
+                        }.onFailure { t ->
+                            Log.w(LOG_TAG, "Could not load external MIDI source file ${file.absolutePath}.", t)
+                        }.getOrElse {
+                            emptyList()
+                        }
+                    }
+            }.onFailure { t ->
+                Log.w(LOG_TAG, "Could not inspect external MIDI source directory ${directory.absolutePath}.", t)
+            }.getOrElse {
+                emptyList()
+            }
+        }
+
+    private fun externalMidiSourceDirectories(): List<File> =
+        listOfNotNull(
+            File(filesDir, EXTERNAL_MIDI_SOURCES_LOCAL_DIR),
+            getExternalFilesDir(null)?.let { File(it, EXTERNAL_MIDI_SOURCES_LOCAL_DIR) }
+        ).distinctBy { file ->
+            runCatching { file.canonicalPath }.getOrDefault(file.absolutePath)
+        }
+
+    private fun List<ExternalMidiSource>.mergedExternalMidiSources(): List<ExternalMidiSource> {
+        val merged = LinkedHashMap<String, ExternalMidiSource>()
+        forEach { source ->
+            merged[source.key] = source
+        }
+        return merged.values.toList().ifEmpty { ExternalMidiSource.DefaultSources }
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
@@ -488,7 +555,7 @@ class NoteCastService : Service() {
             serviceScope.launch(Dispatchers.IO) {
                 if (muteSoloChanged || pedalOutputChanged || pedalValueChanged) {
                     sendPanicMessages()
-                } else {
+                } else if (instrumentOverridesChanged) {
                     sendActiveNoteOffMessagesIfNeeded()
                 }
                 activeSongId?.takeIf { instrumentOverridesChanged }?.let { songId ->
@@ -497,7 +564,9 @@ class NoteCastService : Service() {
                         currentOverrides = settings.instrumentOverridesForSong(songId)
                     )
                 }
-                sendVolumeMessages(_state.value.volumePercent)
+                if (volumeBehaviorChanged || channelVolumesChanged || muteSoloChanged) {
+                    sendVolumeMessages(_state.value.volumePercent)
+                }
             }
         }
     }
@@ -1063,10 +1132,11 @@ class NoteCastService : Service() {
         val temporaryItemId = "external-preview-${result.source.key}-${result.id}-${SystemClock.elapsedRealtime()}"
         val generation = playbackGeneration.incrementAndGet()
         val replacingActivePlayback = _state.value.playback.isActive || playbackJob?.isActive == true
+        val previousPlaybackJob = playbackJob
         skipRequest = 0
         seekRequestUs = -1L
         diagnosticJob?.cancel()
-        playbackJob?.cancel()
+        previousPlaybackJob?.cancel()
         clearPlaybackItemAliases()
         _state.update {
             it.copy(
@@ -1089,7 +1159,8 @@ class NoteCastService : Service() {
         updatePlaybackSurfaces(updateNotification = true)
         playbackJob = serviceScope.launch(playbackDispatcher) {
             if (replacingActivePlayback) {
-                withContext(Dispatchers.IO) { sendPanicMessages() }
+                previousPlaybackJob?.join()
+                sendPanicMessages()
                 delay(120)
             }
             runExternalPreviewPlayback(result, title, temporaryItemId, generation)
@@ -2334,7 +2405,7 @@ class NoteCastService : Service() {
             postMessage("Could not find that MIDI file.")
             return
         }
-        playItems(listOf(item), playlistName = null)
+        playItems(listOf(item), playlistName = null, playlistId = null, startIndex = 0)
     }
 
     fun playPlaylist(playlistId: String, shuffled: Boolean? = null) {
@@ -2351,7 +2422,29 @@ class NoteCastService : Service() {
             return
         }
         val shouldShuffle = shuffled ?: appSettings.shufflePlaylistsByDefault
-        playItems(if (shouldShuffle) items.shuffled() else items, playlist.name)
+        playItems(if (shouldShuffle) items.shuffled() else items, playlist.name, playlistId = playlist.id, startIndex = 0)
+    }
+
+    fun playPlaylistFromIndex(playlistId: String, startIndex: Int) {
+        val snapshot = _state.value
+        val playlist = snapshot.playlists.firstOrNull { it.id == playlistId }
+        if (playlist == null) {
+            postMessage("Could not find that playlist.")
+            return
+        }
+        if (startIndex !in playlist.itemIds.indices) {
+            postMessage("Could not find that playlist track.")
+            return
+        }
+        val byId = snapshot.files.associateBy { it.id }
+        val items = playlist.itemIds.mapNotNull { byId[it] }
+        val selectedItemId = playlist.itemIds[startIndex]
+        val playbackStartIndex = items.indexOfFirst { it.id == selectedItemId }
+        if (items.isEmpty() || playbackStartIndex < 0) {
+            postMessage("Could not find that playlist track.")
+            return
+        }
+        playItems(items, playlist.name, playlistId = playlist.id, startIndex = playbackStartIndex)
     }
 
     fun pausePlayback() {
@@ -2436,9 +2529,10 @@ class NoteCastService : Service() {
     fun setVolume(percent: Int) {
         val cleanPercent = percent.coerceIn(0, 100)
         _state.update { it.copy(volumePercent = cleanPercent) }
-        serviceScope.launch(Dispatchers.IO) {
-            sendActiveNoteOffMessagesIfNeeded()
-            sendVolumeMessages(cleanPercent)
+        if (appSettings.volumeControlMode == VolumeControlMode.StandardMidiVolume) {
+            serviceScope.launch(Dispatchers.IO) {
+                sendVolumeMessages(cleanPercent)
+            }
         }
     }
 
@@ -2658,7 +2752,7 @@ class NoteCastService : Service() {
         }
     }
 
-    private fun playItems(items: List<MidiLibraryItem>, playlistName: String?) {
+    private fun playItems(items: List<MidiLibraryItem>, playlistName: String?, playlistId: String?, startIndex: Int) {
         if (midiInputPort == null || !_state.value.connection.connected) {
             postMessage("Connect to a MIDI device before playing.")
             return
@@ -2667,13 +2761,15 @@ class NoteCastService : Service() {
             postMessage("There is nothing to play.")
             return
         }
+        val cleanStartIndex = startIndex.coerceIn(items.indices)
         val generation = playbackGeneration.incrementAndGet()
         val replacingActivePlayback = _state.value.playback.isActive || playbackJob?.isActive == true
-        val firstItem = items.first()
+        val firstItem = items[cleanStartIndex]
+        val previousPlaybackJob = playbackJob
         skipRequest = 0
         seekRequestUs = -1L
         diagnosticJob?.cancel()
-        playbackJob?.cancel()
+        previousPlaybackJob?.cancel()
         clearPlaybackItemAliases()
         _state.update {
             it.copy(
@@ -2682,7 +2778,8 @@ class NoteCastService : Service() {
                     currentTitle = firstItem.title,
                     currentItemId = firstItem.id,
                     playlistName = playlistName,
-                    currentTrackNumber = 1,
+                    playlistId = playlistId,
+                    currentTrackNumber = cleanStartIndex + 1,
                     totalTracks = items.size,
                     durationUs = firstItem.durationUs
                 ),
@@ -2694,22 +2791,23 @@ class NoteCastService : Service() {
         updatePlaybackSurfaces(updateNotification = true)
         playbackJob = serviceScope.launch(playbackDispatcher) {
             if (replacingActivePlayback) {
-                withContext(Dispatchers.IO) { sendPanicMessages() }
+                previousPlaybackJob?.join()
+                sendPanicMessages()
                 delay(120)
             }
-            runPlayback(items, playlistName, generation)
+            runPlayback(items, playlistName, playlistId, generation, cleanStartIndex)
         }
     }
 
-    private suspend fun runPlayback(items: List<MidiLibraryItem>, playlistName: String?, generation: Long) {
+    private suspend fun runPlayback(items: List<MidiLibraryItem>, playlistName: String?, playlistId: String?, generation: Long, startIndex: Int) {
         var completedNormally = false
         try {
             android.os.Process.setThreadPriority(android.os.Process.THREAD_PRIORITY_URGENT_AUDIO)
             withContext(Dispatchers.Main) {
                 acquireWakeLock()
-                startForegroundForPlayback(items.first().title)
+                startForegroundForPlayback(items[startIndex].title)
             }
-            var index = 0
+            var index = startIndex
             while (index in items.indices) {
                 coroutineContext.ensureActive()
                 val item = items[index]
@@ -2723,6 +2821,7 @@ class NoteCastService : Service() {
                                 currentTitle = item.title,
                                 currentItemId = item.id,
                                 playlistName = playlistName,
+                                playlistId = playlistId,
                                 currentTrackNumber = index + 1,
                                 totalTracks = items.size,
                                 progressUs = 0L,
@@ -2746,6 +2845,7 @@ class NoteCastService : Service() {
                                 currentTitle = item.title,
                                 currentItemId = item.id,
                                 playlistName = playlistName,
+                                playlistId = playlistId,
                                 currentTrackNumber = index + 1,
                                 totalTracks = items.size,
                                 progressUs = 0L,
@@ -4452,13 +4552,17 @@ class NoteCastService : Service() {
             .filterNot { isDeviceHidden(it.address) }
             .distinctBy { connectionTargetKey(it.address) }
             .sortedWith(
-                compareByDescending<BleMidiDeviceItem> { it.added }
+                compareByDescending<BleMidiDeviceItem> { isAttachedUsbMidiDevice(it) }
+                    .thenByDescending { it.added }
                     .thenByDescending { it.standardBleMidi }
                     .thenByDescending { it.likelyMidi }
                     .thenByDescending { it.rssi ?: -999 }
                     .thenBy { it.name }
             )
     }
+
+    private fun isAttachedUsbMidiDevice(device: BleMidiDeviceItem): Boolean =
+        device.connectable && (device.source == "USB MIDI" || device.detail.startsWith("USB MIDI"))
 
     @SuppressLint("MissingPermission")
     private fun addScanResult(result: ScanResult) {

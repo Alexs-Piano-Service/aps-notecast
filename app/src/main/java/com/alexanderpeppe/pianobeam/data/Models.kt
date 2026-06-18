@@ -95,20 +95,31 @@ data class ExternalMidiSource(
 
         val DefaultSources = listOf(Kuhmann, Mutopia)
 
-        fun fromJson(json: String): List<ExternalMidiSource> {
+        fun fromJson(json: String): List<ExternalMidiSource> =
+            fromJson(json, DefaultSources)
+
+        fun fromJsonOrEmpty(json: String): List<ExternalMidiSource> =
+            fromJson(json, emptyList())
+
+        private fun fromJson(json: String, fallbackSources: List<ExternalMidiSource>): List<ExternalMidiSource> {
             val root = json.trim()
-            if (root.isBlank()) return DefaultSources
+            if (root.isBlank()) return fallbackSources
             val array = runCatching {
-                if (root.startsWith("[")) JSONArray(root) else JSONObject(root).optJSONArray("sources") ?: JSONArray()
+                if (root.startsWith("[")) {
+                    JSONArray(root)
+                } else {
+                    val obj = JSONObject(root)
+                    obj.optJSONArray("sources") ?: JSONArray().put(obj)
+                }
             }.getOrElse {
-                return DefaultSources
+                return fallbackSources
             }
             val sources = buildList {
                 for (index in 0 until array.length()) {
                     array.optJSONObject(index)?.toExternalMidiSource()?.let { add(it) }
                 }
             }.distinctBy { it.key }
-            return sources.ifEmpty { DefaultSources }
+            return sources.ifEmpty { fallbackSources }
         }
 
         fun defaultForKey(key: String): ExternalMidiSource? =
@@ -260,6 +271,7 @@ data class PlaybackUiState(
     val currentTitle: String? = null,
     val currentItemId: String? = null,
     val playlistName: String? = null,
+    val playlistId: String? = null,
     val currentTrackNumber: Int = 0,
     val totalTracks: Int = 0,
     val progressUs: Long = 0,

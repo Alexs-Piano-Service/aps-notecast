@@ -25,8 +25,8 @@ android {
         applicationId = "com.alexanderpeppe.notecast"
         minSdk = 26
         targetSdk = 36
-        versionCode = 12
-        versionName = "0.1.9"
+        versionCode = 13
+        versionName = "0.1.10"
 
         vectorDrawables {
             useSupportLibrary = true

@@ -8,6 +8,8 @@ All notable changes to APS NoteCast are documented here.
 
 - USB MIDI adapters exposed by Android now appear in the adapter list and can be connected like Bluetooth MIDI devices.
 - Mutopia Project is now available as a selectable External MIDI source alongside Kuhmann.
+- External MIDI source definitions can now be extended from bundled per-source JSON files or app-local JSON files.
+- Standalone external MIDI directory JSON generator for source/database maintainers.
 
 ### Changed
 
@@ -21,6 +23,11 @@ All notable changes to APS NoteCast are documented here.
 - General MIDI files can now switch between Alphabetical sections and the All Songs list.
 - Alphabetical MIDI sections now include an independent expand/collapse-all button beside the Alphabetical view selector.
 - External MIDI Piano/Ensemble filtering now treats channel 3 as piano-only only when it is pedal/controller-only, not when it carries instrument notes.
+- External MIDI source documentation now describes the modular source schema, search endpoint contract, and custom hosted-directory setup.
+- External MIDI search now keeps rights details in the source subtitle and About/policy links instead of extra controls in the search dialog.
+- Selecting another song or playlist during playback now switches cleanly, playlist track selection can start from that track, and volume changes avoid note-off cleanup on each slider movement.
+- The loading, splash, and header logos now use crisp transparent variations of the radiation mark instead of the regular APS logo.
+- Attached USB MIDI adapters now appear before Bluetooth and saved adapters in the MIDI adapter picker.
 
 ## 0.1.7
 

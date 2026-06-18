@@ -133,6 +133,13 @@ External-source imports are user initiated. APS NoteCast should not be described
 in store listings, screenshots, or release text as providing a built-in catalog
 of free songs.
 
+External MIDI sources are modular. The built-in source list is defined in
+`app/src/main/assets/external_midi_sources.json`, and custom builds or
+installations can add more JSON source definitions without changing the search
+UI. See [External MIDI Sources](docs/external-midi-sources.md) for the source
+schema, search endpoint contract, and instructions for linking APS NoteCast to
+your own hosted MIDI directory files.
+
 ## Build
 
 Requirements:
@@ -213,6 +220,8 @@ The Android resource scaffolding is present so app metadata and resource-backed 
 APS NoteCast is licensed under the Apache License, Version 2.0. See [LICENSE](LICENSE) and [NOTICE](NOTICE).
 
 Third-party dependency and bundled asset provenance is documented in [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).
+
+In the app, open About for the current website, disclaimer, DMCA / removal, and privacy policy links.
 
 Alex's Piano Service LLC website policies:
 
