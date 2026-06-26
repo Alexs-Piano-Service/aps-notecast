@@ -19,10 +19,10 @@ Use a real Android device for BLE MIDI work. Emulators generally cannot validate
 Use test copies of MIDI files whenever possible. When testing with a physical player piano:
 
 - Start at low volume.
-- Test Stop and Panic before long playback.
+- Test Stop and second-tap Stop cleanup before long playback.
 - Keep the phone close to the BLE MIDI adapter during timing tests.
 - Confirm sustain and all-notes-off behavior on the receiving instrument.
-- Do not test unattended playlists until disconnect, panic, and stop behavior are known-good.
+- Do not test unattended playlists until disconnect, stop, and second-tap Stop cleanup behavior are known-good.
 
 ## Code Style
 

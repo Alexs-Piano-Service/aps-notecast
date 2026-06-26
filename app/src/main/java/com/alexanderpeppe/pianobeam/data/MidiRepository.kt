@@ -91,7 +91,11 @@ class MidiRepository(private val context: Context) {
             val root = JSONObject(metadataFile.readText())
             val files = root.optJSONArray("files")?.toMidiFiles() ?: emptyList()
             val playlists = root.optJSONArray("playlists")?.toPlaylists() ?: emptyList()
-            val snapshot = LibrarySnapshot(files, playlists)
+            val snapshot = LibrarySnapshot(
+                files = files,
+                playlists = playlists,
+                bundledDemosEnabled = root.optBoolean("bundledDemosEnabled", true)
+            )
             val normalized = snapshot.normalizeImportedNames()
             if (normalized != snapshot) save(normalized)
             normalized
@@ -103,6 +107,19 @@ class MidiRepository(private val context: Context) {
     @Synchronized
     fun ensureDemoMidi() {
         val snapshot = load()
+        val demoIds = listOf(DEMO_BEETHOVEN_FUR_ELISE_ID, DEMO_BACH_WTC1_PRELUDE1_ID)
+        val replacedDemoIds = demoIds + LEGACY_DEMO_IDS
+        if (!snapshot.bundledDemosEnabled) {
+            (LEGACY_DEMO_FILES + DEMO_BEETHOVEN_FUR_ELISE_FILE + DEMO_BACH_WTC1_PRELUDE1_FILE)
+                .forEach { fileName -> runCatching { File(midiDir, fileName).delete() } }
+            val files = snapshot.files.filterNot { it.id in replacedDemoIds }
+            val playlists = snapshot.playlists
+                .filterNot { it.id == DEMO_PLAYLIST_ID || it.itemIds.any { itemId -> itemId in replacedDemoIds } }
+            if (files != snapshot.files || playlists != snapshot.playlists) {
+                save(snapshot.copy(files = files, playlists = playlists))
+            }
+            return
+        }
         LEGACY_DEMO_FILES.forEach { fileName ->
             runCatching { File(midiDir, fileName).delete() }
         }
@@ -124,8 +141,6 @@ class MidiRepository(private val context: Context) {
             rawResourceId = R.raw.demo_bach_wtc1_prelude1,
             importedAtMs = 1L
         )
-        val demoIds = listOf(DEMO_BEETHOVEN_FUR_ELISE_ID, DEMO_BACH_WTC1_PRELUDE1_ID)
-        val replacedDemoIds = demoIds + LEGACY_DEMO_IDS
         val files = snapshot.files.filterNot { it.id in replacedDemoIds } + listOf(furElise, bachPrelude)
         val samplePlaylist = MidiPlaylist(
             id = DEMO_PLAYLIST_ID,
@@ -443,6 +458,12 @@ class MidiRepository(private val context: Context) {
     }
 
     @Synchronized
+    fun purgeLibrary() {
+        midiDir.listFiles()?.forEach { file -> runCatching { file.deleteRecursively() } }
+        save(LibrarySnapshot(bundledDemosEnabled = false))
+    }
+
+    @Synchronized
     fun renameFile(itemId: String, title: String) {
         val cleanTitle = title.trim().ifBlank { "Untitled MIDI" }
         val snapshot = load()
@@ -573,6 +594,7 @@ class MidiRepository(private val context: Context) {
         val snapshot = load()
         val root = JSONObject()
         root.put("version", 1)
+        root.put("bundledDemosEnabled", snapshot.bundledDemosEnabled)
         root.put("files", JSONArray().also { array ->
             snapshot.files.forEach { item ->
                 val file = fileFor(item)
@@ -633,12 +655,19 @@ class MidiRepository(private val context: Context) {
         val playlists = root.optJSONArray("playlists")?.toPlaylists()
             ?.map { playlist -> playlist.copy(itemIds = playlist.itemIds.filter { it in restoredIds }) }
             ?: emptyList()
-        save(LibrarySnapshot(files = restoredFiles, playlists = playlists))
+        save(
+            LibrarySnapshot(
+                files = restoredFiles,
+                playlists = playlists,
+                bundledDemosEnabled = root.optBoolean("bundledDemosEnabled", true)
+            )
+        )
     }
 
     @Synchronized
     private fun save(snapshot: LibrarySnapshot) {
         val root = JSONObject()
+        root.put("bundledDemosEnabled", snapshot.bundledDemosEnabled)
         root.put("files", JSONArray().also { array ->
             snapshot.files.forEach { item ->
                 array.put(JSONObject().apply {

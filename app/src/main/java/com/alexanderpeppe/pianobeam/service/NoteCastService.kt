@@ -53,6 +53,7 @@ import com.alexanderpeppe.pianobeam.data.ExternalMidiSource
 import com.alexanderpeppe.pianobeam.data.ImportUiState
 import com.alexanderpeppe.pianobeam.data.KuhmannMidiResult
 import com.alexanderpeppe.pianobeam.data.KuhmannSearchUiState
+import com.alexanderpeppe.pianobeam.data.LastPlaybackSnapshot
 import com.alexanderpeppe.pianobeam.data.MidiChannelControl
 import com.alexanderpeppe.pianobeam.data.MidiLibraryItem
 import com.alexanderpeppe.pianobeam.data.MidiRepository
@@ -113,7 +114,6 @@ class NoteCastService : Service() {
         private const val ACTION_PREVIOUS = "com.alexanderpeppe.notecast.PREVIOUS"
         private const val ACTION_NEXT = "com.alexanderpeppe.notecast.NEXT"
         private const val ACTION_STOP = "com.alexanderpeppe.notecast.STOP"
-        private const val ACTION_PANIC = "com.alexanderpeppe.notecast.PANIC"
         private const val ACTION_DEBUG_SCAN = "com.alexanderpeppe.notecast.DEBUG_SCAN"
         private const val ACTION_DEBUG_DIAGNOSTICS = "com.alexanderpeppe.notecast.DEBUG_DIAGNOSTICS"
         private const val LOG_TAG = "NoteCastBle"
@@ -214,7 +214,7 @@ class NoteCastService : Service() {
             refreshAndroidMidiDevices()
             val connection = _state.value.connection
             if (connection.connected && (sameConnectionTarget(connection.address, removedConnectionId) || removedCurrentDevice)) {
-                handleConnectionLost("${connection.deviceName ?: "MIDI device"} disconnected.")
+                handleConnectionLost(text(R.string.service_device_disconnected, connection.deviceName ?: text(R.string.service_midi_device_lower)))
             }
         }
     }
@@ -386,6 +386,36 @@ class NoteCastService : Service() {
     private val _state = MutableStateFlow(AppUiState())
     val state: StateFlow<AppUiState> = _state.asStateFlow()
 
+    private fun text(resId: Int, vararg args: Any): String =
+        getString(resId, *args)
+
+    private fun unknownError(throwable: Throwable): String =
+        throwable.message ?: text(R.string.service_unknown_error)
+
+    private fun ExternalMidiSource.localizedInitialMessage(): String = when {
+        isKuhmann -> text(R.string.external_kuhmann_initial)
+        isMutopia -> text(R.string.external_mutopia_initial)
+        else -> initialMessage
+    }
+
+    private fun ExternalMidiSource.localizedSearchMessage(): String = when {
+        isKuhmann -> text(R.string.external_kuhmann_search)
+        isMutopia -> text(R.string.external_mutopia_search)
+        else -> searchMessage
+    }
+
+    private fun ExternalMidiSource.localizedResultLabel(): String = when {
+        isKuhmann -> text(R.string.external_kuhmann_result_label)
+        isMutopia -> text(R.string.external_mutopia_result_label)
+        else -> resultLabel
+    }
+
+    private fun ExternalMidiSource.localizedFoundMessageSuffix(): String = when {
+        isKuhmann -> text(R.string.external_kuhmann_found_suffix)
+        isMutopia -> text(R.string.external_mutopia_found_suffix)
+        else -> foundMessageSuffix
+    }
+
     override fun onCreate() {
         super.onCreate()
         AppEventLog.install(applicationContext)
@@ -401,7 +431,7 @@ class NoteCastService : Service() {
         midiManager.registerDeviceCallback(midiDeviceCallback, mainHandler)
         registerBluetoothStateReceiver()
         refreshKnownDevices()
-        reloadLibrary("Ready")
+        reloadLibrary(text(R.string.service_ready))
     }
 
     override fun onBind(intent: Intent?): IBinder = binder
@@ -418,7 +448,7 @@ class NoteCastService : Service() {
                 kuhmann = it.kuhmann.copy(
                     availableSources = sources,
                     source = selectedSource,
-                    message = selectedSource.initialMessage
+                    message = selectedSource.localizedInitialMessage()
                 )
             )
         }
@@ -497,8 +527,7 @@ class NoteCastService : Service() {
             ACTION_PLAY_PAUSE -> togglePlaybackFromMediaControls()
             ACTION_PREVIOUS -> skipToPrevious()
             ACTION_NEXT -> skipToNext()
-            ACTION_STOP -> stopPlayback(userRequested = true)
-            ACTION_PANIC -> panic()
+            ACTION_STOP -> stopPlaybackOrQuietOutputs()
             ACTION_DEBUG_SCAN -> {
                 logEvent("ADB requested BLE MIDI scan.")
                 startBleScan()
@@ -573,7 +602,7 @@ class NoteCastService : Service() {
 
     fun playDiagnosticChromaticScale(velocity: Int, noteLengthMs: Int) {
         if (midiInputPort == null || !_state.value.connection.connected) {
-            postMessage("Connect to a MIDI device before running the piano test.")
+            postMessage(text(R.string.service_connect_piano_test))
             return
         }
 
@@ -587,14 +616,14 @@ class NoteCastService : Service() {
                 previousDiagnosticJob?.join()
                 stopActivePlaybackForPianoTest()
                 withContext(Dispatchers.Main) {
-                    postMessage("Playing piano test scale.")
+                    postMessage(text(R.string.service_piano_test_playing))
                 }
                 sendActiveNoteOffMessages(releasePedals = false)
                 delay(80L)
                 val noteOffDelayMs = 35L
                 for (note in DIAGNOSTIC_FIRST_PIANO_NOTE..DIAGNOSTIC_LAST_PIANO_NOTE) {
                     coroutineContext.ensureActive()
-                    val port = midiInputPort ?: throw IOException("MIDI connection was lost")
+                    val port = midiInputPort ?: throw IOException(text(R.string.service_midi_connection_lost_no_period))
                     val noteOn = byteArrayOf(0x90.toByte(), note.toByte(), cleanVelocity.toByte())
                     val noteOff = byteArrayOf(0x80.toByte(), note.toByte(), 0)
                     sendTrackedMidiData(port, noteOn, System.nanoTime())
@@ -604,17 +633,17 @@ class NoteCastService : Service() {
                     delay(noteOffDelayMs)
                 }
                 withContext(Dispatchers.Main) {
-                    postMessage("Piano test scale finished.")
+                    postMessage(text(R.string.service_piano_test_finished))
                 }
             } catch (cancelled: CancellationException) {
                 throw cancelled
             } catch (io: IOException) {
                 withContext(Dispatchers.Main) {
-                    handleConnectionLost("MIDI connection was lost.")
+                    handleConnectionLost(text(R.string.service_midi_connection_lost))
                 }
             } catch (t: Throwable) {
                 withContext(Dispatchers.Main) {
-                    postMessage("Could not play piano test scale: ${t.message ?: "unknown error"}")
+                    postMessage(text(R.string.service_could_not_play_piano_test, unknownError(t)))
                 }
             } finally {
                 if (playedAnyNote) sendActiveNoteOffMessages(releasePedals = false)
@@ -630,7 +659,7 @@ class NoteCastService : Service() {
     fun stopDiagnosticChromaticScale() {
         val job = diagnosticJob
         if (job == null || !job.isActive) {
-            postMessage("No piano test is playing.")
+            postMessage(text(R.string.service_no_piano_test))
             return
         }
         diagnosticJob = null
@@ -639,14 +668,14 @@ class NoteCastService : Service() {
             job.join()
             sendActiveNoteOffMessages(releasePedals = false)
             withContext(Dispatchers.Main) {
-                postMessage("Piano test stopped.")
+                postMessage(text(R.string.service_piano_test_stopped))
             }
         }
     }
 
     fun setPianoTestSustainPedal(pressed: Boolean, playSustainedChord: Boolean) {
         if (midiInputPort == null || !_state.value.connection.connected) {
-            postMessage("Connect to a MIDI device before testing sustain.")
+            postMessage(text(R.string.service_connect_sustain_test))
             return
         }
 
@@ -658,19 +687,19 @@ class NoteCastService : Service() {
                     previousDiagnosticJob?.join()
                     stopActivePlaybackForPianoTest()
                     withContext(Dispatchers.Main) {
-                        postMessage("Pedal test: sustain on, playing C major chord.")
+                        postMessage(text(R.string.service_pedal_test_chord_on))
                     }
                     sendActiveNoteOffMessages(releasePedals = true)
                     delay(80L)
                     val sent = sendSustainPedalMessages(pressed = true)
                     if (!sent) {
                         withContext(Dispatchers.Main) {
-                            postMessage("Could not send pedal test sustain on.")
+                            postMessage(text(R.string.service_could_not_send_pedal_on))
                         }
                         return@launch
                     }
                     delay(60L)
-                    val port = midiInputPort ?: throw IOException("MIDI connection was lost")
+                    val port = midiInputPort ?: throw IOException(text(R.string.service_midi_connection_lost_no_period))
                     DIAGNOSTIC_PEDAL_TEST_CHORD.forEach { note ->
                         sendTrackedMidiData(
                             port,
@@ -687,17 +716,17 @@ class NoteCastService : Service() {
                         )
                     }
                     withContext(Dispatchers.Main) {
-                        postMessage("Pedal test chord released. It should sustain until Pedal Test Off.")
+                        postMessage(text(R.string.service_pedal_chord_released))
                     }
                 } catch (cancelled: CancellationException) {
                     throw cancelled
                 } catch (io: IOException) {
                     withContext(Dispatchers.Main) {
-                        handleConnectionLost("MIDI connection was lost.")
+                        handleConnectionLost(text(R.string.service_midi_connection_lost))
                     }
                 } catch (t: Throwable) {
                     withContext(Dispatchers.Main) {
-                        postMessage("Could not run pedal test: ${t.message ?: "unknown error"}")
+                        postMessage(text(R.string.service_could_not_run_pedal_test, unknownError(t)))
                     }
                 } finally {
                     if (diagnosticJob === coroutineContext[Job]) {
@@ -717,9 +746,9 @@ class NoteCastService : Service() {
             val sent = sendSustainPedalMessages(pressed)
             withContext(Dispatchers.Main) {
                 if (sent) {
-                    postMessage("Pedal test sustain ${if (pressed) "on" else "off"}.")
+                    postMessage(if (pressed) text(R.string.service_pedal_test_on) else text(R.string.service_pedal_test_off))
                 } else {
-                    postMessage("Could not send pedal test sustain ${if (pressed) "on" else "off"}.")
+                    postMessage(if (pressed) text(R.string.service_could_not_send_pedal_on) else text(R.string.service_could_not_send_pedal_off))
                 }
             }
         }
@@ -745,7 +774,7 @@ class NoteCastService : Service() {
                     playback = PlaybackUiState(),
                     playbackChannels = emptyList(),
                     kuhmann = it.kuhmann.copy(activePlaybackResultKey = null),
-                    lastMessage = "Playback stopped for piano test."
+                    lastMessage = text(R.string.service_playback_stopped_for_piano_test)
                 )
             }
             updatePlaybackSurfaces(updateNotification = true)
@@ -761,7 +790,7 @@ class NoteCastService : Service() {
     fun importMidiFiles(uris: List<android.net.Uri>) {
         if (uris.isEmpty()) return
         val totalItems = uris.size
-        val startMessage = "Importing $totalItems selected item${if (totalItems == 1) "" else "s"}..."
+        val startMessage = text(R.string.service_import_selected_items, totalItems)
         AppEventLog.append(startMessage)
         _state.update {
             it.copy(
@@ -791,7 +820,7 @@ class NoteCastService : Service() {
                         now - lastProgressPostMs >= 250L
                     if (shouldPost) {
                         lastProgressPostMs = now
-                        val progressMessage = "Importing ${progress.processedItems}/${progress.totalItems}..."
+                        val progressMessage = text(R.string.service_import_progress_short, progress.processedItems, progress.totalItems)
                         mainHandler.post {
                             _state.update {
                                 it.copy(
@@ -829,23 +858,23 @@ class NoteCastService : Service() {
                     val failed = importResult.failedItems
                     val zipWithoutMidi = importResult.zipWithoutMidiItems
                     val playlistTarget = if (playlistsCreated == 1) {
-                        "playlist ${importResult.createdPlaylists.first().name}"
+                        text(R.string.service_import_playlist_name, importResult.createdPlaylists.first().name)
                     } else {
-                        "$playlistsCreated playlists"
+                        text(R.string.service_import_playlists_count, playlistsCreated)
                     }
                     val message = when {
                         imported > 0 && failed == 0 && playlistsCreated > 0 ->
-                            "Imported $imported MIDI file${if (imported == 1) "" else "s"} into $playlistTarget."
+                            text(R.string.service_import_midi_into, imported, playlistTarget)
                         imported > 0 && failed == 0 ->
-                            "Imported $imported MIDI file${if (imported == 1) "" else "s"}."
+                            text(R.string.service_import_midi_success, imported)
                         imported > 0 && playlistsCreated > 0 ->
-                            "Imported $imported MIDI file${if (imported == 1) "" else "s"} into $playlistTarget; $failed failed."
+                            text(R.string.service_import_midi_into_failed, imported, playlistTarget, failed)
                         imported > 0 ->
-                            "Imported $imported MIDI file${if (imported == 1) "" else "s"}; $failed failed."
+                            text(R.string.service_import_midi_partial, imported, failed)
                         zipWithoutMidi > 0 && zipWithoutMidi == failed ->
-                            "ZIP files must contain at least one MIDI file."
+                            text(R.string.service_zip_no_midi)
                         else ->
-                            "Could not import the selected MIDI file${if (failed == 1) "" else "s"}."
+                            text(R.string.service_could_not_import_midi)
                     }
                     reloadLibrary(message)
                     _state.update {
@@ -861,7 +890,7 @@ class NoteCastService : Service() {
                         )
                     }
                 }.onFailure { throwable ->
-                    val message = "Import stopped: ${throwable.message ?: "could not save the library"}."
+                    val message = text(R.string.service_import_failed, throwable.message ?: text(R.string.service_import_failure_fallback))
                     AppEventLog.append("MIDI import failed after $processedItems/$totalItems items: ${throwable.message ?: throwable::class.java.simpleName}")
                     reloadLibrary(message)
                     _state.update {
@@ -892,7 +921,7 @@ class NoteCastService : Service() {
                     downloading = false,
                     source = selectedSource,
                     results = emptyList(),
-                    message = selectedSource.initialMessage,
+                    message = selectedSource.localizedInitialMessage(),
                     lastImportedKeys = emptyList(),
                     activePlaybackResultKey = null
                 )
@@ -921,7 +950,7 @@ class NoteCastService : Service() {
                         limit = cleanLimit,
                         results = emptyList(),
                         lastImportedKeys = emptyList(),
-                        message = "Enter a search term."
+                        message = text(R.string.external_empty_hint)
                     )
                 )
             }
@@ -980,7 +1009,7 @@ class NoteCastService : Service() {
                     channel = cleanChannel,
                     limit = cleanLimit,
                     results = emptyList(),
-                    message = selectedSource.searchMessage
+                    message = selectedSource.localizedSearchMessage()
                 )
             )
         }
@@ -1021,7 +1050,7 @@ class NoteCastService : Service() {
     fun downloadKuhmannMidi(results: List<KuhmannMidiResult>) {
         val uniqueResults = results.distinctBy { it.stableKey }.filter { it.url.isNotBlank() }
         if (uniqueResults.isEmpty()) return
-            val source = uniqueResults.first().source
+        val source = uniqueResults.first().source
         if (!ApsNetworkStatus.canReachInternet(this)) {
             val message = ApsNetworkStatus.userMessage(this)
             _state.update {
@@ -1038,7 +1067,7 @@ class NoteCastService : Service() {
                 kuhmann = it.kuhmann.copy(
                     downloading = true,
                     source = source,
-                    message = "Importing ${uniqueResults.size} file${if (uniqueResults.size == 1) "" else "s"} from ${source.displayName}..."
+                    message = text(R.string.service_import_external_start, uniqueResults.size, source.displayName)
                 )
             )
         }
@@ -1069,10 +1098,10 @@ class NoteCastService : Service() {
             }
             withContext(Dispatchers.Main) {
                 val message = when {
-                    imported > 0 && failed == 0 -> "Imported $imported file${if (imported == 1) "" else "s"} from ${source.displayName}."
-                    imported > 0 -> "Imported $imported file${if (imported == 1) "" else "s"} from ${source.displayName}; $failed failed."
+                    imported > 0 && failed == 0 -> text(R.string.service_import_source_success, imported, source.displayName)
+                    imported > 0 -> text(R.string.service_import_source_failed, imported, source.displayName, failed)
                     networkFailure -> ApsNetworkStatus.userMessage(this@NoteCastService)
-                    else -> "Could not import the selected ${source.displayName} file${if (failed == 1) "" else "s"}."
+                    else -> text(R.string.service_could_not_import_external, source.displayName)
                 }
                 reloadLibrary(message)
                 val previewItemId = _state.value.playback.currentItemId
@@ -1099,6 +1128,11 @@ class NoteCastService : Service() {
                     }
                     it.copy(
                         playback = playback,
+                        lastPlayback = if (playback.isActive) {
+                            playback.toLastPlaybackSnapshot(it.playbackChannels)
+                        } else {
+                            it.lastPlayback
+                        },
                         kuhmann = it.kuhmann.copy(
                             downloading = false,
                             source = source,
@@ -1114,7 +1148,7 @@ class NoteCastService : Service() {
     fun playKuhmannMidi(result: KuhmannMidiResult) {
         if (result.url.isBlank()) return
         if (midiInputPort == null || !_state.value.connection.connected) {
-            postMessage("Connect to a MIDI device before playing.")
+            postMessage(text(R.string.service_connect_before_playing))
             return
         }
         if (!ApsNetworkStatus.canReachInternet(this)) {
@@ -1128,7 +1162,7 @@ class NoteCastService : Service() {
             return
         }
 
-        val title = result.title.ifBlank { result.filename.ifBlank { "${result.source.displayName} MIDI file" } }
+        val title = result.title.ifBlank { result.filename.ifBlank { text(R.string.service_external_midi_file, result.source.displayName) } }
         val temporaryItemId = "external-preview-${result.source.key}-${result.id}-${SystemClock.elapsedRealtime()}"
         val generation = playbackGeneration.incrementAndGet()
         val replacingActivePlayback = _state.value.playback.isActive || playbackJob?.isActive == true
@@ -1139,21 +1173,23 @@ class NoteCastService : Service() {
         previousPlaybackJob?.cancel()
         clearPlaybackItemAliases()
         _state.update {
+            val playback = PlaybackUiState(
+                mode = PlaybackMode.Preparing,
+                currentTitle = title,
+                currentItemId = temporaryItemId,
+                currentTrackNumber = 1,
+                totalTracks = 1
+            )
             it.copy(
-                playback = PlaybackUiState(
-                    mode = PlaybackMode.Preparing,
-                    currentTitle = title,
-                    currentItemId = temporaryItemId,
-                    currentTrackNumber = 1,
-                    totalTracks = 1
-                ),
+                playback = playback,
                 playbackChannels = emptyList(),
+                lastPlayback = playback.toLastPlaybackSnapshot(emptyList()),
                 kuhmann = it.kuhmann.copy(
                     source = result.source,
-                    message = "Preparing $title...",
+                    message = text(R.string.service_preparing_title, title),
                     activePlaybackResultKey = result.stableKey
                 ),
-                lastMessage = if (replacingActivePlayback) "Switching to $title..." else "Preparing $title..."
+                lastMessage = if (replacingActivePlayback) text(R.string.service_switching_to_title, title) else text(R.string.service_preparing_title, title)
             )
         }
         updatePlaybackSurfaces(updateNotification = true)
@@ -1170,7 +1206,7 @@ class NoteCastService : Service() {
     fun deleteMidiFile(itemId: String) {
         stopPlaybackIfUsing(itemId)
         repository.deleteFile(itemId)
-        reloadLibrary("Removed MIDI file.")
+        reloadLibrary(text(R.string.service_remove_midi_file))
     }
 
     fun deleteMidiFiles(itemIds: List<String>) {
@@ -1178,63 +1214,63 @@ class NoteCastService : Service() {
         if (cleanIds.isEmpty()) return
         if (cleanIds.any { _state.value.playback.currentItemId == it }) stopPlayback(userRequested = true)
         repository.deleteFiles(cleanIds)
-        reloadLibrary("Removed ${cleanIds.size} MIDI file${if (cleanIds.size == 1) "" else "s"}.")
+        reloadLibrary(text(R.string.service_remove_midi_files, cleanIds.size))
     }
 
     fun renameMidiFile(itemId: String, title: String) {
         repository.renameFile(itemId, title)
-        reloadLibrary("Renamed MIDI file.")
+        reloadLibrary(text(R.string.service_rename_midi_file))
     }
 
     fun createPlaylist(name: String) {
         repository.createPlaylist(name)
-        reloadLibrary("Created playlist.")
+        reloadLibrary(text(R.string.service_create_playlist))
     }
 
     fun createPlaylist(name: String, itemIds: List<String>) {
         repository.createPlaylist(name, itemIds)
         val count = itemIds.distinct().size
-        reloadLibrary("Created playlist with $count MIDI file${if (count == 1) "" else "s"}.")
+        reloadLibrary(text(R.string.service_create_playlist_with_count, count))
     }
 
     fun deletePlaylist(playlistId: String) {
         repository.deletePlaylist(playlistId)
-        reloadLibrary("Deleted playlist.")
+        reloadLibrary(text(R.string.service_delete_playlist))
     }
 
     fun renamePlaylist(playlistId: String, name: String) {
         repository.renamePlaylist(playlistId, name)
-        reloadLibrary("Renamed playlist.")
+        reloadLibrary(text(R.string.service_rename_playlist))
     }
 
     fun setPlaylistColor(playlistId: String, colorHex: String?) {
         repository.setPlaylistColor(playlistId, colorHex)
-        reloadLibrary("Updated playlist color.")
+        reloadLibrary(text(R.string.service_update_playlist_color))
     }
 
     fun duplicatePlaylist(playlistId: String) {
         repository.duplicatePlaylist(playlistId)
-        reloadLibrary("Duplicated playlist.")
+        reloadLibrary(text(R.string.service_duplicate_playlist))
     }
 
     fun addToPlaylist(playlistId: String, itemId: String) {
         repository.addToPlaylist(playlistId, itemId)
-        reloadLibrary("Added to playlist.")
+        reloadLibrary(text(R.string.service_add_to_playlist))
     }
 
     fun addToPlaylist(playlistId: String, itemIds: List<String>) {
         repository.addToPlaylist(playlistId, itemIds)
-        reloadLibrary("Added ${itemIds.size} MIDI file${if (itemIds.size == 1) "" else "s"} to playlist.")
+        reloadLibrary(text(R.string.service_add_files_to_playlist, itemIds.size))
     }
 
     fun removeFromPlaylist(playlistId: String, index: Int) {
         repository.removeFromPlaylist(playlistId, index)
-        reloadLibrary("Removed from playlist.")
+        reloadLibrary(text(R.string.service_remove_from_playlist))
     }
 
     fun movePlaylistItem(playlistId: String, fromIndex: Int, direction: Int) {
         repository.movePlaylistItem(playlistId, fromIndex, direction)
-        reloadLibrary("Playlist updated.")
+        reloadLibrary(text(R.string.service_playlist_updated))
     }
 
     fun exportMidiFile(itemId: String, uri: Uri) {
@@ -1246,9 +1282,9 @@ class NoteCastService : Service() {
                     repository.fileFor(item).inputStream().use { input -> input.copyTo(output) }
                 }
             }.onSuccess {
-                withContext(Dispatchers.Main) { postMessage("Exported ${item.title}.") }
+                withContext(Dispatchers.Main) { postMessage(text(R.string.service_exported_title, item.title)) }
             }.onFailure {
-                withContext(Dispatchers.Main) { postMessage("Could not export ${item.title}.") }
+                withContext(Dispatchers.Main) { postMessage(text(R.string.service_could_not_export_title, item.title)) }
             }
         }
     }
@@ -1275,9 +1311,9 @@ class NoteCastService : Service() {
                     output.write(json.toByteArray(Charsets.UTF_8))
                 }
             }.onSuccess {
-                withContext(Dispatchers.Main) { postMessage("Library backup exported.") }
+                withContext(Dispatchers.Main) { postMessage(text(R.string.service_library_backup_exported)) }
             }.onFailure {
-                withContext(Dispatchers.Main) { postMessage("Could not export library backup.") }
+                withContext(Dispatchers.Main) { postMessage(text(R.string.service_could_not_export_library_backup)) }
             }
         }
     }
@@ -1293,9 +1329,22 @@ class NoteCastService : Service() {
                 repository.restoreBackupJson(json)
                 repository.ensureDemoMidi()
             }.onSuccess {
-                withContext(Dispatchers.Main) { reloadLibrary("Library backup restored.") }
+                withContext(Dispatchers.Main) { reloadLibrary(text(R.string.service_library_backup_restored)) }
             }.onFailure {
-                withContext(Dispatchers.Main) { postMessage("Could not restore library backup.") }
+                withContext(Dispatchers.Main) { postMessage(text(R.string.service_could_not_restore_library_backup)) }
+            }
+        }
+    }
+
+    fun purgeLibrary() {
+        stopPlayback(userRequested = false)
+        serviceScope.launch(Dispatchers.IO) {
+            runCatching {
+                repository.purgeLibrary()
+            }.onSuccess {
+                withContext(Dispatchers.Main) { reloadLibrary(text(R.string.service_library_purged)) }
+            }.onFailure {
+                withContext(Dispatchers.Main) { postMessage(text(R.string.service_could_not_purge_library)) }
             }
         }
     }
@@ -1313,7 +1362,7 @@ class NoteCastService : Service() {
         }
         if (available != null) {
             val (candidate, address) = available
-            postMessage("Reconnecting to ${candidate.name}...")
+            postMessage(text(R.string.service_reconnecting_to, candidate.name))
             connect(address)
             return
         }
@@ -1321,10 +1370,10 @@ class NoteCastService : Service() {
             .drop(1)
             .firstNotNullOfOrNull { availableAutoReconnectAddress(it.address) }
         if (!hasScanPermission()) {
-            postMessage("Bluetooth scan permission is needed before looking for ${preferred.name}.")
+            postMessage(text(R.string.service_bluetooth_scan_permission_needed_for, preferred.name))
             return
         }
-        postMessage("Looking for known BLE MIDI devices...")
+        postMessage(text(R.string.service_looking_known_ble))
         startBleScan(autoConnectKnownDevices = true, initialFallbackAddress = initialFallbackAddress)
     }
 
@@ -1350,26 +1399,26 @@ class NoteCastService : Service() {
         if (!autoConnectKnownDevices) clearHiddenDevices()
         refreshKnownDevices()
         if (!hasScanPermission()) {
-            postMessage("Bluetooth scan permission is required before scanning.")
+            postMessage(text(R.string.service_bluetooth_scan_permission_required))
             return
         }
         val adapter = bluetoothManager.adapter
         if (adapter == null) {
-            postMessage("This device does not have Bluetooth hardware.")
+            postMessage(text(R.string.service_no_bluetooth_hardware))
             return
         }
         if (!isBluetoothEnabled()) {
             _state.update {
                 it.copy(
                     connection = it.connection.copy(bluetoothEnabled = false, scanning = false),
-                    lastMessage = "Bluetooth is off. Turn it on to scan for MIDI devices."
+                    lastMessage = text(R.string.service_bluetooth_off_scan)
                 )
             }
             return
         }
         val scanner = adapter.bluetoothLeScanner
         if (scanner == null) {
-            postMessage("Bluetooth LE scanning is not available right now.")
+            postMessage(text(R.string.service_ble_scan_unavailable))
             return
         }
 
@@ -1381,9 +1430,9 @@ class NoteCastService : Service() {
         scanPreferredReconnectAddress = knownReconnectCandidates().firstOrNull()?.address
         scanFallbackReconnectAddress = initialFallbackAddress
         val message = when {
-            autoConnectKnownDevices -> "Looking for known BLE MIDI devices..."
-            _state.value.connection.connected -> "Looking for another BLE MIDI device..."
-            else -> "Scanning nearby BLE and Android MIDI devices..."
+            autoConnectKnownDevices -> text(R.string.service_looking_known_ble)
+            _state.value.connection.connected -> text(R.string.service_looking_another_ble)
+            else -> text(R.string.service_scanning_nearby)
         }
         _state.update {
             it.copy(
@@ -1408,7 +1457,7 @@ class NoteCastService : Service() {
                 scanCallback = null
                 finishBleScanSession("failed with Android error $errorCode")
                 clearReconnectScanState()
-                val message = "BLE scan failed with error $errorCode."
+                val message = text(R.string.service_ble_scan_failed, errorCode)
                 _state.update {
                     it.copy(
                         connection = it.connection.copy(scanning = false, message = message),
@@ -1435,7 +1484,7 @@ class NoteCastService : Service() {
         } catch (security: SecurityException) {
             finishBleScanSession("stopped because Bluetooth permission was denied")
             clearReconnectScanState()
-            val message = "Bluetooth permission was denied by Android."
+            val message = text(R.string.service_bluetooth_permission_denied)
             _state.update {
                 it.copy(
                     connection = it.connection.copy(scanning = false, message = message),
@@ -1514,7 +1563,7 @@ class NoteCastService : Service() {
         _state.update { it.copy(connection = it.connection.scanStopped()) }
         if (shouldUseFallback && fallbackAddress != null && !_state.value.connection.connected && !_state.value.connection.connecting) {
             val fallback = knownReconnectCandidates().firstOrNull { sameConnectionTarget(it.address, fallbackAddress) }
-            postMessage("Preferred device not found. Reconnecting to ${fallback?.name ?: "known MIDI device"}...")
+            postMessage(text(R.string.service_preferred_not_found_reconnecting, fallback?.name ?: text(R.string.service_known_midi_device)))
             mainHandler.post { connect(availableConnectionAddress(fallbackAddress) ?: fallbackAddress) }
         }
     }
@@ -1527,8 +1576,8 @@ class NoteCastService : Service() {
             (currentConnection.connected || currentConnection.connecting) &&
             sameConnectionTarget(currentConnection.address, resolvedAddress)
         ) {
-            val name = currentConnection.deviceName ?: currentConnection.rememberedDeviceName ?: "that MIDI device"
-            postMessage(if (currentConnection.connecting) "Already connecting to $name..." else "Already connected to $name.")
+            val name = currentConnection.deviceName ?: currentConnection.rememberedDeviceName ?: text(R.string.service_that_midi_device)
+            postMessage(if (currentConnection.connecting) text(R.string.service_already_connecting, name) else text(R.string.service_already_connected, name))
             return
         }
         clearManualDisconnectSuppression()
@@ -1538,17 +1587,17 @@ class NoteCastService : Service() {
         }
         val device = devicesByAddress[resolvedAddress]
         if (device == null) {
-            updateConnectionMessage("That BLE MIDI device is not in the current scan list. Scan again with the device powered on.")
+            updateConnectionMessage(text(R.string.service_scan_list_missing))
             return
         }
         if (!hasConnectPermission()) {
-            updateConnectionMessage("Bluetooth connect permission is required before connecting.")
+            updateConnectionMessage(text(R.string.service_connect_permission_required))
             return
         }
         val directlyConnectable = isDirectBluetoothMidiConnectionAvailable(resolvedAddress)
         if (!isRecentlyScannedBleDevice(resolvedAddress) && !directlyConnectable) {
-            val name = runCatching { displayNameForBluetoothDevice(resolvedAddress, device, null) }.getOrDefault("That BLE MIDI device")
-            updateConnectionMessage("$name was not seen in the latest scan. Scan again with the device powered on.")
+            val name = runCatching { displayNameForBluetoothDevice(resolvedAddress, device, null) }.getOrDefault(text(R.string.service_that_ble_device))
+            updateConnectionMessage(text(R.string.service_device_not_seen, name))
             return
         }
         val generation = connectionGeneration.incrementAndGet()
@@ -1570,9 +1619,9 @@ class NoteCastService : Service() {
                     rememberedDeviceName = rememberedDeviceName(),
                     rememberedDeviceAddress = rememberedDeviceAddress(),
                     autoReconnectSuppressed = manualDisconnectSuppressed(),
-                    message = "Connecting to $name..."
+                    message = text(R.string.service_connecting_to, name)
                 ),
-                lastMessage = "Connecting to $name..."
+                lastMessage = text(R.string.service_connecting_to, name)
             )
         }
 
@@ -1587,12 +1636,12 @@ class NoteCastService : Service() {
                     val failureMessage = bluetoothConnectionFailureMessage(
                         connectionId = resolvedAddress,
                         info = null,
-                        baseMessage = "Could not open $name as a BLE MIDI device. Power-cycle the adapter, keep it nearby, then scan or connect again."
+                        baseMessage = text(R.string.service_could_not_open_ble, name)
                     )
                     _state.update {
                         it.copy(
                             connection = rememberedConnection(message = failureMessage),
-                            lastMessage = "Connection failed."
+                            lastMessage = text(R.string.service_connection_failed)
                         )
                     }
                     return@openBluetoothDevice
@@ -1604,8 +1653,8 @@ class NoteCastService : Service() {
                 logEvent("BLE MIDI connect permission denied for $name address=$resolvedAddress")
                 _state.update {
                     it.copy(
-                        connection = rememberedConnection(message = "Bluetooth connect permission was denied by Android."),
-                        lastMessage = "Connection permission denied."
+                        connection = rememberedConnection(message = text(R.string.service_bluetooth_connect_permission_denied)),
+                        lastMessage = text(R.string.service_connection_permission_denied)
                     )
                 }
             }
@@ -1615,12 +1664,12 @@ class NoteCastService : Service() {
                 val failureMessage = bluetoothConnectionFailureMessage(
                     connectionId = resolvedAddress,
                     info = null,
-                    baseMessage = "Android could not start the BLE MIDI connection. Power-cycle the adapter, keep it nearby, then scan or connect again."
+                    baseMessage = text(R.string.service_android_could_not_start_ble)
                 )
                 _state.update {
                     it.copy(
                         connection = rememberedConnection(message = failureMessage),
-                        lastMessage = "Connection failed: ${t.message ?: "unknown error"}"
+                        lastMessage = text(R.string.service_connection_failed_detail, unknownError(t))
                     )
                 }
             }
@@ -1666,8 +1715,8 @@ class NoteCastService : Service() {
         closeMidiConnection()
         _state.update {
             it.copy(
-                connection = rememberedConnection(message = "Disconnected"),
-                lastMessage = "Disconnected."
+                connection = rememberedConnection(message = text(R.string.service_disconnected)),
+                lastMessage = text(R.string.service_disconnected_period)
             )
         }
     }
@@ -1680,8 +1729,8 @@ class NoteCastService : Service() {
         suppressAutoReconnectAfterManualDisconnect()
         _state.update {
             it.copy(
-                connection = rememberedConnection(message = "Auto-reconnect paused."),
-                lastMessage = "Continuing offline."
+                connection = rememberedConnection(message = text(R.string.service_auto_reconnect_paused)),
+                lastMessage = text(R.string.service_continuing_offline)
             )
         }
     }
@@ -1720,7 +1769,7 @@ class NoteCastService : Service() {
             it.copy(
                 bleDevices = mergedDeviceList(),
                 connection = updatedConnection,
-                lastMessage = "Renamed MIDI device to $cleanName."
+                lastMessage = text(R.string.service_renamed_device, cleanName)
             )
         }
     }
@@ -1728,8 +1777,8 @@ class NoteCastService : Service() {
     fun addDevice(address: String) {
         val currentItem = mergedDeviceList().firstOrNull { sameConnectionTarget(it.address, address) }
         val cleanName = cleanStoredDeviceName(
-            currentItem?.name ?: deviceAlias(address) ?: "BLE MIDI Adapter ${shortBluetoothIdentifier(address)}"
-        ).ifBlank { "MIDI device" }
+            currentItem?.name ?: deviceAlias(address) ?: text(R.string.service_saved_adapter_default, shortBluetoothIdentifier(address))
+        ).ifBlank { text(R.string.service_midi_device_lower) }
         val updatedKnownDevices = (listOf(KnownMidiDevice(address, cleanName)) + knownDevices().filterNot {
             sameConnectionTarget(it.address, address)
         }).take(8)
@@ -1747,7 +1796,7 @@ class NoteCastService : Service() {
                     rememberedDeviceAddress = rememberedDeviceAddress(),
                     autoReconnectSuppressed = manualDisconnectSuppressed()
                 ),
-                lastMessage = "Added $cleanName to APS NoteCast."
+                lastMessage = text(R.string.service_add_device, cleanName)
             )
         }
     }
@@ -1756,7 +1805,7 @@ class NoteCastService : Service() {
         val connection = _state.value.connection
         val name = _state.value.bleDevices.firstOrNull { it.address == address }?.name
             ?: (if (connection.address == address) connection.deviceName else null)
-            ?: "MIDI device"
+            ?: text(R.string.service_midi_device_lower)
         val wasCurrentConnection = connection.address == address
         if (wasCurrentConnection) {
             connectionGeneration.incrementAndGet()
@@ -1792,7 +1841,7 @@ class NoteCastService : Service() {
 
         _state.update {
             val updatedConnection = if (wasCurrentConnection) {
-                rememberedConnection(message = "Removed $name from APS NoteCast.")
+                rememberedConnection(message = text(R.string.service_remove_device_from_app, name))
             } else {
                 it.connection.copy(
                     rememberedDeviceName = rememberedDeviceName(),
@@ -1803,7 +1852,7 @@ class NoteCastService : Service() {
             it.copy(
                 bleDevices = mergedDeviceList(),
                 connection = updatedConnection,
-                lastMessage = "Removed $name from the device list."
+                lastMessage = text(R.string.service_remove_device_from_list, name)
             )
         }
     }
@@ -1824,9 +1873,9 @@ class NoteCastService : Service() {
                     rememberedDeviceAddress = null,
                     rememberedDeviceName = null,
                     autoReconnectSuppressed = false,
-                    message = "No preferred MIDI device"
+                    message = text(R.string.service_no_preferred_midi_device)
                 ),
-                lastMessage = "Forgot preferred MIDI device."
+                lastMessage = text(R.string.service_forgot_preferred_midi_device)
             )
         }
     }
@@ -1857,15 +1906,15 @@ class NoteCastService : Service() {
         clearManualDisconnectSuppression()
         val info = midiDevicesByConnectionId[connectionId]
         if (info == null) {
-            postMessage("That Android MIDI device is no longer available. Scan again.")
+            postMessage(text(R.string.service_android_midi_unavailable))
             return
         }
         val name = displayNameForMidiDevice(info)
         if (!isAvailableAndroidMidiConnection(connectionId)) {
             val message = if (isBluetoothMidiConnection(connectionId, info)) {
-                "$name is not currently attached through Android Bluetooth. Use Scan + Connect, or pair/connect it in Android Bluetooth settings and return to APS NoteCast."
+                text(R.string.service_android_bt_not_attached, name)
             } else {
-                "$name is not currently attached. Plug it in, then open the adapter list again."
+                text(R.string.service_android_not_attached, name)
             }
             postMessage(message)
             return
@@ -1886,9 +1935,9 @@ class NoteCastService : Service() {
                     rememberedDeviceName = rememberedDeviceName(),
                     rememberedDeviceAddress = rememberedDeviceAddress(),
                     autoReconnectSuppressed = manualDisconnectSuppressed(),
-                    message = "Connecting to $name..."
+                    message = text(R.string.service_connecting_to, name)
                 ),
-                lastMessage = "Connecting to $name..."
+                lastMessage = text(R.string.service_connecting_to, name)
             )
         }
 
@@ -1904,15 +1953,15 @@ class NoteCastService : Service() {
                         bluetoothConnectionFailureMessage(
                             connectionId = connectionId,
                             info = info,
-                            baseMessage = "Could not open $name as a MIDI device."
+                            baseMessage = text(R.string.service_could_not_open_midi, name)
                         )
                     } else {
-                        "Could not open $name as a MIDI device."
+                        text(R.string.service_could_not_open_midi, name)
                     }
                     _state.update {
                         it.copy(
                             connection = rememberedConnection(message = message),
-                            lastMessage = "Connection failed."
+                            lastMessage = text(R.string.service_connection_failed)
                         )
                     }
                     return@openDevice
@@ -1926,15 +1975,15 @@ class NoteCastService : Service() {
                     bluetoothConnectionFailureMessage(
                         connectionId = connectionId,
                         info = info,
-                        baseMessage = "Android could not start the MIDI connection."
+                        baseMessage = text(R.string.service_android_could_not_start_midi)
                     )
                 } else {
-                    "Android could not start the MIDI connection."
+                    text(R.string.service_android_could_not_start_midi)
                 }
                 _state.update {
                     it.copy(
                         connection = rememberedConnection(message = message),
-                        lastMessage = "Connection failed: ${t.message ?: "unknown error"}"
+                        lastMessage = text(R.string.service_connection_failed_detail, unknownError(t))
                     )
                 }
             }
@@ -1960,15 +2009,15 @@ class NoteCastService : Service() {
                     bluetoothConnectionFailureMessage(
                         connectionId = connectionId,
                         info = openedDevice.info,
-                        baseMessage = "$name opened, but no MIDI input port was available."
+                        baseMessage = text(R.string.service_opened_no_input_port, name)
                     )
                 } else {
-                    "$name opened, but no MIDI input port was available."
+                    text(R.string.service_opened_no_input_port, name)
                 }
                 _state.update {
                     it.copy(
                         connection = rememberedConnection(message = message),
-                        lastMessage = "No MIDI input port available."
+                        lastMessage = text(R.string.service_no_input_port)
                     )
                 }
             }
@@ -1996,9 +2045,9 @@ class NoteCastService : Service() {
                 it.copy(
                     connection = it.connection.copy(
                         connecting = true,
-                        message = "Waiting for Android Bluetooth to attach to $name..."
+                        message = text(R.string.service_waiting_android_bt_attach, name)
                     ),
-                    lastMessage = "Waiting for Android Bluetooth to attach to $name..."
+                    lastMessage = text(R.string.service_waiting_android_bt_attach, name)
                 )
             }
             scheduleInitialConnectionVerification(name, connectionId, generation)
@@ -2009,9 +2058,9 @@ class NoteCastService : Service() {
                 it.copy(
                     connection = it.connection.copy(
                         connecting = true,
-                        message = "Finalizing BLE MIDI connection to $name..."
+                        message = text(R.string.service_finalizing_ble, name)
                     ),
-                    lastMessage = "Finalizing BLE MIDI connection to $name..."
+                    lastMessage = text(R.string.service_finalizing_ble, name)
                 )
             }
             scheduleInitialConnectionVerification(name, connectionId, generation, BLE_MIDI_READY_SETTLE_MS)
@@ -2039,9 +2088,9 @@ class NoteCastService : Service() {
                     rememberedDeviceName = name,
                     rememberedDeviceAddress = connectionId,
                     autoReconnectSuppressed = false,
-                    message = "Connected to $name"
+                    message = text(R.string.service_connected_to, name)
                 ),
-                lastMessage = "Connected to $name."
+                lastMessage = text(R.string.service_connected_to_period, name)
             )
         }
         startConnectionMonitor(name, connectionId)
@@ -2063,9 +2112,9 @@ class NoteCastService : Service() {
             }
             val needsBluetooth = isBluetoothMidiConnection(connectionId, connectedMidiDeviceInfo)
             val message = if (needsBluetooth) {
-                "$name opened, but Android did not finish attaching the BLE MIDI link. Power-cycle the adapter, then scan or connect again."
+                text(R.string.service_opened_ble_attach_failed, name)
             } else {
-                "$name opened, but Android no longer reports it as attached. Unplug it, plug it back in, then connect again."
+                text(R.string.service_opened_no_longer_attached, name)
             }
             val finalMessage = if (needsBluetooth) {
                 bluetoothConnectionFailureMessage(connectionId, connectedMidiDeviceInfo, message)
@@ -2079,7 +2128,7 @@ class NoteCastService : Service() {
                     connection = rememberedConnection(message = finalMessage),
                     playback = PlaybackUiState(),
                     playbackChannels = emptyList(),
-                    lastMessage = if (needsBluetooth) "$name BLE MIDI attach did not finish." else "$name is no longer attached."
+                    lastMessage = if (needsBluetooth) text(R.string.service_ble_attach_not_finished, name) else text(R.string.service_no_longer_attached, name)
                 )
             }
             updatePlaybackSurfaces(updateNotification = true)
@@ -2103,7 +2152,7 @@ class NoteCastService : Service() {
                     missedChecks++
                     if (missedChecks >= 2) {
                         withContext(Dispatchers.Main) {
-                            handleConnectionLost("$name disconnected.")
+                            handleConnectionLost(text(R.string.service_device_disconnected, name))
                         }
                         return@launch
                     }
@@ -2166,7 +2215,7 @@ class NoteCastService : Service() {
             next
         }
         return if (failures >= 2) {
-            "$baseMessage If connection keeps failing for this device, factory reset the Bluetooth MIDI adapter, then pair/scan it again."
+            "$baseMessage ${text(R.string.service_bluetooth_factory_reset_tip)}"
         } else {
             baseMessage
         }
@@ -2220,7 +2269,7 @@ class NoteCastService : Service() {
         val address = runCatching { device.address }.getOrNull() ?: return
         val variant = intent.getIntExtra(BluetoothDevice.EXTRA_PAIRING_VARIANT, BluetoothDevice.ERROR)
         val key = intent.getIntExtra(BluetoothDevice.EXTRA_PAIRING_KEY, BluetoothDevice.ERROR)
-        val name = runCatching { displayNameForBluetoothDevice(address, device, null) }.getOrDefault("Bluetooth device")
+        val name = runCatching { displayNameForBluetoothDevice(address, device, null) }.getOrDefault(text(R.string.service_bluetooth_device))
         logEvent("Bluetooth pairing request for $name address=$address variant=${pairingVariantName(variant)} key=${if (key == BluetoothDevice.ERROR) "none" else "present"}")
         notePairingForCurrentMidiLink(address, name, "pairing request")
     }
@@ -2231,17 +2280,17 @@ class NoteCastService : Service() {
         val address = runCatching { device.address }.getOrNull() ?: return
         val previousState = intent.getIntExtra(BluetoothDevice.EXTRA_PREVIOUS_BOND_STATE, -1)
         val newState = intent.getIntExtra(BluetoothDevice.EXTRA_BOND_STATE, -1)
-        val name = runCatching { displayNameForBluetoothDevice(address, device, null) }.getOrDefault("Bluetooth device")
+        val name = runCatching { displayNameForBluetoothDevice(address, device, null) }.getOrDefault(text(R.string.service_bluetooth_device))
         logEvent("Bluetooth bond state for $name address=$address: ${bondStateName(previousState)} -> ${bondStateName(newState)}")
         if (newState == BluetoothDevice.BOND_BONDING) notePairingForCurrentMidiLink(address, name, "bonding state")
         if (!currentConnectionMatchesBluetoothDevice(address)) return
         val connection = _state.value.connection
         if (!connection.connected && !connection.connecting) return
         val message = when (newState) {
-            BluetoothDevice.BOND_BONDING -> "Android requested Bluetooth pairing for $name. Pairing is okay; APS NoteCast will keep using the BLE MIDI connection."
-            BluetoothDevice.BOND_BONDED -> "Connected to $name with Android Bluetooth pairing."
+            BluetoothDevice.BOND_BONDING -> text(R.string.service_pairing_ok, name)
+            BluetoothDevice.BOND_BONDED -> text(R.string.service_connected_with_pairing, name)
             BluetoothDevice.BOND_NONE -> if (previousState == BluetoothDevice.BOND_BONDING && connection.connected) {
-                "Connected to $name. Bluetooth pairing was not completed."
+                text(R.string.service_pairing_not_completed, name)
             } else {
                 null
             }
@@ -2266,7 +2315,7 @@ class NoteCastService : Service() {
         logEvent(
             "Android Bluetooth pairing requested for active BLE MIDI link name=$name address=$address source=$source"
         )
-        val message = "Android requested Bluetooth pairing for $name. Pairing is okay; APS NoteCast will keep using the BLE MIDI connection."
+        val message = text(R.string.service_pairing_ok, name)
         _state.update {
             it.copy(
                 connection = it.connection.copy(message = message),
@@ -2282,9 +2331,9 @@ class NoteCastService : Service() {
         val connection = _state.value.connection
         if (!connection.connected && !connection.connecting) return
         if (!currentConnectionMatchesBluetoothDevice(address)) return
-        val name = connection.deviceName ?: runCatching { safeDeviceName(device) }.getOrDefault("MIDI device")
+        val name = connection.deviceName ?: runCatching { safeDeviceName(device) }.getOrDefault(text(R.string.service_midi_device_lower))
         AppEventLog.append("$name reported a Bluetooth-layer disconnect; waiting for MIDI I/O confirmation.")
-        scheduleConnectionVerification("$name disconnected.")
+        scheduleConnectionVerification(text(R.string.service_device_disconnected, name))
     }
 
     private fun scheduleConnectionVerification(message: String) {
@@ -2318,7 +2367,7 @@ class NoteCastService : Service() {
         connectionGeneration.incrementAndGet()
         stopBleScan()
         if (_state.value.connection.connected || _state.value.connection.connecting) {
-            handleConnectionLost("Bluetooth was turned off.")
+            handleConnectionLost(text(R.string.service_bluetooth_turned_off))
         } else {
             _state.update {
                 it.copy(
@@ -2326,9 +2375,9 @@ class NoteCastService : Service() {
                         bluetoothEnabled = false,
                         scanning = false,
                         connecting = false,
-                        message = "Bluetooth is off"
+                        message = text(R.string.service_bluetooth_off)
                     ),
-                    lastMessage = "Bluetooth is off."
+                    lastMessage = text(R.string.service_bluetooth_off_period)
                 )
             }
         }
@@ -2337,7 +2386,7 @@ class NoteCastService : Service() {
     private fun handleConnectionLost(message: String) {
         val connection = _state.value.connection
         if (!connection.connected && !connection.connecting) return
-        val deviceName = connection.deviceName ?: connection.rememberedDeviceName ?: "MIDI device"
+        val deviceName = connection.deviceName ?: connection.rememberedDeviceName ?: text(R.string.service_midi_device_lower)
         logEvent("Connection lost for $deviceName address=${connection.address ?: "unknown"}: $message")
         connectionMonitorJob?.cancel()
         connectionVerificationJob?.cancel()
@@ -2353,11 +2402,11 @@ class NoteCastService : Service() {
         val timeoutSeconds = appSettings.reconnectTimeoutSeconds.coerceIn(10, 180)
         _state.update {
             it.copy(
-                connection = rememberedConnection(message = "$message Reconnecting for ${timeoutSeconds}s..."),
+                connection = rememberedConnection(message = text(R.string.service_reconnecting_for, message, timeoutSeconds)),
                 playback = PlaybackUiState(),
                 playbackChannels = emptyList(),
                 kuhmann = it.kuhmann.copy(activePlaybackResultKey = null),
-                lastMessage = "$deviceName connection lost."
+                lastMessage = text(R.string.service_connection_lost_name, deviceName)
             )
         }
         updatePlaybackSurfaces(updateNotification = true)
@@ -2384,15 +2433,15 @@ class NoteCastService : Service() {
                     bluetoothConnectionFailureMessage(
                         connectionId = rememberedAddress,
                         info = null,
-                        baseMessage = "Could not reconnect to $deviceName."
+                        baseMessage = text(R.string.service_could_not_reconnect, deviceName)
                     )
                 } else {
-                    "Could not reconnect to $deviceName."
+                    text(R.string.service_could_not_reconnect, deviceName)
                 }
                 _state.update {
                     it.copy(
                         connection = rememberedConnection(message = message),
-                        lastMessage = "Reconnect timed out."
+                        lastMessage = text(R.string.service_reconnect_timed_out)
                     )
                 }
             }
@@ -2402,7 +2451,7 @@ class NoteCastService : Service() {
     fun playFile(itemId: String) {
         val item = _state.value.files.firstOrNull { it.id == itemId }
         if (item == null) {
-            postMessage("Could not find that MIDI file.")
+            postMessage(text(R.string.service_could_not_find_midi_file))
             return
         }
         playItems(listOf(item), playlistName = null, playlistId = null, startIndex = 0)
@@ -2412,13 +2461,13 @@ class NoteCastService : Service() {
         val snapshot = _state.value
         val playlist = snapshot.playlists.firstOrNull { it.id == playlistId }
         if (playlist == null) {
-            postMessage("Could not find that playlist.")
+            postMessage(text(R.string.service_could_not_find_playlist))
             return
         }
         val byId = snapshot.files.associateBy { it.id }
         val items = playlist.itemIds.mapNotNull { byId[it] }
         if (items.isEmpty()) {
-            postMessage("That playlist is empty.")
+            postMessage(text(R.string.service_playlist_empty))
             return
         }
         val shouldShuffle = shuffled ?: appSettings.shufflePlaylistsByDefault
@@ -2429,11 +2478,11 @@ class NoteCastService : Service() {
         val snapshot = _state.value
         val playlist = snapshot.playlists.firstOrNull { it.id == playlistId }
         if (playlist == null) {
-            postMessage("Could not find that playlist.")
+            postMessage(text(R.string.service_could_not_find_playlist))
             return
         }
         if (startIndex !in playlist.itemIds.indices) {
-            postMessage("Could not find that playlist track.")
+            postMessage(text(R.string.service_could_not_find_playlist_track))
             return
         }
         val byId = snapshot.files.associateBy { it.id }
@@ -2441,7 +2490,7 @@ class NoteCastService : Service() {
         val selectedItemId = playlist.itemIds[startIndex]
         val playbackStartIndex = items.indexOfFirst { it.id == selectedItemId }
         if (items.isEmpty() || playbackStartIndex < 0) {
-            postMessage("Could not find that playlist track.")
+            postMessage(text(R.string.service_could_not_find_playlist_track))
             return
         }
         playItems(items, playlist.name, playlistId = playlist.id, startIndex = playbackStartIndex)
@@ -2450,9 +2499,11 @@ class NoteCastService : Service() {
     fun pausePlayback() {
         if (!_state.value.playback.isPlaying) return
         _state.update {
+            val playback = it.playback.copy(mode = PlaybackMode.Paused)
             it.copy(
-                playback = it.playback.copy(mode = PlaybackMode.Paused),
-                lastMessage = "Playback paused."
+                playback = playback,
+                lastPlayback = playback.toLastPlaybackSnapshot(it.playbackChannels),
+                lastMessage = text(R.string.service_playback_paused)
             )
         }
         updatePlaybackSurfaces(updateNotification = true)
@@ -2465,9 +2516,11 @@ class NoteCastService : Service() {
         if (!_state.value.playback.isPaused) return
         sustainPedalRestoreRequests.incrementAndGet()
         _state.update {
+            val playback = it.playback.copy(mode = PlaybackMode.Playing)
             it.copy(
-                playback = it.playback.copy(mode = PlaybackMode.Playing),
-                lastMessage = "Playback resumed."
+                playback = playback,
+                lastPlayback = playback.toLastPlaybackSnapshot(it.playbackChannels),
+                lastMessage = text(R.string.service_playback_resumed)
             )
         }
         updatePlaybackSurfaces(updateNotification = true)
@@ -2479,9 +2532,11 @@ class NoteCastService : Service() {
         val cleanProgressUs = progressUs.coerceIn(0L, playback.durationUs)
         seekRequestUs = cleanProgressUs
         _state.update {
+            val playback = it.playback.copy(progressUs = cleanProgressUs)
             it.copy(
-                playback = it.playback.copy(progressUs = cleanProgressUs),
-                lastMessage = "Seeking to ${cleanProgressUs.formatClockTime()}."
+                playback = playback,
+                lastPlayback = playback.toLastPlaybackSnapshot(it.playbackChannels),
+                lastMessage = text(R.string.service_seeking_to, cleanProgressUs.formatClockTime())
             )
         }
         updatePlaybackSurfaces(updateNotification = true)
@@ -2493,9 +2548,11 @@ class NoteCastService : Service() {
         seekRequestUs = -1L
         skipRequest = 1
         _state.update {
+            val playback = it.playback.copy(mode = PlaybackMode.Playing)
             it.copy(
-                playback = it.playback.copy(mode = PlaybackMode.Playing),
-                lastMessage = "Skipping to next track."
+                playback = playback,
+                lastPlayback = playback.toLastPlaybackSnapshot(it.playbackChannels),
+                lastMessage = text(R.string.service_skip_next)
             )
         }
         updatePlaybackSurfaces(updateNotification = true)
@@ -2508,9 +2565,11 @@ class NoteCastService : Service() {
         seekRequestUs = -1L
         skipRequest = -1
         _state.update {
+            val playback = it.playback.copy(mode = PlaybackMode.Playing)
             it.copy(
-                playback = it.playback.copy(mode = PlaybackMode.Playing),
-                lastMessage = "Going back one track."
+                playback = playback,
+                lastPlayback = playback.toLastPlaybackSnapshot(it.playbackChannels),
+                lastMessage = text(R.string.service_skip_previous)
             )
         }
         updatePlaybackSurfaces(updateNotification = true)
@@ -2561,11 +2620,11 @@ class NoteCastService : Service() {
 
     fun startRecording(title: String) {
         if (!_state.value.connection.connected || midiOutputPort == null) {
-            postMessage("Connect to a MIDI device with an output port before recording.")
+            postMessage(text(R.string.service_connect_before_recording))
             return
         }
         if (_state.value.recording.isRecording || recordingCountdownJob?.isActive == true) return
-        val cleanTitle = title.trim().ifBlank { "APS NoteCast Recording" }
+        val cleanTitle = title.trim().ifBlank { text(R.string.record_default_title) }
         val countdownSeconds = appSettings.recordingCountdownSeconds.coerceIn(0, 8)
         if (countdownSeconds > 0) {
             recordingCountdownJob?.cancel()
@@ -2577,12 +2636,12 @@ class NoteCastService : Service() {
                                 isCountingDown = true,
                                 title = cleanTitle,
                                 message = if (appSettings.recordingMetronomeEnabled) {
-                                    "Count-in $remaining..."
+                                    text(R.string.service_count_in, remaining)
                                 } else {
-                                    "Recording starts in $remaining..."
+                                    text(R.string.service_recording_starts_in_dots, remaining)
                                 }
                             ),
-                            lastMessage = "Recording starts in $remaining."
+                            lastMessage = text(R.string.service_recording_starts_in, remaining)
                         )
                     }
                     delay(1_000L)
@@ -2614,16 +2673,16 @@ class NoteCastService : Service() {
                         isRecording = true,
                         isCountingDown = false,
                         title = cleanTitle,
-                                message = "Waiting for MIDI input..."
+                        message = text(R.string.service_waiting_midi_input)
                     ),
-                    lastMessage = "Recording $cleanTitle."
+                    lastMessage = text(R.string.service_recording_started, cleanTitle)
                 )
             }
         }.onFailure {
             _state.update { state ->
                 state.copy(
-                    recording = RecordingUiState(message = "Could not listen to MIDI input."),
-                    lastMessage = "Recording could not start."
+                    recording = RecordingUiState(message = text(R.string.service_could_not_listen_midi)),
+                    lastMessage = text(R.string.service_recording_failed_to_start)
                 )
             }
         }
@@ -2633,7 +2692,7 @@ class NoteCastService : Service() {
         val current = _state.value.recording
         if (!current.isRecording) return
         stopRecordingReceiver()
-        val cleanTitle = title.trim().ifBlank { current.title.ifBlank { "APS NoteCast Recording" } }
+        val cleanTitle = title.trim().ifBlank { current.title.ifBlank { text(R.string.record_default_title) } }
         val events = synchronized(recordingLock) { recordingEvents.toList() }
         if (events.isEmpty()) {
             synchronized(recordingLock) {
@@ -2642,15 +2701,15 @@ class NoteCastService : Service() {
             }
             _state.update {
                 it.copy(
-                    recording = RecordingUiState(message = "Recording discarded because no MIDI input arrived."),
-                    lastMessage = "No MIDI input was recorded."
+                    recording = RecordingUiState(message = text(R.string.service_recording_discarded_no_input)),
+                    lastMessage = text(R.string.service_no_input_recorded)
                 )
             }
             return
         }
 
         _state.update {
-            it.copy(recording = current.copy(isRecording = false, isSaving = true, title = cleanTitle, message = "Saving recording..."))
+            it.copy(recording = current.copy(isRecording = false, isSaving = true, title = cleanTitle, message = text(R.string.record_saving)))
         }
         serviceScope.launch(Dispatchers.IO) {
             runCatching {
@@ -2666,15 +2725,15 @@ class NoteCastService : Service() {
                     recordingStartedNs = 0L
                 }
                 withContext(Dispatchers.Main) {
-                    reloadLibrary("Saved recording ${it.title}.")
-                    _state.update { state -> state.copy(recording = RecordingUiState(message = "Saved ${it.title}.")) }
+                    reloadLibrary(text(R.string.service_recording_saved_title, it.title))
+                    _state.update { state -> state.copy(recording = RecordingUiState(message = text(R.string.service_recording_saved, it.title))) }
                 }
             }.onFailure { error ->
                 withContext(Dispatchers.Main) {
                     _state.update {
                         it.copy(
-                            recording = RecordingUiState(message = "Could not save recording: ${error.message ?: "unknown error"}"),
-                            lastMessage = "Recording save failed."
+                            recording = RecordingUiState(message = text(R.string.service_could_not_save_recording, unknownError(error))),
+                            lastMessage = text(R.string.service_recording_save_failed)
                         )
                     }
                 }
@@ -2692,8 +2751,8 @@ class NoteCastService : Service() {
         }
         _state.update {
             it.copy(
-                recording = RecordingUiState(message = "Recording cancelled."),
-                lastMessage = "Recording cancelled."
+                recording = RecordingUiState(message = text(R.string.service_recording_cancelled)),
+                lastMessage = text(R.string.service_recording_cancelled)
             )
         }
     }
@@ -2715,7 +2774,7 @@ class NoteCastService : Service() {
                         playback = PlaybackUiState(),
                         playbackChannels = emptyList(),
                         kuhmann = it.kuhmann.copy(activePlaybackResultKey = null),
-                        lastMessage = if (userRequested) "Playback stopped." else it.lastMessage
+                        lastMessage = if (userRequested) text(R.string.service_playback_stopped) else it.lastMessage
                     )
                 }
                 updatePlaybackSurfaces(updateNotification = true)
@@ -2725,7 +2784,15 @@ class NoteCastService : Service() {
         }
     }
 
-    fun panic() {
+    fun stopPlaybackOrQuietOutputs() {
+        if (_state.value.playback.isActive) {
+            stopPlayback(userRequested = true)
+        } else {
+            sendStoppedOutputCleanup()
+        }
+    }
+
+    private fun sendStoppedOutputCleanup() {
         val generation = playbackGeneration.incrementAndGet()
         playbackJob?.cancel()
         playbackJob = null
@@ -2742,7 +2809,7 @@ class NoteCastService : Service() {
                     it.copy(
                         playback = PlaybackUiState(),
                         playbackChannels = emptyList(),
-                        lastMessage = "Panic sent: sustain off, all notes off, all sound off."
+                        lastMessage = text(R.string.service_stop_cleanup)
                     )
                 }
                 updatePlaybackSurfaces(updateNotification = true)
@@ -2754,11 +2821,11 @@ class NoteCastService : Service() {
 
     private fun playItems(items: List<MidiLibraryItem>, playlistName: String?, playlistId: String?, startIndex: Int) {
         if (midiInputPort == null || !_state.value.connection.connected) {
-            postMessage("Connect to a MIDI device before playing.")
+            postMessage(text(R.string.service_connect_before_playing))
             return
         }
         if (items.isEmpty()) {
-            postMessage("There is nothing to play.")
+            postMessage(text(R.string.service_nothing_to_play))
             return
         }
         val cleanStartIndex = startIndex.coerceIn(items.indices)
@@ -2772,20 +2839,22 @@ class NoteCastService : Service() {
         previousPlaybackJob?.cancel()
         clearPlaybackItemAliases()
         _state.update {
+            val playback = PlaybackUiState(
+                mode = PlaybackMode.Preparing,
+                currentTitle = firstItem.title,
+                currentItemId = firstItem.id,
+                playlistName = playlistName,
+                playlistId = playlistId,
+                currentTrackNumber = cleanStartIndex + 1,
+                totalTracks = items.size,
+                durationUs = firstItem.durationUs
+            )
             it.copy(
-                playback = PlaybackUiState(
-                    mode = PlaybackMode.Preparing,
-                    currentTitle = firstItem.title,
-                    currentItemId = firstItem.id,
-                    playlistName = playlistName,
-                    playlistId = playlistId,
-                    currentTrackNumber = cleanStartIndex + 1,
-                    totalTracks = items.size,
-                    durationUs = firstItem.durationUs
-                ),
+                playback = playback,
                 playbackChannels = emptyList(),
+                lastPlayback = playback.toLastPlaybackSnapshot(emptyList()),
                 kuhmann = it.kuhmann.copy(activePlaybackResultKey = null),
-                lastMessage = if (replacingActivePlayback) "Switching to ${firstItem.title}..." else "Preparing ${firstItem.title}..."
+                lastMessage = if (replacingActivePlayback) text(R.string.service_switching_to_title, firstItem.title) else text(R.string.service_preparing_title, firstItem.title)
             )
         }
         updatePlaybackSurfaces(updateNotification = true)
@@ -2815,20 +2884,22 @@ class NoteCastService : Service() {
                 withContext(Dispatchers.Main) {
                     if (!isCurrentPlayback(generation)) return@withContext
                     _state.update {
+                        val playback = PlaybackUiState(
+                            mode = PlaybackMode.Preparing,
+                            currentTitle = item.title,
+                            currentItemId = item.id,
+                            playlistName = playlistName,
+                            playlistId = playlistId,
+                            currentTrackNumber = index + 1,
+                            totalTracks = items.size,
+                            progressUs = 0L,
+                            durationUs = item.durationUs
+                        )
                         it.copy(
-                            playback = PlaybackUiState(
-                                mode = PlaybackMode.Preparing,
-                                currentTitle = item.title,
-                                currentItemId = item.id,
-                                playlistName = playlistName,
-                                playlistId = playlistId,
-                                currentTrackNumber = index + 1,
-                                totalTracks = items.size,
-                                progressUs = 0L,
-                                durationUs = item.durationUs
-                            ),
+                            playback = playback,
                             playbackChannels = emptyList(),
-                            lastMessage = "Preparing ${item.title}..."
+                            lastPlayback = playback.toLastPlaybackSnapshot(emptyList()),
+                            lastMessage = text(R.string.service_preparing_title, item.title)
                         )
                     }
                     updatePlaybackSurfaces(updateNotification = true)
@@ -2839,20 +2910,22 @@ class NoteCastService : Service() {
                 withContext(Dispatchers.Main) {
                     if (!isCurrentPlayback(generation)) return@withContext
                     _state.update {
+                        val playback = PlaybackUiState(
+                            mode = PlaybackMode.Playing,
+                            currentTitle = item.title,
+                            currentItemId = item.id,
+                            playlistName = playlistName,
+                            playlistId = playlistId,
+                            currentTrackNumber = index + 1,
+                            totalTracks = items.size,
+                            progressUs = 0L,
+                            durationUs = sequence.durationUs
+                        )
                         it.copy(
-                            playback = PlaybackUiState(
-                                mode = PlaybackMode.Playing,
-                                currentTitle = item.title,
-                                currentItemId = item.id,
-                                playlistName = playlistName,
-                                playlistId = playlistId,
-                                currentTrackNumber = index + 1,
-                                totalTracks = items.size,
-                                progressUs = 0L,
-                                durationUs = sequence.durationUs
-                            ),
+                            playback = playback,
                             playbackChannels = playbackData.channels,
-                            lastMessage = "Playing ${item.title}"
+                            lastPlayback = playback.toLastPlaybackSnapshot(playbackData.channels),
+                            lastMessage = text(R.string.service_playing_title, item.title)
                         )
                     }
                     updatePlaybackSurfaces(updateNotification = true)
@@ -2877,7 +2950,7 @@ class NoteCastService : Service() {
         } catch (io: IOException) {
             if (isCurrentPlayback(generation)) {
                 withContext(Dispatchers.Main) {
-                    handleConnectionLost("MIDI connection was lost.")
+                    handleConnectionLost(text(R.string.service_midi_connection_lost))
                 }
             }
         } catch (t: Throwable) {
@@ -2885,9 +2958,9 @@ class NoteCastService : Service() {
                 withContext(Dispatchers.Main) {
                     _state.update {
                         it.copy(
-                            playback = PlaybackUiState(mode = PlaybackMode.Error, error = t.message ?: "Playback failed"),
+                            playback = PlaybackUiState(mode = PlaybackMode.Error, error = t.message ?: text(R.string.service_playback_failed)),
                             playbackChannels = emptyList(),
-                            lastMessage = "Playback error: ${t.message ?: "unknown error"}"
+                            lastMessage = text(R.string.service_playback_error_detail, unknownError(t))
                         )
                     }
                     updatePlaybackSurfaces(updateNotification = true)
@@ -2903,7 +2976,7 @@ class NoteCastService : Service() {
                         it.copy(
                             playback = PlaybackUiState(),
                             playbackChannels = emptyList(),
-                            lastMessage = if (playlistName == null) "Playback finished." else "Playlist finished."
+                            lastMessage = if (playlistName == null) text(R.string.service_playback_finished) else text(R.string.service_playlist_finished)
                         )
                     }
                     updatePlaybackSurfaces(updateNotification = true)
@@ -2953,30 +3026,32 @@ class NoteCastService : Service() {
                 storedFileName = "",
                 durationUs = prepared.durationUs,
                 importedAtMs = System.currentTimeMillis(),
-                notes = "External ${result.source.displayName} MIDI preview"
+                notes = text(R.string.service_external_preview_note, result.source.displayName)
             )
 
             coroutineContext.ensureActive()
             withContext(Dispatchers.Main) {
                 if (!isCurrentPlayback(generation)) return@withContext
                 _state.update {
+                    val playback = PlaybackUiState(
+                        mode = PlaybackMode.Playing,
+                        currentTitle = item.title,
+                        currentItemId = displayPlaybackItemId(item.id),
+                        currentTrackNumber = 1,
+                        totalTracks = 1,
+                        progressUs = 0L,
+                        durationUs = prepared.durationUs
+                    )
                     it.copy(
-                        playback = PlaybackUiState(
-                            mode = PlaybackMode.Playing,
-                            currentTitle = item.title,
-                            currentItemId = displayPlaybackItemId(item.id),
-                            currentTrackNumber = 1,
-                            totalTracks = 1,
-                            progressUs = 0L,
-                            durationUs = prepared.durationUs
-                        ),
+                        playback = playback,
                         playbackChannels = playbackData.channels,
+                        lastPlayback = playback.toLastPlaybackSnapshot(playbackData.channels),
                         kuhmann = it.kuhmann.copy(
                             source = result.source,
-                            message = "Playing ${item.title}.",
+                            message = text(R.string.service_playing_title_period, item.title),
                             activePlaybackResultKey = result.stableKey
                         ),
-                        lastMessage = "Playing ${item.title}"
+                        lastMessage = text(R.string.service_playing_title, item.title)
                     )
                 }
                 updatePlaybackSurfaces(updateNotification = true)
@@ -2996,12 +3071,12 @@ class NoteCastService : Service() {
             if (isCurrentPlayback(generation)) {
                 withContext(Dispatchers.Main) {
                     if (playbackStarted && !ApsNetworkStatus.isLikelyNetworkFailure(io)) {
-                        handleConnectionLost("MIDI connection was lost.")
+                        handleConnectionLost(text(R.string.service_midi_connection_lost))
                     } else {
                         val message = if (ApsNetworkStatus.isLikelyNetworkFailure(io)) {
                             ApsNetworkStatus.userMessage(this@NoteCastService, io)
                         } else {
-                            "Could not play $title: ${io.message ?: "unknown error"}"
+                            text(R.string.service_could_not_play_title, title, unknownError(io))
                         }
                         _state.update {
                             it.copy(
@@ -3018,7 +3093,7 @@ class NoteCastService : Service() {
             }
         } catch (t: Throwable) {
             if (isCurrentPlayback(generation)) {
-                val message = "Could not play $title: ${t.message ?: "unknown error"}"
+                val message = text(R.string.service_could_not_play_title, title, unknownError(t))
                 withContext(Dispatchers.Main) {
                     _state.update {
                         it.copy(
@@ -3037,7 +3112,7 @@ class NoteCastService : Service() {
             withContext(Dispatchers.Main) {
                 if (!isCurrentPlayback(generation)) return@withContext
                 if (completedNormally) {
-                    val message = "External ${result.source.displayName} playback finished."
+                    val message = text(R.string.service_external_playback_finished, result.source.displayName)
                     _state.update {
                         it.copy(
                             playback = PlaybackUiState(),
@@ -3463,7 +3538,15 @@ class NoteCastService : Service() {
                 if (state.playback.sustainPedalPressed == nextUiPressed) {
                     state
                 } else {
-                    state.copy(playback = state.playback.copy(sustainPedalPressed = nextUiPressed))
+                    val playback = state.playback.copy(sustainPedalPressed = nextUiPressed)
+                    state.copy(
+                        playback = playback,
+                        lastPlayback = if (playback.isActive) {
+                            playback.toLastPlaybackSnapshot(state.playbackChannels)
+                        } else {
+                            state.lastPlayback
+                        }
+                    )
                 }
             }
         }
@@ -3482,7 +3565,15 @@ class NoteCastService : Service() {
                 if (!state.playback.sustainPedalPressed) {
                     state
                 } else {
-                    state.copy(playback = state.playback.copy(sustainPedalPressed = false))
+                    val playback = state.playback.copy(sustainPedalPressed = false)
+                    state.copy(
+                        playback = playback,
+                        lastPlayback = if (playback.isActive) {
+                            playback.toLastPlaybackSnapshot(state.playbackChannels)
+                        } else {
+                            state.lastPlayback
+                        }
+                    )
                 }
             }
         }
@@ -3829,17 +3920,34 @@ class NoteCastService : Service() {
             if (!isCurrentPlayback(generation)) {
                 state
             } else {
+                val playback = state.playback.copy(
+                    progressUs = progressUs.coerceIn(0L, durationUs.coerceAtLeast(0L)),
+                    durationUs = durationUs,
+                    currentItemId = displayItemId
+                )
                 state.copy(
-                    playback = state.playback.copy(
-                        progressUs = progressUs.coerceIn(0L, durationUs.coerceAtLeast(0L)),
-                        durationUs = durationUs,
-                        currentItemId = displayItemId
-                    )
+                    playback = playback,
+                    lastPlayback = playback.toLastPlaybackSnapshot(state.playbackChannels)
                 )
             }
         }
         postPlaybackSurfaceUpdate(updateNotification)
     }
+
+    private fun PlaybackUiState.toLastPlaybackSnapshot(channels: List<PlaybackChannelInfo>): LastPlaybackSnapshot =
+        LastPlaybackSnapshot(
+            mode = mode,
+            title = currentTitle,
+            itemId = currentItemId,
+            playlistName = playlistName,
+            playlistId = playlistId,
+            currentTrackNumber = currentTrackNumber,
+            totalTracks = totalTracks,
+            progressUs = progressUs,
+            durationUs = durationUs,
+            sustainPedalPressed = sustainPedalPressed,
+            channels = channels
+        )
 
     private fun postPlaybackSurfaceUpdate(updateNotification: Boolean) {
         if (updateNotification) {
@@ -4036,14 +4144,15 @@ class NoteCastService : Service() {
     }
 
     private fun KuhmannSearchResponse.kuhmannSearchMessage(source: ExternalMidiSource): String {
-        val suffix = source.foundMessageSuffix
+        val suffix = source.localizedFoundMessageSuffix()
             .takeIf { it.isNotBlank() }
             ?.let { " $it" }
             .orEmpty()
+        val resultLabel = source.localizedResultLabel()
         return if (results.isEmpty()) {
-            "No ${source.resultLabel}s matched."
+            text(R.string.external_no_results, resultLabel)
         } else {
-            "Found ${results.size} of $count ${source.resultLabel}${if (count == 1) "" else "s"}.$suffix"
+            text(R.string.external_results_found, results.size, count, resultLabel, suffix)
         }
     }
 
@@ -4413,7 +4522,7 @@ class NoteCastService : Service() {
     private fun midiDeviceName(info: MidiDeviceInfo): String {
         return midiProperty(info, MidiDeviceInfo.PROPERTY_NAME)
             ?: midiProperty(info, MidiDeviceInfo.PROPERTY_PRODUCT)
-            ?: "Android MIDI Device ${info.id}"
+            ?: text(R.string.service_android_midi_device_id, info.id)
     }
 
     private fun midiDeviceDetail(info: MidiDeviceInfo): String {
@@ -4617,7 +4726,7 @@ class NoteCastService : Service() {
         _state.update {
             it.copy(
                 bleDevices = mergedDeviceList(),
-                lastMessage = "Found ${current.size} nearby BLE device${if (current.size == 1) "" else "s"}."
+                lastMessage = text(R.string.service_found_nearby_ble_devices, current.size)
             )
         }
         considerReconnectScanCandidate(address)
@@ -4662,7 +4771,7 @@ class NoteCastService : Service() {
         val preferredAddress = scanPreferredReconnectAddress ?: candidates.firstOrNull()?.address
         if (preferredAddress != null && sameConnectionTarget(address, preferredAddress)) {
             val preferred = candidates.firstOrNull { sameConnectionTarget(it.address, address) }
-            postMessage("Reconnecting to ${preferred?.name ?: "preferred MIDI device"}...")
+            postMessage(text(R.string.service_reconnecting_to, preferred?.name ?: text(R.string.service_preferred_midi_device)))
             mainHandler.post { connect(availableConnectionAddress(preferredAddress) ?: address) }
             return
         }
@@ -4782,10 +4891,10 @@ class NoteCastService : Service() {
         val shortId = shortBluetoothIdentifier(address)
         canonicalMidiDeviceName(cleanName, shortId)?.let { return it }
         return when {
-            isMidi && isGeneratedDeviceName(cleanName) -> "BLE MIDI Adapter $shortId"
-            isMidi && isOpaqueDeviceName(cleanName) -> "BLE MIDI Adapter $shortId"
-            !isMidi && isOpaqueDeviceName(cleanName) -> "Nearby BLE Device $shortId"
-            cleanName.isBlank() -> if (isMidi) "BLE MIDI Adapter $shortId" else "Nearby BLE Device $shortId"
+            isMidi && isGeneratedDeviceName(cleanName) -> text(R.string.service_ble_midi_adapter_id, shortId)
+            isMidi && isOpaqueDeviceName(cleanName) -> text(R.string.service_ble_midi_adapter_id, shortId)
+            !isMidi && isOpaqueDeviceName(cleanName) -> text(R.string.service_nearby_ble_device_id, shortId)
+            cleanName.isBlank() -> if (isMidi) text(R.string.service_ble_midi_adapter_id, shortId) else text(R.string.service_nearby_ble_device_id, shortId)
             else -> cleanName
         }
     }
@@ -4797,7 +4906,7 @@ class NoteCastService : Service() {
             normalized == "widi master" || normalized.startsWith("widi master ") -> "WIDI Master"
             normalized == "widi jack" || normalized.startsWith("widi jack ") -> "WIDI Jack"
             normalized == "widi uhost" || normalized.startsWith("widi uhost ") -> "WIDI Uhost"
-            normalized.startsWith("elk-ble") -> "BLE MIDI Adapter $shortId"
+            normalized.startsWith("elk-ble") -> text(R.string.service_ble_midi_adapter_id, shortId)
             else -> null
         }
     }
@@ -5056,7 +5165,7 @@ class NoteCastService : Service() {
                     isRecording = true,
                     eventCount = totalEvents,
                     durationUs = elapsedUs,
-                    message = "Recording MIDI input..."
+                    message = text(R.string.service_recording_input)
                 )
             )
         }
@@ -5520,10 +5629,10 @@ class NoteCastService : Service() {
             val manager = getSystemService(NotificationManager::class.java)
             val channel = NotificationChannel(
                 CHANNEL_ID,
-                "APS NoteCast playback",
+                text(R.string.notification_channel_name),
                 NotificationManager.IMPORTANCE_LOW
             ).apply {
-                description = "Shows MIDI playback status while APS NoteCast is driving a player piano."
+                description = text(R.string.notification_channel_description)
                 setShowBadge(false)
             }
             manager.createNotificationChannel(channel)
@@ -5543,7 +5652,7 @@ class NoteCastService : Service() {
                     }
 
                     override fun onStop() {
-                        stopPlayback(userRequested = true)
+                        stopPlaybackOrQuietOutputs()
                     }
 
                     override fun onSkipToNext() {
@@ -5598,20 +5707,20 @@ class NoteCastService : Service() {
         val playback = _state.value.playback
         updateMediaSession(playback)
         if (updateNotification && foreground) {
-            updateNotification(playback.currentTitle ?: "APS NoteCast")
+            updateNotification(playback.currentTitle ?: text(R.string.app_name))
         }
     }
 
     private fun updateMediaSession(playback: PlaybackUiState = _state.value.playback) {
         if (!::mediaSession.isInitialized) return
         val durationMs = playback.durationUs.usToMs()
-        val title = playback.currentTitle ?: "APS NoteCast"
+        val title = playback.currentTitle ?: text(R.string.app_name)
         val subtitle = playback.playlistName ?: when (playback.mode) {
-            PlaybackMode.Preparing -> "Preparing"
-            PlaybackMode.Playing -> "Playing"
-            PlaybackMode.Paused -> "Paused"
-            PlaybackMode.Error -> "Playback error"
-            PlaybackMode.Idle -> "Ready"
+            PlaybackMode.Preparing -> text(R.string.notification_preparing)
+            PlaybackMode.Playing -> text(R.string.notification_playing)
+            PlaybackMode.Paused -> text(R.string.notification_paused)
+            PlaybackMode.Error -> text(R.string.playback_error)
+            PlaybackMode.Idle -> text(R.string.service_ready)
         }
         val metadata = MediaMetadata.Builder()
             .putString(MediaMetadata.METADATA_KEY_TITLE, title)
@@ -5644,7 +5753,7 @@ class NoteCastService : Service() {
             )
             .setState(state, playback.progressUs.usToMs(), speed)
         if (playback.mode == PlaybackMode.Error) {
-            builder.setErrorMessage(playback.error ?: "Playback error")
+            builder.setErrorMessage(playback.error ?: text(R.string.playback_error))
         }
         return builder.build()
     }
@@ -5662,16 +5771,16 @@ class NoteCastService : Service() {
         val playback = _state.value.playback
         val displayTitle = playback.currentTitle ?: title
         val displayText = playback.playlistName ?: when (playback.mode) {
-            PlaybackMode.Preparing -> "Preparing..."
-            PlaybackMode.Playing -> "Playing ${playback.progressUs.formatClockTime()} / ${playback.durationUs.formatClockTime()}"
-            PlaybackMode.Paused -> "Paused ${playback.progressUs.formatClockTime()} / ${playback.durationUs.formatClockTime()}"
-            PlaybackMode.Error -> playback.error ?: "Playback error"
-            PlaybackMode.Idle -> "Ready"
+            PlaybackMode.Preparing -> text(R.string.notification_preparing_dots)
+            PlaybackMode.Playing -> text(R.string.notification_playing_time, playback.progressUs.formatClockTime(), playback.durationUs.formatClockTime())
+            PlaybackMode.Paused -> text(R.string.notification_paused_time, playback.progressUs.formatClockTime(), playback.durationUs.formatClockTime())
+            PlaybackMode.Error -> playback.error ?: text(R.string.playback_error)
+            PlaybackMode.Idle -> text(R.string.service_ready)
         }
         val playPauseAction = if (playback.isPlaying) {
-            notificationAction(R.drawable.ic_notification_pause, "Pause", ACTION_PLAY_PAUSE, 12)
+            notificationAction(R.drawable.ic_notification_pause, text(R.string.notification_action_pause), ACTION_PLAY_PAUSE, 12)
         } else {
-            notificationAction(R.drawable.ic_notification_play, "Play", ACTION_PLAY_PAUSE, 12)
+            notificationAction(R.drawable.ic_notification_play, text(R.string.notification_action_play), ACTION_PLAY_PAUSE, 12)
         }
 
         return Notification.Builder(this, CHANNEL_ID)
@@ -5694,10 +5803,10 @@ class NoteCastService : Service() {
                     .setMediaSession(mediaSession.sessionToken)
                     .setShowActionsInCompactView(0, 1, 2)
             )
-            .addAction(notificationAction(R.drawable.ic_notification_previous, "Previous", ACTION_PREVIOUS, 11))
+            .addAction(notificationAction(R.drawable.ic_notification_previous, text(R.string.action_previous), ACTION_PREVIOUS, 11))
             .addAction(playPauseAction)
-            .addAction(notificationAction(R.drawable.ic_notification_next, "Next", ACTION_NEXT, 13))
-            .addAction(notificationAction(R.drawable.ic_notification_stop, "Stop", ACTION_STOP, 14))
+            .addAction(notificationAction(R.drawable.ic_notification_next, text(R.string.action_next), ACTION_NEXT, 13))
+            .addAction(notificationAction(R.drawable.ic_notification_stop, text(R.string.action_stop), ACTION_STOP, 14))
             .build()
     }
 

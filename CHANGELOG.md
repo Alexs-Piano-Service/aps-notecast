@@ -28,6 +28,7 @@ All notable changes to APS NoteCast are documented here.
 - Selecting another song or playlist during playback now switches cleanly, playlist track selection can start from that track, and volume changes avoid note-off cleanup on each slider movement.
 - The loading, splash, and header logos now use crisp transparent variations of the radiation mark instead of the regular APS logo.
 - Attached USB MIDI adapters now appear before Bluetooth and saved adapters in the MIDI adapter picker.
+- Settings now includes a confirmed purge action for deleting the entire local MIDI library and playlists.
 
 ## 0.1.7
 

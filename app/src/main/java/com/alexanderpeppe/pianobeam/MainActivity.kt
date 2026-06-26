@@ -335,10 +335,14 @@ class MainActivity : ComponentActivity() {
             listOf(
                 Manifest.permission.BLUETOOTH_SCAN,
                 Manifest.permission.BLUETOOTH_CONNECT,
+                Manifest.permission.ACCESS_COARSE_LOCATION,
                 Manifest.permission.ACCESS_FINE_LOCATION
             )
         } else {
-            listOf(Manifest.permission.ACCESS_FINE_LOCATION)
+            listOf(
+                Manifest.permission.ACCESS_COARSE_LOCATION,
+                Manifest.permission.ACCESS_FINE_LOCATION
+            )
         }
     }
 
@@ -374,10 +378,10 @@ private fun LoadingScreen() {
         Column(horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.spacedBy(12.dp)) {
             LoadingIcon(
                 modifier = Modifier.size(86.dp),
-                contentDescription = "APS NoteCast loading logo"
+                contentDescription = stringResource(R.string.cd_loading_logo)
             )
             CircularProgressIndicator()
-            Text("Starting APS NoteCast")
+            Text(stringResource(R.string.status_starting_app))
         }
     }
 }
@@ -426,7 +430,7 @@ private fun PrimaryLogoBanner(modifier: Modifier = Modifier) {
     val darkTheme = MaterialTheme.colorScheme.background.luminance() < 0.5f
     Image(
         painter = painterResource(if (darkTheme) R.drawable.about_logo_dark else R.drawable.about_logo_light),
-        contentDescription = "Alex's Piano Service logo",
+        contentDescription = stringResource(R.string.cd_aps_logo),
         modifier = modifier
             .fillMaxWidth()
             .height(72.dp)
@@ -500,6 +504,7 @@ private fun NoteCastApp(
 ) {
     val context = LocalContext.current
     val state by service.state.collectAsState()
+    val shareMidiTitle = stringResource(R.string.action_share_midi)
     var showConnector by rememberSaveable { mutableStateOf(false) }
     var showAppInfo by rememberSaveable { mutableStateOf(false) }
     var showSettings by rememberSaveable { mutableStateOf(false) }
@@ -620,13 +625,13 @@ private fun NoteCastApp(
             TopAppBar(
                 title = {
                     BoxWithConstraints(Modifier.fillMaxWidth()) {
-                        val titleText = if (maxWidth < 220.dp) "NoteCast" else "APS NoteCast"
+                        val titleText = if (maxWidth < 220.dp) stringResource(R.string.app_short_name) else stringResource(R.string.app_name)
                         Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
                             BrandMark(
                                 modifier = Modifier
                                     .size(48.dp)
                                     .clickable { showAppInfo = true },
-                                contentDescription = "APS NoteCast"
+                                contentDescription = stringResource(R.string.app_name)
                             )
                             Spacer(Modifier.width(10.dp))
                             Column(Modifier.weight(1f)) {
@@ -649,43 +654,16 @@ private fun NoteCastApp(
                 },
                 actions = {
                     ConnectionPill(state = state, onClick = { showConnector = true })
-                    IconButton(
-                        onClick = { service.panic() },
-                        enabled = state.connection.connected
-                    ) {
-                        Surface(
-                            modifier = Modifier.size(34.dp),
-                            shape = RoundedCornerShape(0.dp),
-                            color = if (state.connection.connected) {
-                                MaterialTheme.colorScheme.error
-                            } else {
-                                MaterialTheme.colorScheme.surfaceVariant
-                            },
-                            contentColor = if (state.connection.connected) {
-                                MaterialTheme.colorScheme.onError
-                            } else {
-                                MaterialTheme.colorScheme.onSurfaceVariant
-                            }
-                        ) {
-                            Box(contentAlignment = Alignment.Center) {
-                                Text(
-                                    "!",
-                                    style = MaterialTheme.typography.titleLarge,
-                                    fontWeight = FontWeight.Black
-                                )
-                            }
-                        }
-                    }
                     Box {
                         IconButton(onClick = { showOverflowMenu = true }) {
-                            Icon(Icons.Default.MoreVert, contentDescription = "More options")
+                            Icon(Icons.Default.MoreVert, contentDescription = stringResource(R.string.cd_more_options))
                         }
                         DropdownMenu(
                             expanded = showOverflowMenu,
                             onDismissRequest = { showOverflowMenu = false }
                         ) {
                             DropdownMenuItem(
-                                text = { Text("Settings") },
+                                text = { Text(stringResource(R.string.settings_title)) },
                                 leadingIcon = { Icon(Icons.Default.Settings, contentDescription = null) },
                                 onClick = {
                                     showOverflowMenu = false
@@ -693,7 +671,7 @@ private fun NoteCastApp(
                                 }
                             )
                             DropdownMenuItem(
-                                text = { Text("App info") },
+                                text = { Text(stringResource(R.string.settings_app_info)) },
                                 leadingIcon = { Icon(Icons.Default.Info, contentDescription = null) },
                                 onClick = {
                                     showOverflowMenu = false
@@ -701,7 +679,7 @@ private fun NoteCastApp(
                                 }
                             )
                             DropdownMenuItem(
-                                text = { Text("Report bug") },
+                                text = { Text(stringResource(R.string.bug_title)) },
                                 leadingIcon = { Icon(Icons.Default.Warning, contentDescription = null) },
                                 onClick = {
                                     showOverflowMenu = false
@@ -765,7 +743,7 @@ private fun NoteCastApp(
                 },
                 onShareMidi = { itemId ->
                     service.shareMidiFileIntent(itemId)?.let { intent ->
-                        context.startActivity(Intent.createChooser(intent, "Share MIDI"))
+                        context.startActivity(Intent.createChooser(intent, shareMidiTitle))
                     }
                 },
                 settings = settings,
@@ -828,6 +806,7 @@ private fun NoteCastApp(
     if (showSettings) {
         SettingsDialog(
             settings = settings,
+            libraryFileCount = state.files.size,
             playlists = state.playlists,
             preferredDeviceName = state.connection.rememberedDeviceName,
             onSettingsChange = onSettingsChange,
@@ -844,6 +823,7 @@ private fun NoteCastApp(
             },
             onBackupLibrary = { backupLauncher.launch("aps-notecast-library-backup.json") },
             onRestoreLibrary = { restoreLauncher.launch(arrayOf("application/json", "text/*", "*/*")) },
+            onPurgeLibrary = { service.purgeLibrary() },
             onDismiss = { showSettings = false }
         )
     }
@@ -862,14 +842,14 @@ private fun NoteCastApp(
         AlertDialog(
             onDismissRequest = { diagnosticsText = null },
             icon = { Icon(Icons.Default.Bluetooth, contentDescription = null) },
-            title = { Text("Connection diagnostics") },
+            title = { Text(stringResource(R.string.connection_diagnostics)) },
             text = {
                 ScrollableDialogColumn {
                     Text(diagnostics)
                 }
             },
             confirmButton = {
-                TextButton(onClick = { diagnosticsText = null }) { Text("Done") }
+                TextButton(onClick = { diagnosticsText = null }) { Text(stringResource(R.string.action_done)) }
             }
         )
     }
@@ -1228,7 +1208,7 @@ private fun LibraryPane(
                 }
 
                 if (state.playlists.isNotEmpty()) {
-                    item(key = "playlists-label", contentType = "section-label") { SectionLabel("Playlists") }
+                    item(key = "playlists-label", contentType = "section-label") { SectionLabel(stringResource(R.string.library_section_playlists)) }
                     if (showPlaylistSearch) {
                         item(key = "playlist-search", contentType = "playlist-search") {
                             PlaylistSearchField(
@@ -1242,7 +1222,7 @@ private fun LibraryPane(
                     if (visiblePlaylists.isEmpty()) {
                         item(key = "empty-playlist-search", contentType = "empty-message") {
                             Text(
-                                "No matching playlists.",
+                                stringResource(R.string.library_no_matching_playlists),
                                 style = MaterialTheme.typography.bodyMedium,
                                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                                 modifier = Modifier.padding(horizontal = 4.dp, vertical = 8.dp)
@@ -1338,7 +1318,7 @@ private fun LibraryPane(
                     if (visibleMidiFiles.isEmpty()) {
                         item(key = "empty-midi-search", contentType = "empty-message") {
                             Text(
-                                "No matching MIDI files.",
+                                stringResource(R.string.library_no_matching_midi),
                                 style = MaterialTheme.typography.bodyMedium,
                                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                                 modifier = Modifier.padding(horizontal = 4.dp, vertical = 8.dp)
@@ -1495,7 +1475,7 @@ private fun LibraryPane(
                     containerColor = MaterialTheme.colorScheme.primaryContainer,
                     contentColor = MaterialTheme.colorScheme.onPrimaryContainer
                 ) {
-                    Icon(Icons.Default.ExpandLess, contentDescription = "Scroll to top")
+                    Icon(Icons.Default.ExpandLess, contentDescription = stringResource(R.string.cd_scroll_to_top))
                 }
             }
 
@@ -1532,7 +1512,7 @@ private fun LibraryPane(
 
     if (showSelectedPlaylistDialog) {
         AddPlaylistDialog(
-            title = "Playlist from selection",
+            title = stringResource(R.string.dialog_playlist_from_selection),
             onDismiss = { showSelectedPlaylistDialog = false },
             onCreate = {
                 service.createPlaylist(it, selectedFileIds)
@@ -1578,7 +1558,7 @@ private fun LibraryPane(
     renameFileId?.let { itemId ->
         state.files.firstOrNull { it.id == itemId }?.let { item ->
             RenameDialog(
-                title = "Rename MIDI",
+                title = stringResource(R.string.dialog_rename_midi),
                 initialName = item.title,
                 onDismiss = { renameFileId = null },
                 onSave = {
@@ -1592,7 +1572,7 @@ private fun LibraryPane(
     renamePlaylistId?.let { playlistId ->
         state.playlists.firstOrNull { it.id == playlistId }?.let { playlist ->
             RenameDialog(
-                title = "Rename playlist",
+                title = stringResource(R.string.dialog_rename_playlist),
                 initialName = playlist.name,
                 onDismiss = { renamePlaylistId = null },
                 onSave = {
@@ -1619,9 +1599,9 @@ private fun LibraryPane(
     deleteFileId?.let { itemId ->
         state.files.firstOrNull { it.id == itemId }?.let { item ->
             ConfirmDialog(
-                title = "Delete MIDI?",
-                message = "Remove ${item.title} from APS NoteCast?",
-                confirmLabel = "Delete",
+                title = stringResource(R.string.dialog_delete_midi_title),
+                message = stringResource(R.string.dialog_delete_midi_message, item.title),
+                confirmLabel = stringResource(R.string.action_delete),
                 onDismiss = { deleteFileId = null },
                 onConfirm = {
                     service.deleteMidiFile(item.id)
@@ -1634,9 +1614,9 @@ private fun LibraryPane(
     deletePlaylistId?.let { playlistId ->
         state.playlists.firstOrNull { it.id == playlistId }?.let { playlist ->
             ConfirmDialog(
-                title = "Delete playlist?",
-                message = "Remove ${playlist.name}? MIDI files stay in the library.",
-                confirmLabel = "Delete",
+                title = stringResource(R.string.dialog_delete_playlist_title),
+                message = stringResource(R.string.dialog_delete_playlist_message, playlist.name),
+                confirmLabel = stringResource(R.string.action_delete),
                 onDismiss = { deletePlaylistId = null },
                 onConfirm = {
                     service.deletePlaylist(playlist.id)
@@ -1648,9 +1628,9 @@ private fun LibraryPane(
 
     if (confirmDeleteSelected) {
         ConfirmDialog(
-            title = "Delete selected MIDI?",
-            message = "Remove ${selectedFileItems.size} MIDI file${if (selectedFileItems.size == 1) "" else "s"} from APS NoteCast? They will also be removed from playlists.",
-            confirmLabel = "Delete",
+            title = stringResource(R.string.dialog_delete_selected_title),
+            message = stringResource(R.string.dialog_delete_selected_message, selectedFileItems.size),
+            confirmLabel = stringResource(R.string.action_delete),
             onDismiss = { confirmDeleteSelected = false },
             onConfirm = {
                 service.deleteMidiFiles(selectedFileIds)
@@ -1681,15 +1661,15 @@ private fun LibraryHero(
                 Icon(Icons.Default.LibraryMusic, contentDescription = null, modifier = Modifier.size(24.dp))
                 Spacer(Modifier.width(10.dp))
                 Column(Modifier.weight(1f)) {
-                    Text("Library", style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold)
+                    Text(stringResource(R.string.library), style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold)
                     Text(
-                        "$fileCount files - $playlistCount playlists",
+                        stringResource(R.string.library_counts, fileCount, playlistCount),
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onPrimaryContainer
                     )
                 }
                 IconButton(onClick = onOpenConnection) {
-                    Icon(Icons.Default.Bluetooth, contentDescription = "Open connection")
+                    Icon(Icons.Default.Bluetooth, contentDescription = stringResource(R.string.cd_open_connection))
                 }
             }
             BoxWithConstraints {
@@ -1698,18 +1678,18 @@ private fun LibraryHero(
                     modifier = Modifier.fillMaxWidth(),
                     horizontalArrangement = Arrangement.spacedBy(6.dp)
                 ) {
-                    LibraryActionButton(Icons.Default.UploadFile, if (veryNarrow) "Add" else "Add MIDI", onImport, Modifier.weight(1f))
-                    LibraryActionButton(Icons.Default.Search, if (veryNarrow) "Web" else "External", onBrowseKuhmann, Modifier.weight(1f))
+                    LibraryActionButton(Icons.Default.UploadFile, if (veryNarrow) stringResource(R.string.action_add) else stringResource(R.string.action_add_midi), onImport, Modifier.weight(1f))
+                    LibraryActionButton(Icons.Default.Search, if (veryNarrow) stringResource(R.string.action_search) else stringResource(R.string.about_external), onBrowseKuhmann, Modifier.weight(1f))
                     LibraryActionButton(
                         Icons.Default.FiberManualRecord,
-                        if (veryNarrow) "Record" else "Record MIDI",
+                        if (veryNarrow) stringResource(R.string.action_record) else stringResource(R.string.action_record_midi),
                         onRecord,
                         Modifier.weight(1f),
                         inviting = true
                     )
                     LibraryActionButton(
                         Icons.Default.CreateNewFolder,
-                        if (veryNarrow) "Playlist" else "New Playlist",
+                        if (veryNarrow) stringResource(R.string.action_playlist) else stringResource(R.string.action_new_playlist),
                         onCreatePlaylist,
                         Modifier.weight(1f)
                     )
@@ -1731,12 +1711,15 @@ private fun ImportProgressCard(importState: ImportUiState) {
     ) {
         Column(Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
             Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-                LoadingIndicator(contentDescription = importState.message.ifBlank { "Importing MIDI files" })
+                LoadingIndicator(contentDescription = importState.message.ifBlank { stringResource(R.string.library_importing_midi_files) })
                 Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
-                    Text("Importing MIDI", style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.Bold)
+                    Text(stringResource(R.string.library_importing_midi), style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.Bold)
                     Text(
-                        "${importState.processedItems}/${importState.totalItems} items - ${importState.importedFiles} files imported" +
-                            if (importState.failedItems > 0) " - ${importState.failedItems} failed" else "",
+                        if (importState.failedItems > 0) {
+                            stringResource(R.string.library_import_progress_failed, importState.processedItems, importState.totalItems, importState.importedFiles, importState.failedItems)
+                        } else {
+                            stringResource(R.string.library_import_progress, importState.processedItems, importState.totalItems, importState.importedFiles)
+                        },
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSecondaryContainer,
                         maxLines = 1,
@@ -1782,10 +1765,10 @@ private fun AppInfoDialog(onDismiss: () -> Unit) {
     val uriHandler = LocalUriHandler.current
     AlertDialog(
         onDismissRequest = onDismiss,
-        icon = { AboutIcon(modifier = Modifier.size(96.dp), contentDescription = "APS NoteCast") },
+        icon = { AboutIcon(modifier = Modifier.size(96.dp), contentDescription = stringResource(R.string.app_name)) },
         title = {
             Text(
-                "APS NoteCast",
+                stringResource(R.string.app_name),
                 modifier = Modifier.fillMaxWidth(),
                 textAlign = TextAlign.Center
             )
@@ -1793,13 +1776,13 @@ private fun AppInfoDialog(onDismiss: () -> Unit) {
         text = {
             ScrollableDialogColumn(verticalArrangement = Arrangement.spacedBy(12.dp)) {
                 PrimaryLogoBanner()
-                InfoLine("Version", BuildConfig.VERSION_NAME)
-                InfoLine("Built for", "Bluetooth LE MIDI or USB MIDI playback to compatible player-piano adapters")
-                InfoLine("Cost", "Free and open-source. No subscriptions, in-app purchases, ads, or paid music catalog.")
-                InfoLine("Library", "Import MIDI files, use bundled Mutopia demos, create playlists, or record MIDI input")
-                InfoLine("External MIDI", "APS NoteCast can link to external MIDI sources for personal/noncommercial use. Rights vary by source.")
-                InfoLine("Playback", "Sequence or shuffle playlists with pause, stop, skip, panic, and channel volume")
-                InfoLine("Safety", "Stop and Panic send pedal-off, all-notes-off, reset controllers, and all-sound-off on all MIDI channels")
+                InfoLine(stringResource(R.string.about_version), BuildConfig.VERSION_NAME)
+                InfoLine(stringResource(R.string.about_built_for), stringResource(R.string.about_built_for_value))
+                InfoLine(stringResource(R.string.about_cost), stringResource(R.string.about_cost_value))
+                InfoLine(stringResource(R.string.about_library), stringResource(R.string.about_library_value))
+                InfoLine(stringResource(R.string.about_external), stringResource(R.string.about_external_value))
+                InfoLine(stringResource(R.string.about_playback), stringResource(R.string.about_playback_value))
+                InfoLine(stringResource(R.string.about_safety), stringResource(R.string.about_safety_value))
                 InfoLine(
                     stringResource(R.string.developed_by),
                     "${stringResource(R.string.company_name)}\n${stringResource(R.string.company_address)}"
@@ -1827,7 +1810,7 @@ private fun AppInfoDialog(onDismiss: () -> Unit) {
             }
         },
         confirmButton = {
-            TextButton(onClick = onDismiss) { Text("Done") }
+            TextButton(onClick = onDismiss) { Text(stringResource(R.string.action_done)) }
         }
     )
 }
@@ -1861,7 +1844,7 @@ private fun ScrollableDialogColumn(
     content: @Composable ColumnScope.() -> Unit
 ) {
     val scrollState = rememberScrollState()
-    BoxWithConstraints(modifier = modifier.heightIn(max = maxHeight)) {
+    Box(modifier = modifier.heightIn(max = maxHeight)) {
         Column(
             modifier = Modifier
                 .fillMaxWidth()
@@ -1913,8 +1896,9 @@ private fun BugReportDialog(
     onDismiss: () -> Unit
 ) {
     val pendingCrash = remember(context) { CrashReportStore.pendingCrash(context) }
+    val crashSummary = stringResource(R.string.bug_crash_summary)
     val scope = rememberCoroutineScope()
-    var summary by rememberSaveable { mutableStateOf(if (pendingCrash.isNotBlank()) "Crash in APS NoteCast" else "") }
+    var summary by rememberSaveable { mutableStateOf(if (pendingCrash.isNotBlank()) crashSummary else "") }
     var description by rememberSaveable { mutableStateOf("") }
     var contact by rememberSaveable { mutableStateOf("") }
     var includeLogs by rememberSaveable { mutableStateOf(true) }
@@ -1925,19 +1909,19 @@ private fun BugReportDialog(
     AlertDialog(
         onDismissRequest = { if (!sending) onDismiss() },
         icon = { Icon(Icons.Default.Warning, contentDescription = null) },
-        title = { Text("Report a Bug") },
+        title = { Text(stringResource(R.string.bug_title)) },
         text = {
             ScrollableDialogColumn(verticalArrangement = Arrangement.spacedBy(10.dp)) {
-                Text("Tell us what happened and what you expected instead.")
+                Text(stringResource(R.string.bug_intro))
                 Text(
-                    "The report includes app and Android details. Logs are optional and may include recent app events and MIDI device names.",
+                    stringResource(R.string.bug_details),
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
                 if (pendingCrash.isNotBlank()) {
                     Surface(shape = RoundedCornerShape(4.dp), color = MaterialTheme.colorScheme.errorContainer) {
                         Text(
-                            "A crash from the previous run will be attached automatically.",
+                            stringResource(R.string.bug_previous_crash),
                             modifier = Modifier.padding(10.dp),
                             color = MaterialTheme.colorScheme.onErrorContainer,
                             style = MaterialTheme.typography.bodySmall
@@ -1947,7 +1931,7 @@ private fun BugReportDialog(
                 OutlinedTextField(
                     value = summary,
                     onValueChange = { summary = it.take(300) },
-                    label = { Text("Short summary") },
+                    label = { Text(stringResource(R.string.bug_summary)) },
                     enabled = !sending && !sent,
                     singleLine = true,
                     modifier = Modifier.fillMaxWidth()
@@ -1955,7 +1939,7 @@ private fun BugReportDialog(
                 OutlinedTextField(
                     value = description,
                     onValueChange = { description = it.take(12_000) },
-                    label = { Text("What happened?") },
+                    label = { Text(stringResource(R.string.bug_what_happened)) },
                     enabled = !sending && !sent,
                     minLines = 4,
                     maxLines = 7,
@@ -1964,7 +1948,7 @@ private fun BugReportDialog(
                 OutlinedTextField(
                     value = contact,
                     onValueChange = { contact = it.take(300) },
-                    label = { Text("Optional email or contact") },
+                    label = { Text(stringResource(R.string.bug_contact)) },
                     enabled = !sending && !sent,
                     singleLine = true,
                     modifier = Modifier.fillMaxWidth()
@@ -1980,7 +1964,7 @@ private fun BugReportDialog(
                         onCheckedChange = { includeLogs = it },
                         enabled = !sending && !sent
                     )
-                    Text("Include recent app events", style = MaterialTheme.typography.bodyMedium)
+                    Text(stringResource(R.string.bug_include_events), style = MaterialTheme.typography.bodyMedium)
                 }
                 feedback?.let {
                     Text(
@@ -1999,7 +1983,7 @@ private fun BugReportDialog(
                     } else {
                         scope.launch {
                             sending = true
-                            feedback = "Sending bug report..."
+                            feedback = context.getString(R.string.bug_sending_message)
                             val diagnostics = service.connectionDiagnostics()
                             runCatching {
                                 BugReportClient.submit(
@@ -2017,9 +2001,9 @@ private fun BugReportDialog(
                             }.onSuccess { result ->
                                 sent = true
                                 feedback = if (result.duplicate) {
-                                    "Bug report received already. Reference: ${result.reportId.take(8)}"
+                                    context.getString(R.string.bug_duplicate, result.reportId.take(8))
                                 } else {
-                                    "Bug report sent. Reference: ${result.reportId.take(8)}"
+                                    context.getString(R.string.bug_sent, result.reportId.take(8))
                                 }
                             }.onFailure { throwable ->
                                 feedback = ApsNetworkStatus.userMessage(context, throwable)
@@ -2032,16 +2016,16 @@ private fun BugReportDialog(
             ) {
                 Text(
                     when {
-                        sent -> "Done"
-                        sending -> "Sending"
-                        else -> "Send Report"
+                        sent -> stringResource(R.string.action_done)
+                        sending -> stringResource(R.string.bug_sending)
+                        else -> stringResource(R.string.action_send_report)
                     }
                 )
             }
         },
         dismissButton = {
             TextButton(onClick = onDismiss, enabled = !sending) {
-                Text(if (sent) "Close" else "Cancel")
+                Text(if (sent) stringResource(R.string.action_close) else stringResource(R.string.action_cancel))
             }
         }
     )
@@ -2139,14 +2123,14 @@ private fun MidiFilesTitle(
 ) {
     Column(modifier, verticalArrangement = Arrangement.spacedBy(1.dp)) {
         Text(
-            "MIDI files",
+            stringResource(R.string.label_midi_files),
             style = MaterialTheme.typography.labelLarge,
             fontWeight = FontWeight.Bold,
             color = MaterialTheme.colorScheme.onSurfaceVariant
         )
         if (rangeStart > 0 && (rangeStart != 1 || rangeEnd != totalCount)) {
             Text(
-                "$rangeStart-$rangeEnd of $totalCount shown",
+                stringResource(R.string.range_shown, rangeStart, rangeEnd, totalCount),
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                 maxLines = 1
@@ -2190,14 +2174,14 @@ private fun MidiFileDisplayModeControl(
                 onClick = onToggleSearch
             )
             MidiFileDisplayModeSegment(
-                label = "Alphabetical",
+                label = stringResource(R.string.label_alphabetical),
                 selected = alphabeticalSelected && !forceFlatList,
                 enabled = !forceFlatList,
                 onClick = { if (!forceFlatList) onModeChange(MidiFileDisplayMode.Alphabetical) },
                 modifier = Modifier.weight(1f)
             )
             MidiFileDisplayModeSegment(
-                label = "All Songs",
+                label = stringResource(R.string.label_all_songs),
                 selected = mode == MidiFileDisplayMode.List,
                 onClick = { onModeChange(MidiFileDisplayMode.List) },
                 modifier = Modifier.weight(1f)
@@ -2221,7 +2205,7 @@ private fun MidiSearchToggleButton(
         Box(contentAlignment = Alignment.Center) {
             Icon(
                 Icons.Default.Search,
-                contentDescription = if (active) "Hide MIDI search" else "Search MIDI files",
+                contentDescription = if (active) stringResource(R.string.cd_hide_midi_search) else stringResource(R.string.cd_search_midi),
                 modifier = Modifier.size(20.dp),
                 tint = if (active) MaterialTheme.colorScheme.onPrimaryContainer else MaterialTheme.colorScheme.onSurfaceVariant
             )
@@ -2235,9 +2219,9 @@ private fun MidiLetterGroupToggleButton(
     onToggleLetterGroups: () -> Unit
 ) {
     val contentDescription = if (allLetterGroupsExpanded) {
-        "Collapse all letter sections"
+        stringResource(R.string.cd_collapse_all_letters)
     } else {
-        "Expand all letter sections"
+        stringResource(R.string.cd_expand_all_letters)
     }
     Surface(
         modifier = Modifier
@@ -2309,20 +2293,20 @@ private fun MidiSearchField(
         onValueChange = onQueryChange,
         modifier = Modifier.fillMaxWidth(),
         singleLine = true,
-        label = { Text("Search MIDI files") },
-        placeholder = { Text("Title or filename") },
+        label = { Text(stringResource(R.string.library_search_midi)) },
+        placeholder = { Text(stringResource(R.string.library_search_placeholder)) },
         leadingIcon = { Icon(Icons.Default.Search, contentDescription = null) },
         trailingIcon = {
             if (filtering) {
                 LoadingIndicator(
-                    contentDescription = "Filtering MIDI files",
+                    contentDescription = stringResource(R.string.cd_filtering_midi),
                     modifier = Modifier
                         .padding(end = 12.dp)
                         .size(18.dp)
                 )
             } else if (query.isNotEmpty()) {
                 IconButton(onClick = { onQueryChange("") }) {
-                    Icon(Icons.Default.Close, contentDescription = "Clear MIDI search")
+                    Icon(Icons.Default.Close, contentDescription = stringResource(R.string.cd_clear_midi_search))
                 }
             } else {
                 Text(
@@ -2357,7 +2341,7 @@ private fun MidiFilePagingFooter(
             horizontalArrangement = Arrangement.spacedBy(10.dp)
         ) {
             Text(
-                "$rangeStart-$rangeEnd of $totalCount",
+                stringResource(R.string.range_of_count, rangeStart, rangeEnd, totalCount),
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                 modifier = Modifier.weight(1f)
@@ -2365,12 +2349,12 @@ private fun MidiFilePagingFooter(
             FilledTonalButton(onClick = onPrevious, enabled = canPageBackward) {
                 Icon(Icons.Default.ExpandLess, contentDescription = null, modifier = Modifier.size(18.dp))
                 Spacer(Modifier.width(6.dp))
-                Text("Previous")
+                Text(stringResource(R.string.action_previous))
             }
             FilledTonalButton(onClick = onNext, enabled = canPageForward) {
                 Icon(Icons.Default.ExpandMore, contentDescription = null, modifier = Modifier.size(18.dp))
                 Spacer(Modifier.width(6.dp))
-                Text("Next")
+                Text(stringResource(R.string.action_next))
             }
         }
     }
@@ -2399,7 +2383,7 @@ private fun midiFileLetterGroups(files: List<MidiLibraryItem>): List<MidiLetterG
         .map { (key, groupFiles) ->
             MidiLetterGroup(
                 key = key,
-                title = if (key == "#") "Other" else key,
+                title = if (key == "#") "#" else key,
                 files = groupFiles
             )
         }
@@ -2435,7 +2419,7 @@ private fun MidiLetterHeader(
         ) {
             Icon(
                 if (expanded) Icons.Default.ExpandMore else Icons.AutoMirrored.Filled.KeyboardArrowRight,
-                contentDescription = if (expanded) "Collapse $title" else "Expand $title",
+                contentDescription = if (expanded) stringResource(R.string.cd_collapse_title, title) else stringResource(R.string.cd_expand_title, title),
                 modifier = Modifier.size(24.dp),
                 tint = MaterialTheme.colorScheme.onSurfaceVariant
             )
@@ -2448,7 +2432,7 @@ private fun MidiLetterHeader(
             Spacer(Modifier.width(10.dp))
             Spacer(Modifier.weight(1f))
             Text(
-                "$count MIDI file${if (count == 1) "" else "s"}",
+                stringResource(R.string.label_midi_files_count, count),
                 style = MaterialTheme.typography.labelMedium,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                 maxLines = 1
@@ -2475,12 +2459,12 @@ private fun PlaylistSearchField(
         onValueChange = onQueryChange,
         modifier = Modifier.fillMaxWidth(),
         singleLine = true,
-        label = { Text("Search playlists") },
+        label = { Text(stringResource(R.string.library_search_playlists)) },
         leadingIcon = { Icon(Icons.Default.Search, contentDescription = null) },
         trailingIcon = {
             if (query.isNotEmpty()) {
                 IconButton(onClick = { onQueryChange("") }) {
-                    Icon(Icons.Default.Close, contentDescription = "Clear playlist search")
+                    Icon(Icons.Default.Close, contentDescription = stringResource(R.string.cd_clear_playlist_search))
                 }
             } else {
                 Text(
@@ -2553,6 +2537,7 @@ private fun ReadingMusicOverlay(
     onStop: () -> Unit,
     modifier: Modifier = Modifier
 ) {
+    val readingMusicContentDescription = stringResource(R.string.cd_reading_music)
     Box(
         modifier = modifier
             .background(MaterialTheme.colorScheme.scrim.copy(alpha = 0.34f))
@@ -2576,19 +2561,19 @@ private fun ReadingMusicOverlay(
                 CircularProgressIndicator(
                     modifier = Modifier
                         .size(48.dp)
-                        .semantics { contentDescription = "Reading music" },
+                        .semantics { contentDescription = readingMusicContentDescription },
                     strokeWidth = 4.dp
                 )
                 Column(horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.spacedBy(4.dp)) {
-                    Text("Reading music", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
+                    Text(stringResource(R.string.cd_reading_music), style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
                     Text(
-                        playback.currentTitle ?: "Preparing MIDI file",
+                        playback.currentTitle ?: stringResource(R.string.playback_preparing_track, "MIDI"),
                         style = MaterialTheme.typography.bodyMedium,
                         maxLines = 2,
                         overflow = TextOverflow.Ellipsis
                     )
                     Text(
-                        "Preparing playback data...",
+                        stringResource(R.string.notification_preparing_dots),
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant
                     )
@@ -2597,7 +2582,7 @@ private fun ReadingMusicOverlay(
                 OutlinedButton(onClick = onStop, modifier = Modifier.fillMaxWidth()) {
                     Icon(Icons.Default.Stop, contentDescription = null)
                     Spacer(Modifier.width(8.dp))
-                    Text("Stop loading")
+                    Text(stringResource(R.string.action_stop_loading))
                 }
             }
         }
@@ -2624,7 +2609,7 @@ private fun MidiSelectionToolbar(
         ) {
             Icon(Icons.Default.Check, contentDescription = null, modifier = Modifier.size(20.dp), tint = MaterialTheme.colorScheme.onPrimaryContainer)
             Text(
-                "$count selected",
+                stringResource(R.string.library_selection_count, count),
                 modifier = Modifier.weight(1f),
                 style = MaterialTheme.typography.bodyMedium,
                 fontWeight = FontWeight.SemiBold,
@@ -2634,15 +2619,15 @@ private fun MidiSelectionToolbar(
             TextButton(onClick = onCreatePlaylist) {
                 Icon(Icons.Default.CreateNewFolder, contentDescription = null, modifier = Modifier.size(18.dp))
                 Spacer(Modifier.width(4.dp))
-                Text("Playlist")
+                Text(stringResource(R.string.action_playlist))
             }
             TextButton(onClick = onDelete) {
                 Icon(Icons.Default.Delete, contentDescription = null, modifier = Modifier.size(18.dp))
                 Spacer(Modifier.width(4.dp))
-                Text("Delete")
+                Text(stringResource(R.string.action_delete))
             }
             IconButton(onClick = onClear, modifier = Modifier.size(36.dp)) {
-                Icon(Icons.Default.Close, contentDescription = "Clear selection")
+                Icon(Icons.Default.Close, contentDescription = stringResource(R.string.cd_clear_selection))
             }
         }
     }
@@ -2824,7 +2809,7 @@ private fun MidiFileRow(
                     modifier = Modifier.size(32.dp)
                 )
             } else {
-                Icon(Icons.Default.MusicNote, contentDescription = "Select ${item.title}", modifier = Modifier.size(24.dp))
+                Icon(Icons.Default.MusicNote, contentDescription = stringResource(R.string.cd_select_title, item.title), modifier = Modifier.size(24.dp))
             }
         }
         Spacer(Modifier.width(10.dp))
@@ -2863,25 +2848,25 @@ private fun MidiFileRow(
             modifier = Modifier.size(40.dp)
         ) {
             if (preparing) {
-                LoadingIndicator(contentDescription = "Reading ${item.title}")
+                LoadingIndicator(contentDescription = stringResource(R.string.cd_reading_title, item.title))
             } else {
                 Icon(
                     if (playing) Icons.Default.Pause else Icons.Default.PlayArrow,
                     contentDescription = when {
-                        playing -> "Pause ${item.title}"
-                        paused -> "Resume ${item.title}"
-                        else -> "Play ${item.title}"
+                        playing -> stringResource(R.string.cd_pause_title, item.title)
+                        paused -> stringResource(R.string.cd_resume_title, item.title)
+                        else -> stringResource(R.string.cd_play_title, item.title)
                     }
                 )
             }
         }
         Box(Modifier.padding(end = 10.dp)) {
             IconButton(onClick = { showMenu = true }, modifier = Modifier.size(40.dp)) {
-                Icon(Icons.Default.MoreVert, contentDescription = "More actions for ${item.title}")
+                Icon(Icons.Default.MoreVert, contentDescription = stringResource(R.string.cd_more_actions_for, item.title))
             }
             DropdownMenu(expanded = showMenu, onDismissRequest = { showMenu = false }) {
                 DropdownMenuItem(
-                    text = { Text("Rename") },
+                    text = { Text(stringResource(R.string.action_rename)) },
                     leadingIcon = { Icon(Icons.Default.DriveFileRenameOutline, contentDescription = null) },
                     onClick = {
                         showMenu = false
@@ -2889,7 +2874,7 @@ private fun MidiFileRow(
                     }
                 )
                 DropdownMenuItem(
-                    text = { Text("Export") },
+                    text = { Text(stringResource(R.string.action_export)) },
                     leadingIcon = { Icon(Icons.Default.Download, contentDescription = null) },
                     onClick = {
                         showMenu = false
@@ -2897,7 +2882,7 @@ private fun MidiFileRow(
                     }
                 )
                 DropdownMenuItem(
-                    text = { Text("Share") },
+                    text = { Text(stringResource(R.string.action_share)) },
                     leadingIcon = { Icon(Icons.Default.Share, contentDescription = null) },
                     onClick = {
                         showMenu = false
@@ -2905,7 +2890,7 @@ private fun MidiFileRow(
                     }
                 )
                 DropdownMenuItem(
-                    text = { Text("Delete") },
+                    text = { Text(stringResource(R.string.action_delete)) },
                     leadingIcon = { Icon(Icons.Default.Delete, contentDescription = null) },
                     onClick = {
                         showMenu = false
@@ -2936,7 +2921,7 @@ private fun DraggedMidiFilePreview(items: List<MidiLibraryItem>, modifier: Modif
             Spacer(Modifier.width(10.dp))
             Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(1.dp)) {
                 Text(
-                    if (multiple) "${items.size} MIDI files" else firstItem.title,
+                    if (multiple) stringResource(R.string.label_midi_files_count, items.size) else firstItem.title,
                     fontWeight = FontWeight.SemiBold,
                     maxLines = 1,
                     overflow = TextOverflow.Ellipsis
@@ -2969,7 +2954,7 @@ private fun DraggedMidiFilePreview(items: List<MidiLibraryItem>, modifier: Modif
                         tint = MaterialTheme.colorScheme.onPrimaryContainer
                     )
                     Text(
-                        "Add",
+                        stringResource(R.string.action_add),
                         style = MaterialTheme.typography.labelSmall,
                         fontWeight = FontWeight.SemiBold,
                         color = MaterialTheme.colorScheme.onPrimaryContainer,
@@ -3054,7 +3039,7 @@ private fun PlaylistFolder(
         Column(Modifier.padding(8.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
             Row(verticalAlignment = Alignment.CenterVertically) {
                 IconButton(onClick = onToggle, modifier = Modifier.size(34.dp)) {
-                    Icon(if (expanded) Icons.Default.ExpandMore else Icons.AutoMirrored.Filled.KeyboardArrowRight, contentDescription = "Toggle playlist")
+                    Icon(if (expanded) Icons.Default.ExpandMore else Icons.AutoMirrored.Filled.KeyboardArrowRight, contentDescription = stringResource(R.string.cd_toggle_playlist))
                 }
                 playlistColor?.let { color ->
                     Surface(
@@ -3071,7 +3056,7 @@ private fun PlaylistFolder(
                 Column(Modifier.weight(1f)) {
                     Text(playlist.name, fontWeight = FontWeight.Bold, maxLines = 1, overflow = TextOverflow.Ellipsis)
                     Text(
-                        "${playlist.itemIds.size} track${if (playlist.itemIds.size == 1) "" else "s"}",
+                        stringResource(R.string.label_track_count, playlist.itemIds.size),
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant
                     )
@@ -3080,7 +3065,7 @@ private fun PlaylistFolder(
                     onClick = onAddFiles,
                     modifier = Modifier.size(40.dp)
                 ) {
-                    Icon(Icons.Default.Add, contentDescription = "Add MIDI files to ${playlist.name}")
+                    Icon(Icons.Default.Add, contentDescription = stringResource(R.string.cd_add_files_to_playlist, playlist.name))
                 }
                 IconButton(
                     onClick = { if (preparing) onSelect() else onPlaySequential() },
@@ -3088,21 +3073,21 @@ private fun PlaylistFolder(
                     modifier = Modifier.size(40.dp)
                 ) {
                     if (preparing) {
-                        LoadingIndicator(contentDescription = "Reading ${playlist.name}")
+                        LoadingIndicator(contentDescription = stringResource(R.string.cd_reading_title, playlist.name))
                     } else {
-                        Icon(Icons.AutoMirrored.Filled.PlaylistPlay, contentDescription = "Play ${playlist.name} in order")
+                        Icon(Icons.AutoMirrored.Filled.PlaylistPlay, contentDescription = stringResource(R.string.cd_play_playlist_order, playlist.name))
                     }
                 }
                 IconButton(onClick = onPlayShuffle, enabled = connected && playlist.itemIds.isNotEmpty() && !preparing, modifier = Modifier.size(40.dp)) {
-                    Icon(Icons.Default.Shuffle, contentDescription = "Shuffle ${playlist.name}")
+                    Icon(Icons.Default.Shuffle, contentDescription = stringResource(R.string.cd_shuffle_playlist, playlist.name))
                 }
                 Box {
                     IconButton(onClick = { showMenu = true }, modifier = Modifier.size(40.dp)) {
-                        Icon(Icons.Default.MoreVert, contentDescription = "Playlist actions")
+                        Icon(Icons.Default.MoreVert, contentDescription = stringResource(R.string.cd_playlist_actions))
                     }
                     DropdownMenu(expanded = showMenu, onDismissRequest = { showMenu = false }) {
                         DropdownMenuItem(
-                            text = { Text("Add files") },
+                            text = { Text(stringResource(R.string.action_add_files)) },
                             leadingIcon = { Icon(Icons.Default.Add, contentDescription = null) },
                             onClick = {
                                 showMenu = false
@@ -3110,7 +3095,7 @@ private fun PlaylistFolder(
                             }
                         )
                         DropdownMenuItem(
-                            text = { Text("Rename") },
+                            text = { Text(stringResource(R.string.action_rename)) },
                             leadingIcon = { Icon(Icons.Default.DriveFileRenameOutline, contentDescription = null) },
                             onClick = {
                                 showMenu = false
@@ -3118,7 +3103,7 @@ private fun PlaylistFolder(
                             }
                         )
                         DropdownMenuItem(
-                            text = { Text("Color") },
+                            text = { Text(stringResource(R.string.action_color)) },
                             leadingIcon = { Icon(Icons.Default.FiberManualRecord, contentDescription = null) },
                             onClick = {
                                 showMenu = false
@@ -3126,7 +3111,7 @@ private fun PlaylistFolder(
                             }
                         )
                         DropdownMenuItem(
-                            text = { Text("Clone playlist") },
+                            text = { Text(stringResource(R.string.action_clone_playlist)) },
                             leadingIcon = { Icon(Icons.Default.ContentCopy, contentDescription = null) },
                             onClick = {
                                 showMenu = false
@@ -3134,7 +3119,7 @@ private fun PlaylistFolder(
                             }
                         )
                         DropdownMenuItem(
-                            text = { Text("Delete") },
+                            text = { Text(stringResource(R.string.action_delete)) },
                             leadingIcon = { Icon(Icons.Default.Delete, contentDescription = null) },
                             onClick = {
                                 showMenu = false
@@ -3148,7 +3133,7 @@ private fun PlaylistFolder(
             if (expanded) {
                 if (playlist.itemIds.isEmpty()) {
                     Text(
-                        "Drop MIDI files here",
+                        stringResource(R.string.library_drop_midi_here),
                         style = MaterialTheme.typography.bodyMedium,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                         modifier = Modifier.padding(start = 46.dp, bottom = 6.dp)
@@ -3197,17 +3182,17 @@ private fun PlaylistTrackRow(
     ) {
         Text("${index + 1}.", modifier = Modifier.width(28.dp), fontWeight = FontWeight.SemiBold)
         Column(Modifier.weight(1f)) {
-            Text(item?.title ?: "Missing MIDI file", maxLines = 1, overflow = TextOverflow.Ellipsis)
+            Text(item?.title ?: stringResource(R.string.library_missing_midi_file), maxLines = 1, overflow = TextOverflow.Ellipsis)
             Text(item?.durationUs?.formatDuration() ?: "--:--", style = MaterialTheme.typography.bodySmall)
         }
         IconButton(onClick = { onMove(index, -1) }, enabled = !isFirst, modifier = Modifier.size(34.dp)) {
-            Icon(Icons.AutoMirrored.Filled.KeyboardArrowRight, contentDescription = "Move up", modifier = Modifier.graphicsLayer(rotationZ = -90f))
+            Icon(Icons.AutoMirrored.Filled.KeyboardArrowRight, contentDescription = stringResource(R.string.cd_move_up), modifier = Modifier.graphicsLayer(rotationZ = -90f))
         }
         IconButton(onClick = { onMove(index, 1) }, enabled = !isLast, modifier = Modifier.size(34.dp)) {
-            Icon(Icons.AutoMirrored.Filled.KeyboardArrowRight, contentDescription = "Move down", modifier = Modifier.graphicsLayer(rotationZ = 90f))
+            Icon(Icons.AutoMirrored.Filled.KeyboardArrowRight, contentDescription = stringResource(R.string.cd_move_down), modifier = Modifier.graphicsLayer(rotationZ = 90f))
         }
         IconButton(onClick = { onRemove(index) }, modifier = Modifier.size(34.dp)) {
-            Icon(Icons.Default.Close, contentDescription = "Remove")
+            Icon(Icons.Default.Close, contentDescription = stringResource(R.string.cd_remove))
         }
     }
 }
@@ -3222,17 +3207,17 @@ private fun EmptyLibraryCard(
         colors = CardDefaults.elevatedCardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant)
     ) {
         Column(Modifier.padding(18.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
-            Text("No music yet", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
+            Text(stringResource(R.string.library_empty), style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                 Button(onClick = onImport) {
                     Icon(Icons.Default.UploadFile, contentDescription = null)
                     Spacer(Modifier.width(8.dp))
-                    Text("Add MIDI")
+                    Text(stringResource(R.string.action_add_midi))
                 }
                 OutlinedButton(onClick = onCreatePlaylist) {
                     Icon(Icons.Default.CreateNewFolder, contentDescription = null)
                     Spacer(Modifier.width(8.dp))
-                    Text("New Playlist")
+                    Text(stringResource(R.string.action_new_playlist))
                 }
             }
         }
@@ -3259,11 +3244,11 @@ private fun DevicePanel(
                 Icon(Icons.Default.Bluetooth, contentDescription = null)
                 Spacer(Modifier.width(10.dp))
                 Column(Modifier.weight(1f)) {
-                    Text("MIDI Devices", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
+                    Text(stringResource(R.string.connection_midi_devices), style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
                     Text(state.connection.message, style = MaterialTheme.typography.bodySmall, maxLines = 1, overflow = TextOverflow.Ellipsis)
                 }
                 if (state.connection.connected) {
-                    TextButton(onClick = { service.disconnect() }) { Text("Disconnect") }
+                    TextButton(onClick = { service.disconnect() }) { Text(stringResource(R.string.action_disconnect)) }
                 }
             }
             DeviceConnectorContent(
@@ -3297,9 +3282,9 @@ private fun PlayerPanel(
                 }
                 Spacer(Modifier.width(10.dp))
                 Column(Modifier.weight(1f)) {
-                    Text("Now playing", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
+                    Text(stringResource(R.string.playback_now_playing), style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
                     Text(
-                        playback.currentTitle ?: "Ready",
+                        playback.currentTitle ?: stringResource(R.string.playback_ready),
                         style = MaterialTheme.typography.bodyMedium,
                         maxLines = 1,
                         overflow = TextOverflow.Ellipsis
@@ -3323,7 +3308,7 @@ private fun PlayerPanel(
             }
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
                 IconButton(onClick = { service.skipToPrevious() }, enabled = playback.isActive && !playback.isPreparing) {
-                    Icon(Icons.Default.SkipPrevious, contentDescription = "Previous")
+                    Icon(Icons.Default.SkipPrevious, contentDescription = stringResource(R.string.cd_previous))
                 }
                 IconButton(
                     onClick = {
@@ -3336,16 +3321,19 @@ private fun PlayerPanel(
                     enabled = playback.isActive
                 ) {
                     if (playback.isPreparing) {
-                        LoadingIndicator(contentDescription = "Reading music. Tap to stop.")
+                        LoadingIndicator(contentDescription = stringResource(R.string.cd_reading_music_tap_stop))
                     } else {
-                        Icon(if (playback.isPlaying) Icons.Default.Pause else Icons.Default.PlayArrow, contentDescription = "Play or pause")
+                        Icon(if (playback.isPlaying) Icons.Default.Pause else Icons.Default.PlayArrow, contentDescription = stringResource(R.string.cd_play_or_pause))
                     }
                 }
-                IconButton(onClick = { service.stopPlayback() }, enabled = playback.isActive) {
-                    Icon(Icons.Default.Stop, contentDescription = "Stop")
+                IconButton(
+                    onClick = { service.stopPlaybackOrQuietOutputs() },
+                    enabled = playback.isActive || state.connection.connected
+                ) {
+                    Icon(Icons.Default.Stop, contentDescription = stringResource(R.string.action_stop))
                 }
                 IconButton(onClick = { service.skipToNext() }, enabled = playback.isActive && !playback.isPreparing) {
-                    Icon(Icons.Default.SkipNext, contentDescription = "Next")
+                    Icon(Icons.Default.SkipNext, contentDescription = stringResource(R.string.cd_next))
                 }
             }
         }
@@ -3473,10 +3461,11 @@ private fun PlaybackProgressSlider(
 
 @Composable
 private fun PedalPressDot(modifier: Modifier = Modifier) {
+    val pedalPressedContentDescription = stringResource(R.string.cd_sustain_pedal_pressed)
     Surface(
         modifier = modifier
             .size(8.dp)
-            .semantics { contentDescription = "Sustain pedal pressed" },
+            .semantics { contentDescription = pedalPressedContentDescription },
         shape = CircleShape,
         color = MaterialTheme.colorScheme.primary
     ) {}
@@ -3490,18 +3479,18 @@ private fun TransportTitle(
 ) {
     Column(modifier) {
         Text(
-            playback.currentTitle ?: selectedTitle ?: "Select a MIDI file or playlist",
+            playback.currentTitle ?: selectedTitle ?: stringResource(R.string.playback_select_prompt),
             fontWeight = FontWeight.SemiBold,
             maxLines = 1,
             overflow = TextOverflow.Ellipsis
         )
         Text(
             when (playback.mode) {
-                PlaybackMode.Preparing -> "Preparing ${playback.currentTitle ?: "track"}"
-                PlaybackMode.Playing -> "Playing ${playback.progressUs.formatClockTime()} / ${playback.durationUs.formatClockTime()}"
-                PlaybackMode.Paused -> "Paused ${playback.progressUs.formatClockTime()} / ${playback.durationUs.formatClockTime()}"
-                PlaybackMode.Error -> playback.error ?: "Playback error"
-                PlaybackMode.Idle -> "Ready"
+                PlaybackMode.Preparing -> stringResource(R.string.playback_preparing_track, playback.currentTitle ?: stringResource(R.string.playback_track))
+                PlaybackMode.Playing -> stringResource(R.string.playback_playing_time, playback.progressUs.formatClockTime(), playback.durationUs.formatClockTime())
+                PlaybackMode.Paused -> stringResource(R.string.playback_paused_time, playback.progressUs.formatClockTime(), playback.durationUs.formatClockTime())
+                PlaybackMode.Error -> playback.error ?: stringResource(R.string.playback_error)
+                PlaybackMode.Idle -> stringResource(R.string.playback_ready)
             },
             style = MaterialTheme.typography.bodySmall,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
@@ -3572,7 +3561,7 @@ private fun TransportButtons(
     val playback = state.playback
     Row(modifier, verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(4.dp)) {
         IconButton(onClick = { service.skipToPrevious() }, enabled = playback.isActive && !playback.isPreparing) {
-            Icon(Icons.Default.SkipPrevious, contentDescription = "Previous")
+            Icon(Icons.Default.SkipPrevious, contentDescription = stringResource(R.string.cd_previous))
         }
         IconButton(
             onClick = {
@@ -3586,16 +3575,19 @@ private fun TransportButtons(
             enabled = playback.isActive || (state.connection.connected && hasSelection)
         ) {
             if (playback.isPreparing) {
-                LoadingIndicator(contentDescription = "Reading music. Tap to stop.")
+                LoadingIndicator(contentDescription = stringResource(R.string.cd_reading_music_tap_stop))
             } else {
-                Icon(if (playback.isPlaying) Icons.Default.Pause else Icons.Default.PlayArrow, contentDescription = "Play or pause")
+                Icon(if (playback.isPlaying) Icons.Default.Pause else Icons.Default.PlayArrow, contentDescription = stringResource(R.string.cd_play_or_pause))
             }
         }
-        IconButton(onClick = { service.stopPlayback() }, enabled = playback.isActive) {
-            Icon(Icons.Default.Stop, contentDescription = "Stop")
+        IconButton(
+            onClick = { service.stopPlaybackOrQuietOutputs() },
+            enabled = playback.isActive || state.connection.connected
+        ) {
+            Icon(Icons.Default.Stop, contentDescription = stringResource(R.string.action_stop))
         }
         IconButton(onClick = { service.skipToNext() }, enabled = playback.isActive && !playback.isPreparing) {
-            Icon(Icons.Default.SkipNext, contentDescription = "Next")
+            Icon(Icons.Default.SkipNext, contentDescription = stringResource(R.string.cd_next))
         }
     }
 }
@@ -3619,7 +3611,7 @@ private fun VolumeControl(
             modifier = Modifier.weight(1f)
         )
         IconButton(onClick = { showMixer = true }, modifier = Modifier.size(40.dp)) {
-            Icon(Icons.Default.GraphicEq, contentDescription = "Open volume mixer")
+            Icon(Icons.Default.GraphicEq, contentDescription = stringResource(R.string.cd_open_volume_mixer))
         }
     }
     if (showMixer) {
@@ -3650,10 +3642,12 @@ private fun VolumeMixerDialog(
     onSettingsChange: (AppSettings) -> Unit,
     onDismiss: () -> Unit
 ) {
+    val context = LocalContext.current
     val currentSongId = state.playback.currentItemId?.takeIf { itemId -> state.files.any { it.id == itemId } }
     val songInstrumentOverrides = settings.instrumentOverridesForSong(currentSongId)
-    val rows = remember(state.playback.isActive, state.playbackChannels, currentSongId, settings.songInstrumentOverrides) {
+    val rows = remember(context, state.playback.isActive, state.playbackChannels, currentSongId, settings.songInstrumentOverrides) {
         mixerChannelRows(
+            context = context,
             channels = if (state.playback.isActive) state.playbackChannels else emptyList(),
             songInstrumentOverrides = songInstrumentOverrides
         )
@@ -3677,11 +3671,11 @@ private fun VolumeMixerDialog(
                 Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(10.dp)) {
                     Icon(Icons.Default.GraphicEq, contentDescription = null)
                     Column(Modifier.weight(1f)) {
-                        Text("Volume mixer", style = MaterialTheme.typography.headlineSmall, maxLines = 1)
+                        Text(stringResource(R.string.mixer_title), style = MaterialTheme.typography.headlineSmall, maxLines = 1)
                         Text(
                             when (settings.volumeControlMode) {
-                                VolumeControlMode.LegacyVolumeScaling -> "Legacy volume scaling"
-                                VolumeControlMode.StandardMidiVolume -> "Standard MIDI volume (CC7)"
+                                VolumeControlMode.LegacyVolumeScaling -> stringResource(R.string.settings_volume_legacy)
+                                VolumeControlMode.StandardMidiVolume -> stringResource(R.string.settings_volume_standard)
                             },
                             style = MaterialTheme.typography.bodySmall,
                             color = MaterialTheme.colorScheme.onSurfaceVariant,
@@ -3689,7 +3683,7 @@ private fun VolumeMixerDialog(
                         )
                     }
                     IconButton(onClick = onDismiss, modifier = Modifier.size(40.dp)) {
-                        Icon(Icons.Default.Close, contentDescription = "Close")
+                        Icon(Icons.Default.Close, contentDescription = stringResource(R.string.cd_close))
                     }
                 }
                 LazyColumn(
@@ -3708,7 +3702,7 @@ private fun VolumeMixerDialog(
                     if (rows.isEmpty()) {
                         item {
                             Text(
-                                "No mixable channels in this MIDI file.",
+                                stringResource(R.string.mixer_no_channels),
                                 style = MaterialTheme.typography.bodyMedium,
                                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                                 modifier = Modifier.padding(vertical = 10.dp)
@@ -3737,11 +3731,11 @@ private fun VolumeMixerDialog(
                                 onSettingsChange(settings.withClearedSongInstrumentOverrides(currentSongId))
                             }
                         ) {
-                            Text("Clear song instruments")
+                            Text(stringResource(R.string.mixer_clear_song_instruments))
                         }
                     }
                     Button(onClick = onDismiss) {
-                        Text("Done")
+                        Text(stringResource(R.string.action_done))
                     }
                 }
             }
@@ -3763,7 +3757,7 @@ private fun MixerMainVolumeRow(
         Column(Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
             Row(verticalAlignment = Alignment.CenterVertically) {
                 Text(
-                    "Main volume",
+                    stringResource(R.string.label_main_volume),
                     modifier = Modifier.weight(1f),
                     style = MaterialTheme.typography.titleMedium,
                     fontWeight = FontWeight.Bold,
@@ -3819,7 +3813,7 @@ private fun MixerChannelRow(
                         )
                         if (row.infoLines.isNotEmpty()) {
                             IconButton(onClick = { showInfo = true }, modifier = Modifier.size(32.dp)) {
-                                Icon(Icons.Default.Info, contentDescription = "Channel information", modifier = Modifier.size(18.dp))
+                                Icon(Icons.Default.Info, contentDescription = stringResource(R.string.cd_channel_information), modifier = Modifier.size(18.dp))
                             }
                         }
                     }
@@ -3834,7 +3828,7 @@ private fun MixerChannelRow(
                         if (row.hasInstrumentOverride) {
                             AssistChip(
                                 onClick = {},
-                                label = { Text("Song override", maxLines = 1) }
+                                label = { Text(stringResource(R.string.mixer_song_override), maxLines = 1) }
                             )
                         }
                     }
@@ -3852,7 +3846,7 @@ private fun MixerChannelRow(
                         )
                     }
                 )
-                Text("Mute", style = MaterialTheme.typography.bodySmall)
+                Text(stringResource(R.string.label_mute), style = MaterialTheme.typography.bodySmall)
             }
             Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                 Box {
@@ -3860,7 +3854,7 @@ private fun MixerChannelRow(
                         onClick = { showInstrumentMenu = true },
                         enabled = currentSongId != null
                     ) {
-                        Text("Change")
+                        Text(stringResource(R.string.action_change))
                     }
                 }
                 if (currentSongId != null && row.hasInstrumentOverride) {
@@ -3871,7 +3865,7 @@ private fun MixerChannelRow(
                         },
                         modifier = Modifier.size(40.dp)
                     ) {
-                        Icon(Icons.Default.Refresh, contentDescription = "Clear instrument override")
+                        Icon(Icons.Default.Refresh, contentDescription = stringResource(R.string.cd_clear_instrument_override))
                     }
                 }
             }
@@ -3936,7 +3930,7 @@ private fun InstrumentPickerDialog(
                 Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(10.dp)) {
                     Icon(Icons.Default.MusicNote, contentDescription = null)
                     Column(Modifier.weight(1f)) {
-                        Text("Instrument", style = MaterialTheme.typography.headlineSmall, maxLines = 1)
+                        Text(stringResource(R.string.mixer_instrument), style = MaterialTheme.typography.headlineSmall, maxLines = 1)
                         Text(
                             row.detail,
                             style = MaterialTheme.typography.bodySmall,
@@ -3946,7 +3940,7 @@ private fun InstrumentPickerDialog(
                         )
                     }
                     IconButton(onClick = onDismiss, modifier = Modifier.size(40.dp)) {
-                        Icon(Icons.Default.Close, contentDescription = "Close")
+                        Icon(Icons.Default.Close, contentDescription = stringResource(R.string.cd_close))
                     }
                 }
                 LazyColumn(
@@ -4001,12 +3995,13 @@ private fun MixerChannelInfoDialog(row: MixerChannelRowModel, onDismiss: () -> U
             }
         },
         confirmButton = {
-            TextButton(onClick = onDismiss) { Text("Done") }
+            TextButton(onClick = onDismiss) { Text(stringResource(R.string.action_done)) }
         }
     )
 }
 
 private fun mixerChannelRows(
+    context: Context,
     channels: List<PlaybackChannelInfo>,
     songInstrumentOverrides: Map<Int, Int>
 ): List<MixerChannelRowModel> {
@@ -4026,18 +4021,22 @@ private fun mixerChannelRows(
         MixerChannelRowModel(
             channel = channelInfo.channel,
             instrumentName = instrumentName,
-            detail = listOf(channelInfo.channel).channelDetail(),
+            detail = listOf(channelInfo.channel).channelDetail(context),
             selectedProgram = overrideProgram ?: sourceProgram ?: GeneralMidi.defaultProgramForChannel(channelInfo.channel),
             hasInstrumentOverride = overrideProgram != null,
-            infoLines = channelInfo.infoLines(overrideProgram)
+            infoLines = channelInfo.infoLines(context, overrideProgram)
         )
     }
 }
 
-private fun List<Int>.channelDetail(): String =
-    if (size == 1) "Channel ${first()}" else "Channels ${joinToString(" and ")}"
+private fun List<Int>.channelDetail(context: Context): String =
+    if (size == 1) {
+        context.getString(R.string.label_channel, first())
+    } else {
+        context.getString(R.string.label_channels, joinToString(", "))
+    }
 
-private fun PlaybackChannelInfo.infoLines(overrideProgram: Int?): List<Pair<String, String>> {
+private fun PlaybackChannelInfo.infoLines(context: Context, overrideProgram: Int?): List<Pair<String, String>> {
     val hasExtraInfo = overrideProgram != null ||
         programNumbers.isNotEmpty() ||
         trackTitles.isNotEmpty() ||
@@ -4045,23 +4044,23 @@ private fun PlaybackChannelInfo.infoLines(overrideProgram: Int?): List<Pair<Stri
         !label.isNullOrBlank()
     if (!hasExtraInfo) return emptyList()
     return buildList {
-        add("MIDI channel" to channel.toString())
+        add(context.getString(R.string.label_midi_channel) to channel.toString())
         if (overrideProgram != null) {
-            add("Song override" to GeneralMidi.programLabel(overrideProgram))
+            add(context.getString(R.string.mixer_song_override) to GeneralMidi.programLabel(overrideProgram))
         }
         if (programNumbers.isNotEmpty()) {
-            add("MIDI program" to programNumbers.distinct().joinToString(" / ") {
+            add(context.getString(R.string.label_midi_program) to programNumbers.distinct().joinToString(" / ") {
                 GeneralMidi.sourceProgramLabelForChannel(channel, it)
             })
         }
         if (metaInstrumentNames.isNotEmpty()) {
-            add("Instrument name" to metaInstrumentNames.distinct().joinToString(" / "))
+            add(context.getString(R.string.label_instrument_name) to metaInstrumentNames.distinct().joinToString(" / "))
         }
         if (trackTitles.isNotEmpty()) {
-            add("Track title" to trackTitles.distinct().joinToString(" / "))
+            add(context.getString(R.string.label_track_title) to trackTitles.distinct().joinToString(" / "))
         }
         label?.takeIf { it.isNotBlank() && it !in metaInstrumentNames && it !in trackTitles }?.let {
-            add("Channel title" to it)
+            add(context.getString(R.string.label_channel_title) to it)
         }
     }
 }
@@ -4089,9 +4088,9 @@ private fun List<MidiChannelControl>.updateChannels(
 private fun ConnectionPill(state: AppUiState, onClick: () -> Unit) {
     val connection = state.connection
     val (label, icon, color) = when {
-        connection.connected -> Triple("Connected", Icons.Default.BluetoothConnected, MaterialTheme.colorScheme.secondaryContainer)
-        connection.connecting || connection.scanning -> Triple("Scanning", Icons.AutoMirrored.Filled.BluetoothSearching, MaterialTheme.colorScheme.tertiaryContainer)
-        else -> Triple("Offline", Icons.Default.Bluetooth, MaterialTheme.colorScheme.surfaceVariant)
+        connection.connected -> Triple(stringResource(R.string.service_connected), Icons.Default.BluetoothConnected, MaterialTheme.colorScheme.secondaryContainer)
+        connection.connecting || connection.scanning -> Triple(stringResource(R.string.connection_scanning), Icons.AutoMirrored.Filled.BluetoothSearching, MaterialTheme.colorScheme.tertiaryContainer)
+        else -> Triple(stringResource(R.string.connection_offline), Icons.Default.Bluetooth, MaterialTheme.colorScheme.surfaceVariant)
     }
     Surface(
         modifier = Modifier
@@ -4117,7 +4116,7 @@ private fun ConnectionPill(state: AppUiState, onClick: () -> Unit) {
             Column {
                 Text(label, style = MaterialTheme.typography.labelMedium, fontWeight = FontWeight.Bold)
                 Text(
-                    connection.deviceName ?: connection.rememberedDeviceName ?: "MIDI Device",
+                    connection.deviceName ?: connection.rememberedDeviceName ?: stringResource(R.string.device_midi_device),
                     style = MaterialTheme.typography.labelSmall,
                     maxLines = 1,
                     overflow = TextOverflow.Ellipsis
@@ -4140,7 +4139,7 @@ private fun ConnectionWizardDialog(
 ) {
     AlertDialog(
         onDismissRequest = onDismiss,
-        title = { Text("MIDI adapter", style = MaterialTheme.typography.headlineSmall) },
+        title = { Text(stringResource(R.string.connection_adapter), style = MaterialTheme.typography.headlineSmall) },
         text = {
             ScrollableDialogColumn(maxHeight = 430.dp, verticalArrangement = Arrangement.spacedBy(10.dp)) {
                 DeviceConnectorContent(
@@ -4155,7 +4154,7 @@ private fun ConnectionWizardDialog(
         },
         confirmButton = {
             TextButton(onClick = onDismiss) {
-                Text("Continue offline")
+                Text(stringResource(R.string.action_continue_offline))
             }
         }
     )
@@ -4182,7 +4181,7 @@ private fun BatteryRecommendationDialog(
         },
         dismissButton = {
             TextButton(onClick = onDismiss) {
-                Text("Not now")
+                Text(stringResource(R.string.action_not_now))
             }
         }
     )
@@ -4202,7 +4201,7 @@ private fun ConnectionDialog(
         onDismissRequest = onDismiss,
         title = {
             Text(
-                if (state.connection.connected) "MIDI adapter connected" else "MIDI adapter",
+                if (state.connection.connected) stringResource(R.string.connection_adapter_connected) else stringResource(R.string.connection_adapter),
                 style = MaterialTheme.typography.headlineSmall
             )
         },
@@ -4220,7 +4219,7 @@ private fun ConnectionDialog(
         },
         confirmButton = {
             TextButton(onClick = onDismiss) {
-                Text("Done")
+                Text(stringResource(R.string.action_done))
             }
         }
     )
@@ -4260,14 +4259,14 @@ private fun DeviceConnectorContent(
         Surface(shape = RoundedCornerShape(4.dp), color = MaterialTheme.colorScheme.tertiaryContainer) {
             Column(Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
                 Text(
-                    if (hasUsbMidiDevice) "Bluetooth access needed for WIDI adapters" else "App access needed",
+                    if (hasUsbMidiDevice) stringResource(R.string.connection_access_bluetooth_needed_title) else stringResource(R.string.connection_access_needed_title),
                     fontWeight = FontWeight.SemiBold
                 )
                 Text(
                     if (hasUsbMidiDevice) {
-                        "USB MIDI adapters can still be used. Grant access to scan for WIDI adapters."
+                        stringResource(R.string.connection_access_bluetooth_needed_message)
                     } else {
-                        "APS NoteCast needs Bluetooth, location, and internet access to find MIDI devices and contact Alex's Piano Service."
+                        stringResource(R.string.connection_access_needed_message)
                     },
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onTertiaryContainer
@@ -4275,7 +4274,7 @@ private fun DeviceConnectorContent(
                 Button(onClick = onRequestPermissions, modifier = Modifier.fillMaxWidth()) {
                     Icon(Icons.Default.Bluetooth, contentDescription = null)
                     Spacer(Modifier.width(8.dp))
-                    Text(if (hasUsbMidiDevice) "Grant Bluetooth access" else "Grant app access")
+                    Text(if (hasUsbMidiDevice) stringResource(R.string.connection_grant_bluetooth) else stringResource(R.string.connection_grant_app))
                 }
             }
         }
@@ -4286,9 +4285,9 @@ private fun DeviceConnectorContent(
         Surface(shape = RoundedCornerShape(4.dp), color = MaterialTheme.colorScheme.errorContainer) {
             Text(
                 if (hasUsbMidiDevice) {
-                    "This Android device does not report Bluetooth hardware. USB MIDI adapters can still be used."
+                    stringResource(R.string.connection_bluetooth_hardware_missing_usb)
                 } else {
-                    "This Android device does not report Bluetooth hardware."
+                    stringResource(R.string.connection_bluetooth_hardware_missing)
                 },
                 modifier = Modifier.padding(12.dp),
                 color = MaterialTheme.colorScheme.onErrorContainer
@@ -4303,23 +4302,23 @@ private fun DeviceConnectorContent(
                 Icon(Icons.Default.Bluetooth, contentDescription = null)
                 Spacer(Modifier.width(8.dp))
                 Column(Modifier.weight(1f)) {
-                    Text("Bluetooth is off", fontWeight = FontWeight.SemiBold)
+                    Text(stringResource(R.string.connection_bluetooth_off), fontWeight = FontWeight.SemiBold)
                     Text(
                         if (hasUsbMidiDevice) {
-                            "USB MIDI adapters can still be used. Turn Bluetooth on for WIDI adapters."
+                            stringResource(R.string.connection_bluetooth_off_usb_message)
                         } else {
-                            "Turn it on to find WIDI adapters."
+                            stringResource(R.string.connection_bluetooth_off_widi_message)
                         },
                         style = MaterialTheme.typography.bodySmall
                     )
                 }
                 if (!hasUsbMidiDevice) {
                     Button(onClick = onRequestBluetoothEnable) {
-                        Text("Turn on")
+                        Text(stringResource(R.string.action_turn_on))
                     }
                 } else {
                     TextButton(onClick = onRequestBluetoothEnable) {
-                        Text("Turn on")
+                        Text(stringResource(R.string.action_turn_on))
                     }
                 }
             }
@@ -4329,14 +4328,14 @@ private fun DeviceConnectorContent(
 
     if (attachedUsbDevices.isNotEmpty()) {
         ConnectionSectionHeader(
-            title = "Attached USB MIDI",
-            subtitle = "Available now. Connect here without scanning Bluetooth."
+            title = stringResource(R.string.connection_attached_usb_midi),
+            subtitle = stringResource(R.string.connection_attached_usb_subtitle)
         )
         Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
             attachedUsbDevices.forEach { device ->
                 ScanDeviceRow(
                     device = device,
-                    displayName = deviceDisplayName(device, duplicateConnectorNames),
+                    displayName = deviceDisplayName(device, duplicateConnectorNames, stringResource(R.string.device_midi_adapter)),
                     onSave = { service.addDevice(device.address) },
                     onConnect = {
                         service.addDevice(device.address)
@@ -4344,7 +4343,7 @@ private fun DeviceConnectorContent(
                     },
                     onRename = { renameDeviceAddress = device.address },
                     onPair = onOpenBluetoothPairing,
-                    connectLabel = if (connected) "Switch" else "Connect"
+                    connectLabel = if (connected) stringResource(R.string.action_switch) else stringResource(R.string.action_connect)
                 )
             }
         }
@@ -4361,19 +4360,19 @@ private fun DeviceConnectorContent(
     if (state.connection.connecting || state.connection.scanning) {
         LoadingStatusPanel(
             title = when {
-                state.connection.connecting -> "Connecting to MIDI"
-                connected -> "Looking for another MIDI device"
-                else -> "Looking for MIDI"
+                state.connection.connecting -> stringResource(R.string.connection_connecting_to_midi)
+                connected -> stringResource(R.string.connection_looking_another)
+                else -> stringResource(R.string.connection_looking_midi)
             },
             message = if (connected && state.connection.scanning) {
-                "The current connection stays active while APS NoteCast looks nearby."
+                stringResource(R.string.connection_current_stays_active)
             } else {
                 state.connection.message
             },
-            actionLabel = if (state.connection.scanning) "Stop" else null,
+            actionLabel = if (state.connection.scanning) stringResource(R.string.action_stop) else null,
             onAction = if (state.connection.scanning) ({ service.stopBleScan() }) else null
         )
-    } else if (!connected && state.connection.message.isNotBlank() && state.connection.message != "Not connected") {
+    } else if (!connected && state.connection.message.isNotBlank() && state.connection.message != stringResource(R.string.service_not_connected)) {
         Surface(shape = RoundedCornerShape(4.dp), color = MaterialTheme.colorScheme.surfaceVariant) {
             Text(
                 state.connection.message,
@@ -4393,8 +4392,8 @@ private fun DeviceConnectorContent(
         )
     } else {
         ConnectionInfoPanel(
-            title = "No MIDI adapter connected",
-            message = "Connect to a nearby adapter now, or save one so it is easier to find later."
+            title = stringResource(R.string.connection_no_adapter_connected_title),
+            message = stringResource(R.string.connection_no_adapter_connected_message)
         )
     }
 
@@ -4411,9 +4410,9 @@ private fun DeviceConnectorContent(
             Spacer(Modifier.width(8.dp))
             Text(
                 when {
-                    state.connection.scanning -> "Scanning..."
-                    connected -> "Find another adapter"
-                    else -> "Find MIDI adapters"
+                    state.connection.scanning -> stringResource(R.string.connection_scanning)
+                    connected -> stringResource(R.string.connection_find_another)
+                    else -> stringResource(R.string.connection_find_adapters)
                 }
             )
         }
@@ -4422,21 +4421,21 @@ private fun DeviceConnectorContent(
     if (savedDevices.isEmpty() && !state.connection.scanning && !state.connection.connecting) {
         if (!connected && attachedUsbDevices.isEmpty()) {
             Text(
-                "No saved adapters yet.",
+                stringResource(R.string.connection_no_saved_adapters),
                 color = MaterialTheme.colorScheme.onSurfaceVariant
             )
         }
     } else if (savedDevices.isNotEmpty()) {
         ConnectionSectionHeader(
-            title = "Saved adapters",
-            subtitle = "Remembered by APS NoteCast. It still needs to be nearby and powered on."
+            title = stringResource(R.string.connection_saved_adapters),
+            subtitle = stringResource(R.string.connection_saved_adapters_subtitle)
         )
         Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
             savedDevices.forEach { device ->
                 val canSearchForDevice = !state.connection.scanning && !state.connection.connecting
                 SavedDeviceRow(
                     device = device,
-                    displayName = deviceDisplayName(device, duplicateConnectorNames),
+                    displayName = deviceDisplayName(device, duplicateConnectorNames, stringResource(R.string.device_midi_adapter)),
                     onConnect = {
                         if (device.connectable) {
                             service.connect(device.address)
@@ -4474,9 +4473,9 @@ private fun DeviceConnectorContent(
     renameDeviceAddress?.let { address ->
         val deviceName = state.bleDevices.firstOrNull { it.address == address }?.name
             ?: (if (state.connection.address == address) state.connection.deviceName else null)
-            ?: "MIDI device"
+            ?: stringResource(R.string.device_midi_device)
         RenameDialog(
-            title = "Rename MIDI device",
+            title = stringResource(R.string.connection_rename_midi_device),
             initialName = deviceName,
             onDismiss = { renameDeviceAddress = null },
             onSave = { name ->
@@ -4489,11 +4488,11 @@ private fun DeviceConnectorContent(
     removeDeviceAddress?.let { address ->
         val deviceName = state.bleDevices.firstOrNull { it.address == address }?.name
             ?: (if (state.connection.address == address) state.connection.deviceName else null)
-            ?: "this MIDI device"
+            ?: stringResource(R.string.device_midi_device)
         ConfirmDialog(
-            title = "Remove device?",
-            message = "Remove $deviceName from APS NoteCast and clear its reconnect data? Android Bluetooth pairing is not changed.",
-            confirmLabel = "Remove",
+            title = stringResource(R.string.connection_remove_device_title),
+            message = stringResource(R.string.connection_remove_device_message, deviceName),
+            confirmLabel = stringResource(R.string.cd_remove),
             onDismiss = { removeDeviceAddress = null },
             onConfirm = {
                 service.removeDevice(address)
@@ -4526,7 +4525,7 @@ private fun QuickReconnectPanel(
             Spacer(Modifier.width(10.dp))
             Column(Modifier.weight(1f)) {
                 Text(
-                    if (reconnectPaused) "Reconnect paused" else "Saved adapter",
+                    if (reconnectPaused) stringResource(R.string.connection_reconnect_paused) else stringResource(R.string.connection_saved_adapter),
                     style = MaterialTheme.typography.labelLarge,
                     color = MaterialTheme.colorScheme.onSecondaryContainer
                 )
@@ -4539,7 +4538,7 @@ private fun QuickReconnectPanel(
                 )
             }
             TextButton(onClick = onReconnect) {
-                Text("Connect")
+                Text(stringResource(R.string.action_connect))
             }
         }
     }
@@ -4619,7 +4618,7 @@ private fun ScanDevicesDialog(
         onDismissRequest = onDismiss,
         title = {
             Text(
-                if (connected) "Switch MIDI adapter" else "Find MIDI adapter",
+                if (connected) stringResource(R.string.connection_switch_adapter) else stringResource(R.string.connection_find_adapter),
                 style = MaterialTheme.typography.headlineSmall
             )
         },
@@ -4627,58 +4626,58 @@ private fun ScanDevicesDialog(
             ScrollableDialogColumn(maxHeight = 430.dp, verticalArrangement = Arrangement.spacedBy(10.dp)) {
                 if (state.connection.scanning) {
                     LoadingStatusPanel(
-                        title = if (connected) "Looking nearby" else "Looking nearby",
+                        title = stringResource(R.string.connection_looking_nearby),
                         message = if (connected) {
-                            "Current adapter stays connected."
+                            stringResource(R.string.connection_current_stays_connected)
                         } else {
                             state.connection.message
                         },
-                        actionLabel = "Stop",
+                        actionLabel = stringResource(R.string.action_stop),
                         onAction = { service.stopBleScan() }
                     )
                 }
                 if (availableResults.isEmpty() && savedResults.isEmpty()) {
                     Text(
                         when {
-                            state.connection.scanning -> "Searching..."
-                            connected -> "No other adapters found. The current connection is unchanged."
-                            else -> "No adapters found. Make sure the adapter is powered on and nearby, then scan again."
+                            state.connection.scanning -> stringResource(R.string.connection_searching)
+                            connected -> stringResource(R.string.connection_no_other_adapters)
+                            else -> stringResource(R.string.connection_no_adapters_found)
                         },
                         color = MaterialTheme.colorScheme.onSurfaceVariant
                     )
                 } else {
                     if (availableResults.isNotEmpty()) {
                         ConnectionSectionHeader(
-                            title = "Nearby now",
-                            subtitle = "Connect uses it now. Save remembers it for later."
+                            title = stringResource(R.string.connection_nearby_now),
+                            subtitle = stringResource(R.string.connection_nearby_subtitle)
                         )
                     }
                     availableResults.forEach { device ->
                         ScanDeviceRow(
                             device = device,
-                            displayName = deviceDisplayName(device, duplicateScanNames),
+                            displayName = deviceDisplayName(device, duplicateScanNames, stringResource(R.string.device_midi_adapter)),
                             onSave = { service.addDevice(device.address) },
                             onConnect = { onConnect(device.address) },
                             onRename = { onRename(device.address) },
                             onPair = onOpenBluetoothPairing,
-                            connectLabel = if (connected) "Switch" else "Connect"
+                            connectLabel = if (connected) stringResource(R.string.action_switch) else stringResource(R.string.action_connect)
                         )
                     }
                     if (savedResults.isNotEmpty()) {
                         ConnectionSectionHeader(
-                            title = "Saved for reconnect",
-                            subtitle = "Remembered or paired, but not always nearby."
+                            title = stringResource(R.string.connection_saved_for_reconnect),
+                            subtitle = stringResource(R.string.connection_saved_for_reconnect_subtitle)
                         )
                     }
                     savedResults.forEach { device ->
                         ScanDeviceRow(
                             device = device,
-                            displayName = deviceDisplayName(device, duplicateScanNames),
+                            displayName = deviceDisplayName(device, duplicateScanNames, stringResource(R.string.device_midi_adapter)),
                             onSave = { service.addDevice(device.address) },
                             onConnect = { onConnect(device.address) },
                             onRename = { onRename(device.address) },
                             onPair = onOpenBluetoothPairing,
-                            connectLabel = if (connected) "Switch" else "Connect"
+                            connectLabel = if (connected) stringResource(R.string.action_switch) else stringResource(R.string.action_connect)
                         )
                     }
                 }
@@ -4689,18 +4688,18 @@ private fun ScanDevicesDialog(
                 onClick = { service.startBleScan() },
                 enabled = !state.connection.scanning && !state.connection.connecting
             ) {
-                Text("Scan again")
+                Text(stringResource(R.string.action_scan_again))
             }
         },
         dismissButton = {
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                 if (availableResults.isEmpty() && savedResults.isEmpty() && !state.connection.scanning && !state.connection.connecting) {
                     TextButton(onClick = onOpenBluetoothPairing) {
-                        Text("Bluetooth settings")
+                        Text(stringResource(R.string.action_bluetooth_settings))
                     }
                 }
                 TextButton(onClick = onDismiss) {
-                    Text("Close")
+                    Text(stringResource(R.string.action_close))
                 }
             }
         }
@@ -4721,25 +4720,25 @@ private fun ConnectedDeviceRow(
                 Spacer(Modifier.width(10.dp))
                 Column(Modifier.weight(1f)) {
                     Text(
-                        state.connection.deviceName ?: "MIDI Device",
+                        state.connection.deviceName ?: stringResource(R.string.device_midi_device),
                         fontWeight = FontWeight.SemiBold,
                         maxLines = 1,
                         softWrap = false,
                         overflow = TextOverflow.Ellipsis
                     )
-                    Text("Connected", style = MaterialTheme.typography.bodySmall)
+                    Text(stringResource(R.string.service_connected), style = MaterialTheme.typography.bodySmall)
                 }
             }
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
                 Button(onClick = { service.disconnect() }, modifier = Modifier.weight(1f)) {
-                    Text("Disconnect", maxLines = 1, softWrap = false, overflow = TextOverflow.Ellipsis)
+                    Text(stringResource(R.string.action_disconnect), maxLines = 1, softWrap = false, overflow = TextOverflow.Ellipsis)
                 }
                 state.connection.address?.let { address ->
                     IconButton(onClick = { onRename(address) }) {
-                        Icon(Icons.Default.DriveFileRenameOutline, contentDescription = "Rename ${state.connection.deviceName ?: "device"}")
+                        Icon(Icons.Default.DriveFileRenameOutline, contentDescription = stringResource(R.string.cd_rename_device, state.connection.deviceName ?: stringResource(R.string.device_midi_device)))
                     }
                     IconButton(onClick = { onRemove(address) }) {
-                        Icon(Icons.Default.Delete, contentDescription = "Remove ${state.connection.deviceName ?: "device"}")
+                        Icon(Icons.Default.Delete, contentDescription = stringResource(R.string.cd_remove_device, state.connection.deviceName ?: stringResource(R.string.device_midi_device)))
                     }
                 }
             }
@@ -4775,17 +4774,17 @@ private fun SavedDeviceRow(
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
                 Button(onClick = onConnect, enabled = connectEnabled, modifier = Modifier.weight(1f)) {
                     Text(
-                        if (device.connectable) "Connect" else "Find nearby",
+                        if (device.connectable) stringResource(R.string.action_connect) else stringResource(R.string.action_find_nearby),
                         maxLines = 1,
                         softWrap = false,
                         overflow = TextOverflow.Ellipsis
                     )
                 }
                 IconButton(onClick = onRename) {
-                    Icon(Icons.Default.DriveFileRenameOutline, contentDescription = "Rename $displayName")
+                    Icon(Icons.Default.DriveFileRenameOutline, contentDescription = stringResource(R.string.cd_rename_device, displayName))
                 }
                 IconButton(onClick = onRemove) {
-                    Icon(Icons.Default.Delete, contentDescription = "Remove $displayName")
+                    Icon(Icons.Default.Delete, contentDescription = stringResource(R.string.cd_remove_device, displayName))
                 }
             }
         }
@@ -4800,8 +4799,9 @@ private fun ScanDeviceRow(
     onConnect: () -> Unit,
     onRename: () -> Unit,
     onPair: () -> Unit,
-    connectLabel: String = "Connect"
+    connectLabel: String = ""
 ) {
+    val resolvedConnectLabel = connectLabel.ifBlank { stringResource(R.string.action_connect) }
     Surface(shape = RoundedCornerShape(4.dp), color = MaterialTheme.colorScheme.surfaceVariant) {
         Column(Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
             Row(verticalAlignment = Alignment.CenterVertically) {
@@ -4818,13 +4818,13 @@ private fun ScanDeviceRow(
                     DeviceStatusText(device)
                 }
                 IconButton(onClick = onRename) {
-                    Icon(Icons.Default.DriveFileRenameOutline, contentDescription = "Rename $displayName")
+                    Icon(Icons.Default.DriveFileRenameOutline, contentDescription = stringResource(R.string.cd_rename_device, displayName))
                 }
             }
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                 if (device.connectable && !device.added) {
                     OutlinedButton(onClick = onSave, modifier = Modifier.weight(1f)) {
-                        Text("Save", maxLines = 1, softWrap = false, overflow = TextOverflow.Ellipsis)
+                        Text(stringResource(R.string.action_save), maxLines = 1, softWrap = false, overflow = TextOverflow.Ellipsis)
                     }
                 }
                 if (device.connectable) {
@@ -4832,11 +4832,11 @@ private fun ScanDeviceRow(
                         onClick = onConnect,
                         modifier = Modifier.weight(1f)
                     ) {
-                        Text(connectLabel, maxLines = 1, softWrap = false, overflow = TextOverflow.Ellipsis)
+                        Text(resolvedConnectLabel, maxLines = 1, softWrap = false, overflow = TextOverflow.Ellipsis)
                     }
                 } else {
                     TextButton(onClick = onPair, modifier = Modifier.fillMaxWidth()) {
-                        Text("Bluetooth settings", maxLines = 1, softWrap = false, overflow = TextOverflow.Ellipsis)
+                        Text(stringResource(R.string.action_bluetooth_settings), maxLines = 1, softWrap = false, overflow = TextOverflow.Ellipsis)
                     }
                 }
             }
@@ -4846,37 +4846,33 @@ private fun ScanDeviceRow(
 
 @Composable
 private fun DeviceStatusText(device: BleMidiDeviceItem) {
+    val type = when {
+        isUsbMidiDevice(device) -> stringResource(R.string.device_usb_midi)
+        device.source == "Virtual MIDI" || device.detail.startsWith("Virtual MIDI") -> stringResource(R.string.device_virtual_midi)
+        device.source == "Android MIDI" -> stringResource(R.string.device_android_midi)
+        device.standardBleMidi -> stringResource(R.string.device_ble_midi)
+        device.likelyMidi -> stringResource(R.string.device_possible_midi)
+        else -> stringResource(R.string.device_bluetooth)
+    }
+    val availability = when {
+        isUsbMidiDevice(device) && device.connectable -> stringResource(R.string.device_attached_now)
+        isUsbMidiDevice(device) -> stringResource(R.string.device_not_attached)
+        device.source == "Virtual MIDI" && device.connectable -> stringResource(R.string.device_available_now)
+        device.source == "Saved" && device.connectable -> stringResource(R.string.device_saved_available)
+        device.source == "Saved" -> stringResource(R.string.device_saved_not_seen)
+        device.source == "Paired Bluetooth" && device.connectable -> stringResource(R.string.device_paired_available)
+        device.source == "Paired Bluetooth" -> stringResource(R.string.device_paired_android)
+        device.connectable -> stringResource(R.string.device_nearby_now)
+        else -> stringResource(R.string.device_not_ready)
+    }
+    val signal = device.rssi?.let { stringResource(R.string.device_signal_dbm, it) }.orEmpty()
     Text(
-        deviceStatusLabel(device),
+        stringResource(R.string.device_status_format, type, availability, signal),
         style = MaterialTheme.typography.bodySmall,
         color = MaterialTheme.colorScheme.onSurfaceVariant,
         maxLines = 2,
         overflow = TextOverflow.Ellipsis
     )
-}
-
-private fun deviceStatusLabel(device: BleMidiDeviceItem): String {
-    val type = when {
-        isUsbMidiDevice(device) -> "USB MIDI"
-        device.source == "Virtual MIDI" || device.detail.startsWith("Virtual MIDI") -> "Virtual MIDI"
-        device.source == "Android MIDI" -> "Android MIDI"
-        device.standardBleMidi -> "BLE MIDI"
-        device.likelyMidi -> "Possible MIDI"
-        else -> "Bluetooth"
-    }
-    val availability = when {
-        isUsbMidiDevice(device) && device.connectable -> "attached now"
-        isUsbMidiDevice(device) -> "not attached"
-        device.source == "Virtual MIDI" && device.connectable -> "available now"
-        device.source == "Saved" && device.connectable -> "saved, available"
-        device.source == "Saved" -> "saved, not seen nearby"
-        device.source == "Paired Bluetooth" && device.connectable -> "paired in Android, available"
-        device.source == "Paired Bluetooth" -> "paired in Android"
-        device.connectable -> "nearby now"
-        else -> "not ready to connect"
-    }
-    val signal = device.rssi?.let { " - $it dBm" }.orEmpty()
-    return "$type - $availability$signal"
 }
 
 private fun isUsbMidiDevice(device: BleMidiDeviceItem): Boolean =
@@ -4898,8 +4894,8 @@ private fun duplicateDeviceNames(devices: List<BleMidiDeviceItem>): Set<String> 
         .filterValues { it > 1 }
         .keys
 
-private fun deviceDisplayName(device: BleMidiDeviceItem, duplicateNames: Set<String>): String {
-    val cleanName = device.name.ifBlank { "MIDI adapter" }
+private fun deviceDisplayName(device: BleMidiDeviceItem, duplicateNames: Set<String>, defaultName: String): String {
+    val cleanName = device.name.ifBlank { defaultName }
     return if (cleanName.trim().lowercase(Locale.US) in duplicateNames) {
         "$cleanName (${shortDeviceIdentifier(device.address)})"
     } else {
@@ -5014,9 +5010,9 @@ private fun KuhmannMidiDialog(
                     Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(10.dp)) {
                         Icon(Icons.Default.Search, contentDescription = null)
                         Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(1.dp)) {
-                            Text("External MIDI", style = MaterialTheme.typography.titleLarge, maxLines = 1)
+                            Text(stringResource(R.string.external_dialog_title), style = MaterialTheme.typography.titleLarge, maxLines = 1)
                             Text(
-                                selectedSource.dialogSubtitle,
+                                selectedSource.localizedDialogSubtitle(),
                                 style = MaterialTheme.typography.bodySmall,
                                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                                 maxLines = 1,
@@ -5024,7 +5020,7 @@ private fun KuhmannMidiDialog(
                             )
                         }
                         IconButton(onClick = onDismiss, modifier = Modifier.size(40.dp)) {
-                            Icon(Icons.Default.Close, contentDescription = "Close")
+                            Icon(Icons.Default.Close, contentDescription = stringResource(R.string.cd_close))
                         }
                     }
                     ExternalSourceSelector(
@@ -5038,13 +5034,13 @@ private fun KuhmannMidiDialog(
                         onValueChange = { query = it },
                         modifier = Modifier.fillMaxWidth(),
                         singleLine = true,
-                        label = { Text("Search") },
-                        placeholder = { Text("Composer, title, or style") },
+                        label = { Text(stringResource(R.string.action_search)) },
+                        placeholder = { Text(stringResource(R.string.external_search_placeholder)) },
                         leadingIcon = { Icon(Icons.Default.Search, contentDescription = null) },
                         trailingIcon = {
                             if (query.isNotEmpty()) {
                                 IconButton(onClick = { query = "" }) {
-                                    Icon(Icons.Default.Close, contentDescription = "Clear search")
+                                    Icon(Icons.Default.Close, contentDescription = stringResource(R.string.cd_clear_search))
                                 }
                             }
                         }
@@ -5058,11 +5054,11 @@ private fun KuhmannMidiDialog(
                                     modifier = Modifier.weight(1f)
                                 )
                                 TextButton(onClick = { showLimitControl = !showLimitControl }) {
-                                    Text(if (showLimitControl) "Hide" else "Limit $limitLabel")
+                                    Text(if (showLimitControl) stringResource(R.string.action_hide) else stringResource(R.string.action_limit, limitLabel))
                                 }
                             }
                             if (showLimitControl) {
-                                KuhmannSmallNumberField("Limit", limitText, { limitText = it }, Modifier.fillMaxWidth())
+                                KuhmannSmallNumberField(stringResource(R.string.external_limit), limitText, { limitText = it }, Modifier.fillMaxWidth())
                             }
                         }
                     } else {
@@ -5074,19 +5070,19 @@ private fun KuhmannMidiDialog(
                                     modifier = Modifier.weight(1f)
                                 )
                                 TextButton(onClick = { showLimitControl = !showLimitControl }) {
-                                    Text(if (showLimitControl) "Hide limit" else "Limit $limitLabel")
+                                    Text(if (showLimitControl) stringResource(R.string.action_limit_hide) else stringResource(R.string.action_limit, limitLabel))
                                 }
                             }
                             if (showLimitControl) {
                                 Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End) {
-                                    KuhmannSmallNumberField("Limit", limitText, { limitText = it }, Modifier.width(132.dp))
+                                    KuhmannSmallNumberField(stringResource(R.string.external_limit), limitText, { limitText = it }, Modifier.width(132.dp))
                                 }
                             }
                         }
                     }
                     Row(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
                         Text(
-                            "${state.results.size} shown - ${selectedResults.size} selected",
+                            stringResource(R.string.external_result_count, state.results.size, selectedResults.size),
                             modifier = Modifier.weight(1f),
                             style = MaterialTheme.typography.bodySmall,
                             color = MaterialTheme.colorScheme.onSurfaceVariant,
@@ -5095,7 +5091,7 @@ private fun KuhmannMidiDialog(
                         )
                         if (selectedResults.isNotEmpty() && !state.downloading) {
                             TextButton(onClick = { selected.clear() }) {
-                                Text("Clear")
+                                Text(stringResource(R.string.action_clear))
                             }
                         }
                     }
@@ -5110,7 +5106,7 @@ private fun KuhmannMidiDialog(
                                 LoadingIndicator(contentDescription = state.message)
                             } else {
                                 Text(
-                                    "Search by composer, title, or style.",
+                                    stringResource(R.string.external_empty_hint),
                                     style = MaterialTheme.typography.bodySmall,
                                     color = MaterialTheme.colorScheme.onSurfaceVariant
                                 )
@@ -5155,7 +5151,7 @@ private fun KuhmannMidiDialog(
                         verticalAlignment = Alignment.CenterVertically
                     ) {
                         if (!compactControls) {
-                            TextButton(onClick = onDismiss) { Text("Close") }
+                            TextButton(onClick = onDismiss) { Text(stringResource(R.string.action_close)) }
                             Spacer(Modifier.width(8.dp))
                         }
                         Button(
@@ -5163,7 +5159,7 @@ private fun KuhmannMidiDialog(
                             enabled = !state.searching && !state.downloading,
                             modifier = if (compactControls) Modifier.weight(1f) else Modifier
                         ) {
-                            Text(if (state.searching) "Searching..." else "Search")
+                            Text(if (state.searching) stringResource(R.string.external_status_searching) else stringResource(R.string.action_search))
                         }
                         Spacer(Modifier.width(8.dp))
                         Button(
@@ -5171,7 +5167,7 @@ private fun KuhmannMidiDialog(
                             enabled = selectedResults.isNotEmpty() && !state.searching && !state.downloading,
                             modifier = if (compactControls) Modifier.weight(1f) else Modifier
                         ) {
-                            Text(if (state.downloading) "Importing..." else "Import ${selectedResults.size}")
+                            Text(if (state.downloading) stringResource(R.string.external_status_importing) else stringResource(R.string.action_import_count, selectedResults.size))
                         }
                     }
                 }
@@ -5190,7 +5186,7 @@ private fun ExternalSourceSelector(
     var expanded by rememberSaveable { mutableStateOf(false) }
     Column(modifier = modifier, verticalArrangement = Arrangement.spacedBy(4.dp)) {
         Text(
-            "Source",
+            stringResource(R.string.external_source),
             style = MaterialTheme.typography.labelMedium,
             fontWeight = FontWeight.SemiBold,
             color = MaterialTheme.colorScheme.onSurfaceVariant
@@ -5247,8 +5243,8 @@ private fun KuhmannSearchFilters(
     modifier: Modifier = Modifier
 ) {
     Row(modifier = modifier, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-        KuhmannFilterButton("Piano", pianoOnly, { onPianoOnlyChange(true) }, Modifier.weight(1f))
-        KuhmannFilterButton("Ensemble", !pianoOnly, { onPianoOnlyChange(false) }, Modifier.weight(1f))
+        KuhmannFilterButton(stringResource(R.string.external_filter_piano), pianoOnly, { onPianoOnlyChange(true) }, Modifier.weight(1f))
+        KuhmannFilterButton(stringResource(R.string.external_filter_ensemble), !pianoOnly, { onPianoOnlyChange(false) }, Modifier.weight(1f))
     }
 }
 
@@ -5310,13 +5306,27 @@ private fun KuhmannMidiResult.externalResultFolderLine(): String {
     }
 }
 
-private fun KuhmannMidiResult.externalResultDetailLine(): String {
+private fun KuhmannMidiResult.externalResultDetailLine(rightsSummary: String, channelText: String?): String {
     return listOfNotNull(
         license.takeIf { it.isNotBlank() },
         style.takeIf { it.isNotBlank() },
         fileSize.takeIf { it > 0L }?.formatFileSize(),
-        channels.takeIf { it.isNotEmpty() }?.joinToString(prefix = "ch ")
-    ).joinToString(" - ").ifBlank { source.rightsSummary }
+        channelText
+    ).joinToString(" - ").ifBlank { rightsSummary }
+}
+
+@Composable
+private fun ExternalMidiSource.localizedDialogSubtitle(): String = when {
+    isKuhmann -> stringResource(R.string.external_kuhmann_subtitle)
+    isMutopia -> stringResource(R.string.external_mutopia_subtitle)
+    else -> dialogSubtitle
+}
+
+@Composable
+private fun ExternalMidiSource.localizedRightsSummary(): String = when {
+    isKuhmann -> stringResource(R.string.external_kuhmann_rights)
+    isMutopia -> stringResource(R.string.external_mutopia_rights)
+    else -> rightsSummary
 }
 
 @Composable
@@ -5331,6 +5341,10 @@ private fun KuhmannResultRow(
 ) {
     val rowEnabled = enabled && !imported
     val preparing = playbackMode == PlaybackMode.Preparing
+    val rightsSummary = result.source.localizedRightsSummary()
+    val channelText = result.channels.takeIf { it.isNotEmpty() }?.let { channels ->
+        stringResource(R.string.label_channels, channels.joinToString())
+    }
     Row(
         modifier = Modifier
             .fillMaxWidth()
@@ -5348,7 +5362,7 @@ private fun KuhmannResultRow(
                 Box(contentAlignment = Alignment.Center) {
                     Icon(
                         Icons.Default.Check,
-                        contentDescription = "Downloaded",
+                        contentDescription = stringResource(R.string.cd_downloaded),
                         modifier = Modifier.size(22.dp),
                         tint = Color.White
                     )
@@ -5380,7 +5394,7 @@ private fun KuhmannResultRow(
                 overflow = TextOverflow.Ellipsis
             )
             Text(
-                result.externalResultDetailLine(),
+                result.externalResultDetailLine(rightsSummary, channelText),
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                 maxLines = 1,
@@ -5394,12 +5408,12 @@ private fun KuhmannResultRow(
         ) {
             when (playbackMode) {
                 PlaybackMode.Preparing -> LoadingIndicator(
-                    contentDescription = "Loading ${result.title}",
+                    contentDescription = stringResource(R.string.cd_loading_title, result.title),
                     modifier = Modifier.size(22.dp)
                 )
-                PlaybackMode.Playing -> Icon(Icons.Default.Pause, contentDescription = "Pause ${result.title}")
-                PlaybackMode.Paused -> Icon(Icons.Default.PlayArrow, contentDescription = "Resume ${result.title}")
-                else -> Icon(Icons.Default.PlayArrow, contentDescription = "Play ${result.title}")
+                PlaybackMode.Playing -> Icon(Icons.Default.Pause, contentDescription = stringResource(R.string.cd_pause_title, result.title))
+                PlaybackMode.Paused -> Icon(Icons.Default.PlayArrow, contentDescription = stringResource(R.string.cd_resume_title, result.title))
+                else -> Icon(Icons.Default.PlayArrow, contentDescription = stringResource(R.string.cd_play_title, result.title))
             }
         }
     }
@@ -5463,7 +5477,7 @@ private fun AddFilesToPlaylistDialog(
                     Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(10.dp)) {
                         Icon(Icons.Default.Add, contentDescription = null)
                         Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(1.dp)) {
-                            Text("Add files", style = MaterialTheme.typography.headlineSmall, maxLines = 1)
+                            Text(stringResource(R.string.library_add_files_title), style = MaterialTheme.typography.headlineSmall, maxLines = 1)
                             Text(
                                 playlist.name,
                                 style = MaterialTheme.typography.bodyMedium,
@@ -5473,13 +5487,13 @@ private fun AddFilesToPlaylistDialog(
                             )
                         }
                         Text(
-                            "${visibleFiles.size}/${files.size} - ${selectedIds.size} selected",
+                            stringResource(R.string.library_files_visible_selected, visibleFiles.size, files.size, selectedIds.size),
                             style = MaterialTheme.typography.bodySmall,
                             color = MaterialTheme.colorScheme.onSurfaceVariant,
                             maxLines = 1
                         )
                         IconButton(onClick = onDismiss, modifier = Modifier.size(40.dp)) {
-                            Icon(Icons.Default.Close, contentDescription = "Close")
+                            Icon(Icons.Default.Close, contentDescription = stringResource(R.string.cd_close))
                         }
                     }
                     OutlinedTextField(
@@ -5487,12 +5501,12 @@ private fun AddFilesToPlaylistDialog(
                         onValueChange = { query = it },
                         modifier = Modifier.fillMaxWidth(),
                         singleLine = true,
-                        label = { Text("Search files") },
+                        label = { Text(stringResource(R.string.library_search_files)) },
                         leadingIcon = { Icon(Icons.Default.Search, contentDescription = null) },
                         trailingIcon = {
                             if (query.isNotEmpty()) {
                                 IconButton(onClick = { query = "" }) {
-                                    Icon(Icons.Default.Close, contentDescription = "Clear search")
+                                    Icon(Icons.Default.Close, contentDescription = stringResource(R.string.cd_clear_search))
                                 }
                             }
                         }
@@ -5502,13 +5516,13 @@ private fun AddFilesToPlaylistDialog(
                             onClick = { visibleFiles.forEach { selected[it.id] = true } },
                             enabled = visibleFiles.isNotEmpty()
                         ) {
-                            Text("Select shown")
+                            Text(stringResource(R.string.action_select_shown))
                         }
                         TextButton(
                             onClick = { visibleFiles.forEach { selected[it.id] = false } },
                             enabled = visibleFiles.any { selected[it.id] == true }
                         ) {
-                            Text("Clear shown")
+                            Text(stringResource(R.string.action_clear_shown))
                         }
                     }
                     if (visibleFiles.isEmpty()) {
@@ -5519,7 +5533,7 @@ private fun AddFilesToPlaylistDialog(
                             contentAlignment = Alignment.Center
                         ) {
                             Text(
-                                if (files.isEmpty()) "No MIDI files in library." else "No matching files.",
+                                if (files.isEmpty()) stringResource(R.string.library_no_midi_files) else stringResource(R.string.library_no_matching_files),
                                 color = MaterialTheme.colorScheme.onSurfaceVariant
                             )
                         }
@@ -5547,10 +5561,10 @@ private fun AddFilesToPlaylistDialog(
                         horizontalArrangement = Arrangement.End,
                         verticalAlignment = Alignment.CenterVertically
                     ) {
-                        TextButton(onClick = onDismiss) { Text("Cancel") }
+                        TextButton(onClick = onDismiss) { Text(stringResource(R.string.action_cancel)) }
                         Spacer(Modifier.width(8.dp))
                         Button(onClick = { onAdd(selectedIds) }, enabled = selectedIds.isNotEmpty()) {
-                            Text("Add ${selectedIds.size}")
+                            Text(stringResource(R.string.library_add_selected_count, selectedIds.size))
                         }
                     }
                 }
@@ -5646,17 +5660,17 @@ private fun Long.formatFileSize(): String {
     return String.format(java.util.Locale.US, "%.1f MB", this / (1024.0 * 1024.0))
 }
 
-private data class PlaylistColorOption(val label: String, val hex: String)
+private data class PlaylistColorOption(val labelResId: Int, val hex: String)
 
 private val playlistColorOptions = listOf(
-    PlaylistColorOption("Red", "#D64545"),
-    PlaylistColorOption("Amber", "#C48A21"),
-    PlaylistColorOption("Green", "#2E7D58"),
-    PlaylistColorOption("Teal", "#148C8C"),
-    PlaylistColorOption("Blue", "#3B6EA8"),
-    PlaylistColorOption("Violet", "#7655A6"),
-    PlaylistColorOption("Pink", "#B84F7D"),
-    PlaylistColorOption("Gray", "#68707A")
+    PlaylistColorOption(R.string.color_red, "#D64545"),
+    PlaylistColorOption(R.string.color_amber, "#C48A21"),
+    PlaylistColorOption(R.string.color_green, "#2E7D58"),
+    PlaylistColorOption(R.string.color_teal, "#148C8C"),
+    PlaylistColorOption(R.string.color_blue, "#3B6EA8"),
+    PlaylistColorOption(R.string.color_violet, "#7655A6"),
+    PlaylistColorOption(R.string.color_pink, "#B84F7D"),
+    PlaylistColorOption(R.string.color_gray, "#68707A")
 )
 
 @Composable
@@ -5674,7 +5688,7 @@ private fun PlaylistColorDialog(
     AlertDialog(
         onDismissRequest = onDismiss,
         icon = { Icon(Icons.Default.FiberManualRecord, contentDescription = null) },
-        title = { Text("Playlist color") },
+        title = { Text(stringResource(R.string.color_playlist_title)) },
         text = {
             ScrollableDialogColumn(verticalArrangement = Arrangement.spacedBy(8.dp)) {
                 Text(
@@ -5693,7 +5707,7 @@ private fun PlaylistColorDialog(
                 ) {
                     item {
                         PlaylistColorChoice(
-                            label = "No color",
+                            label = stringResource(R.string.color_no_color),
                             color = null,
                             selected = playlist.colorHex.isNullOrBlank(),
                             onClick = { onSelectColor(null) }
@@ -5701,7 +5715,7 @@ private fun PlaylistColorDialog(
                     }
                     gridItems(playlistColorOptions, key = { it.hex }) { option ->
                         PlaylistColorChoice(
-                            label = option.label,
+                            label = stringResource(option.labelResId),
                             color = option.hex.toPlaylistColor(),
                             selected = playlist.colorHex.equals(option.hex, ignoreCase = true),
                             onClick = { onSelectColor(option.hex) }
@@ -5723,20 +5737,20 @@ private fun PlaylistColorDialog(
                         onValueChange = { customColorText = it.sanitizedPlaylistColorInput() },
                         modifier = Modifier.weight(1f),
                         singleLine = true,
-                        label = { Text("Custom hex") },
+                        label = { Text(stringResource(R.string.color_custom_hex)) },
                         isError = customColorIncomplete
                     )
                     Button(
                         onClick = { customColorHex?.let(onSelectColor) },
                         enabled = customColorHex != null
                     ) {
-                        Text("Apply")
+                        Text(stringResource(R.string.action_apply))
                     }
                 }
             }
         },
         confirmButton = {
-            TextButton(onClick = onDismiss) { Text("Cancel") }
+            TextButton(onClick = onDismiss) { Text(stringResource(R.string.action_cancel)) }
         }
     )
 }
@@ -5812,18 +5826,18 @@ private fun RenameDialog(
             OutlinedTextField(
                 value = name,
                 onValueChange = { name = it },
-                label = { Text("Name") },
+                label = { Text(stringResource(R.string.label_name)) },
                 singleLine = true,
                 modifier = Modifier.fillMaxWidth()
             )
         },
         confirmButton = {
             Button(onClick = { onSave(name) }, enabled = name.isNotBlank()) {
-                Text("Save")
+                Text(stringResource(R.string.action_save))
             }
         },
         dismissButton = {
-            TextButton(onClick = onDismiss) { Text("Cancel") }
+            TextButton(onClick = onDismiss) { Text(stringResource(R.string.action_cancel)) }
         }
     )
 }
@@ -5847,14 +5861,14 @@ private fun ConfirmDialog(
             }
         },
         dismissButton = {
-            TextButton(onClick = onDismiss) { Text("Cancel") }
+            TextButton(onClick = onDismiss) { Text(stringResource(R.string.action_cancel)) }
         }
     )
 }
 
 @Composable
 private fun AddPlaylistDialog(
-    title: String = "New playlist",
+    title: String? = null,
     onDismiss: () -> Unit,
     onCreate: (String) -> Unit
 ) {
@@ -5862,23 +5876,23 @@ private fun AddPlaylistDialog(
     AlertDialog(
         onDismissRequest = onDismiss,
         icon = { Icon(Icons.Default.CreateNewFolder, contentDescription = null) },
-        title = { Text(title) },
+        title = { Text(title ?: stringResource(R.string.action_new_playlist)) },
         text = {
             OutlinedTextField(
                 value = name,
                 onValueChange = { name = it },
-                label = { Text("Name") },
+                label = { Text(stringResource(R.string.label_name)) },
                 singleLine = true,
                 modifier = Modifier.fillMaxWidth()
             )
         },
         confirmButton = {
             Button(onClick = { onCreate(name) }, enabled = name.isNotBlank()) {
-                Text("Create")
+                Text(stringResource(R.string.action_create))
             }
         },
         dismissButton = {
-            TextButton(onClick = onDismiss) { Text("Cancel") }
+            TextButton(onClick = onDismiss) { Text(stringResource(R.string.action_cancel)) }
         }
     )
 }
@@ -5891,18 +5905,19 @@ private fun RecordDialog(
     settings: AppSettings,
     onDismiss: () -> Unit
 ) {
-    var title by rememberSaveable { mutableStateOf("APS NoteCast Recording") }
+    val defaultRecordTitle = stringResource(R.string.record_default_title)
+    var title by rememberSaveable(defaultRecordTitle) { mutableStateOf(defaultRecordTitle) }
     var confirmDiscard by rememberSaveable { mutableStateOf(false) }
     AlertDialog(
         onDismissRequest = { if (!recording.isRecording && !recording.isSaving && !recording.isCountingDown) onDismiss() },
         icon = { Icon(Icons.Default.FiberManualRecord, contentDescription = null, tint = MaterialTheme.colorScheme.error) },
-        title = { Text("Record MIDI") },
+        title = { Text(stringResource(R.string.record_title)) },
         text = {
             Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
                 OutlinedTextField(
                     value = title,
                     onValueChange = { title = it },
-                    label = { Text("File name") },
+                    label = { Text(stringResource(R.string.record_file_name)) },
                     singleLine = true,
                     modifier = Modifier.fillMaxWidth()
                 )
@@ -5910,7 +5925,7 @@ private fun RecordDialog(
                     Column(Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
                         Text(recording.message, fontWeight = FontWeight.SemiBold)
                         Text(
-                            "${recording.eventCount} events - ${recording.durationUs.formatClockTime()}",
+                            stringResource(R.string.record_event_count, recording.eventCount, recording.durationUs.formatClockTime()),
                             style = MaterialTheme.typography.bodySmall,
                             color = MaterialTheme.colorScheme.onSurfaceVariant
                         )
@@ -5920,25 +5935,25 @@ private fun RecordDialog(
                     }
                 }
                 if (!connected) {
-                    Text("Connect a MIDI device before recording.", color = MaterialTheme.colorScheme.error)
+                    Text(stringResource(R.string.record_connect_before), color = MaterialTheme.colorScheme.error)
                 }
             }
         },
         confirmButton = {
             when {
-                recording.isSaving -> TextButton(onClick = {}) { Text("Saving") }
-                recording.isCountingDown -> TextButton(onClick = {}) { Text("Starting") }
+                recording.isSaving -> TextButton(onClick = {}) { Text(stringResource(R.string.record_saving)) }
+                recording.isCountingDown -> TextButton(onClick = {}) { Text(stringResource(R.string.record_starting)) }
                 recording.isRecording -> Button(onClick = {
                     service.finishRecording(title)
                     onDismiss()
                 }) {
-                    Text("Save")
+                    Text(stringResource(R.string.action_save))
                 }
                 else -> Button(
                     onClick = { service.startRecording(title) },
                     enabled = connected
                 ) {
-                    Text("Start")
+                    Text(stringResource(R.string.action_start))
                 }
             }
         },
@@ -5952,19 +5967,19 @@ private fun RecordDialog(
                         onDismiss()
                     }
                 }) {
-                    Text("Cancel")
+                    Text(stringResource(R.string.action_cancel))
                 }
             } else {
-                TextButton(onClick = onDismiss) { Text("Close") }
+                TextButton(onClick = onDismiss) { Text(stringResource(R.string.action_close)) }
             }
         }
     )
 
     if (confirmDiscard) {
         ConfirmDialog(
-            title = "Discard recording?",
-            message = "The active recording will be lost.",
-            confirmLabel = "Discard",
+            title = stringResource(R.string.dialog_discard_recording_title),
+            message = stringResource(R.string.dialog_discard_recording_message),
+            confirmLabel = stringResource(R.string.action_discard),
             onDismiss = { confirmDiscard = false },
             onConfirm = {
                 service.cancelRecording()

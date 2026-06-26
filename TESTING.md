@@ -38,7 +38,7 @@ Use this sequence when validating a new build against one or more real WIDI, com
 9. Confirm music reaches the receiving instrument.
 10. Tap Stop before the file ends.
 11. Confirm all notes and pedals stop.
-12. Tap Panic if any note or pedal remains active.
+12. Tap Stop again if any note or pedal remains active.
 
 ### Second adapter and switching
 
@@ -74,7 +74,7 @@ Use this sequence when validating a new build against one or more real WIDI, com
 2. **Android pairing is only required when Android will not expose or open the adapter without pairing.**
 3. Connect, disconnect, reconnect, and device switching leave APS NoteCast showing the same device that actually receives MIDI.
 4. Music never continues after Stop.
-5. Panic clears any stuck notes or pedals.
+5. Tapping Stop again clears any stuck notes or pedals.
 6. Switching adapters does not leave the previous adapter receiving new playback.
 7. Unexpected adapter power loss is reflected in the app instead of leaving a stale Connected state.
 
@@ -92,7 +92,7 @@ Use at least one expressive player-piano roll and one dense classical MIDI file 
 8. Resume and confirm sustain returns if the playback position is still inside that sustained section.
 9. Pause when sustain is not active and confirm it stays released.
 10. Stop during a sustained section and confirm sustain releases and does not return.
-11. Run Panic and confirm sustain, sostenuto, and soft pedal are released.
+11. Tap Stop again and confirm sustain, sostenuto, and soft pedal are released.
 12. Repeat with the second test file.
 13. Disable Fold pedals into piano channel and repeat if validating source-channel preservation.
 14. Disable Stable pedal values only when testing a receiver known to handle continuous pedal curves correctly.
@@ -101,7 +101,7 @@ Use at least one expressive player-piano roll and one dense classical MIDI file 
 
 1. Sustain output is binary 0/127 by default.
 2. Pause temporarily releases sustain and resume restores it only when the current playback position calls for sustain.
-3. Stop, Panic, seek, skip, and song completion send pedal-off cleanup.
+3. Stop, second-tap Stop cleanup, seek, skip, and song completion send pedal-off cleanup.
 4. Pedal-only channels can drive the detected piano output channel.
 5. Channel 3 is treated as piano-only only when it carries pedal/controller data without instrument note events.
 
@@ -111,7 +111,7 @@ Use at least one expressive player-piano roll and one dense classical MIDI file 
 2. Connect to WIDI.
 3. Play a simple file.
 4. Stop mid-file and confirm all notes stop.
-5. Use Panic and confirm no notes or pedals remain active.
+5. Tap Stop again and confirm no notes or pedals remain active.
 6. Pause and resume mid-file, then confirm no notes hang.
 7. Play the same file three times in a row.
 8. Create a three-song playlist.
@@ -125,7 +125,7 @@ Use at least one expressive player-piano roll and one dense classical MIDI file 
 
 ## Signs of trouble
 
-- Notes continue after Stop: inspect whether MIDI input is actually routed to the piano and whether panic messages are being received.
+- Notes continue after Stop: inspect whether MIDI input is actually routed to the piano and whether second-tap Stop cleanup messages are being received.
 - Device does not appear: power-cycle WIDI, verify the app has Nearby Devices permission, and make sure another app is not already holding the WIDI connection.
 - Timing feels uneven: test with the phone near the adapter, disable battery restrictions, and try a less dense MIDI file.
 - Playback stops when screen turns off: verify the foreground notification appears and Android battery optimization is disabled for the app.

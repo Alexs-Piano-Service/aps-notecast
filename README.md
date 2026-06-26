@@ -28,9 +28,9 @@ Yamaha, PianoStream, PianoDisc, QRS, Steinway, or Spirio.
 - Sample playlist containing the bundled Mutopia demo pieces.
 - Collapsible playlists with add-file multi-select sheets, drag/drop support, playlist cloning, rename, delete, and reordering.
 - Single-file and playlist playback, including sequential, shuffle, repeat-one, repeat-playlist, stop-after-current, and stop-after-playlist behaviors.
-- Playback transport with play/pause, stop, previous, next, visible progress, seek, volume, and panic.
+- Playback transport with play/pause, stop, previous, next, visible progress, seek, volume, and second-tap Stop cleanup.
 - Android foreground media playback service with lock-screen/media controls and seek support.
-- MIDI panic that sends sustain off, sostenuto off, soft pedal off, all sound off, reset controllers, and all notes off on all 16 MIDI channels.
+- Second-tap Stop cleanup that sends sustain off, sostenuto off, soft pedal off, all sound off, reset controllers, and all notes off on all 16 MIDI channels.
 - Tempo and transpose controls, including an option to leave channel 10 drums untransposed.
 - Advanced per-channel mute, solo, and volume controls.
 - Piano-channel routing options for two-channel piano files and pedal-controller channels.
@@ -57,7 +57,7 @@ For reliable testing:
 6. If Android displays a Bluetooth pairing request, pair the adapter; APS NoteCast will keep using the BLE MIDI connection.
 7. Import or select a MIDI file.
 8. Test playback at low volume first.
-9. Test Stop and Panic before leaving a playlist unattended.
+9. Test Stop during playback, then tap Stop again while stopped before leaving a playlist unattended.
 
 ## Connection Flow
 
@@ -106,7 +106,7 @@ For reliable testing:
 
 ## Safety
 
-Player pianos are physical instruments. Before using long playlists or unattended playback, confirm that the receiving instrument responds correctly to stop, panic, pedal-off, and all-notes-off messages.
+Player pianos are physical instruments. Before using long playlists or unattended playback, confirm that the receiving instrument responds correctly to stop, second-tap Stop cleanup, pedal-off, and all-notes-off messages.
 
 Use copies of MIDI files whenever possible and keep backups of anything important. APS NoteCast can export individual MIDI files and a JSON library backup, but device storage and Android document permissions can still fail or be revoked.
 

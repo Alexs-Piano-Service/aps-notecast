@@ -25,7 +25,8 @@ data class MidiPlaylist(
 
 data class LibrarySnapshot(
     val files: List<MidiLibraryItem> = emptyList(),
-    val playlists: List<MidiPlaylist> = emptyList()
+    val playlists: List<MidiPlaylist> = emptyList(),
+    val bundledDemosEnabled: Boolean = true
 )
 
 data class BleMidiDeviceItem(
@@ -313,6 +314,20 @@ data class PlaybackChannelInfo(
     val metaInstrumentNames: List<String> = emptyList()
 )
 
+data class LastPlaybackSnapshot(
+    val mode: PlaybackMode = PlaybackMode.Idle,
+    val title: String? = null,
+    val itemId: String? = null,
+    val playlistName: String? = null,
+    val playlistId: String? = null,
+    val currentTrackNumber: Int = 0,
+    val totalTracks: Int = 0,
+    val progressUs: Long = 0,
+    val durationUs: Long = 0,
+    val sustainPedalPressed: Boolean = false,
+    val channels: List<PlaybackChannelInfo> = emptyList()
+)
+
 data class AppUiState(
     val files: List<MidiLibraryItem> = emptyList(),
     val playlists: List<MidiPlaylist> = emptyList(),
@@ -320,6 +335,7 @@ data class AppUiState(
     val connection: ConnectionUiState = ConnectionUiState(),
     val playback: PlaybackUiState = PlaybackUiState(),
     val playbackChannels: List<PlaybackChannelInfo> = emptyList(),
+    val lastPlayback: LastPlaybackSnapshot = LastPlaybackSnapshot(),
     val recording: RecordingUiState = RecordingUiState(),
     val importState: ImportUiState = ImportUiState(),
     val kuhmann: KuhmannSearchUiState = KuhmannSearchUiState(),
