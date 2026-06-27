@@ -2,7 +2,7 @@ APS NoteCast is an Android app for practical player-piano and MIDI workflows.
 
 It lets you connect to compatible Bluetooth LE MIDI and Android USB MIDI adapters, import Standard MIDI Files, organize playlists, and send playback to a player piano or other MIDI receiver.
 
-APS NoteCast is free and open-source. It has no subscriptions, in-app purchases, advertising, or paid music catalog.
+APS NoteCast is free and open-source. It is provided as a public service by Alex's Piano Service LLC. It has no subscriptions, in-app purchases, advertising, or paid music catalog.
 
 Demo MIDI files are from the Mutopia Project and are marked Public Domain / no rights reserved on their source pages. They are included so users can test APS NoteCast immediately.
 

@@ -373,7 +373,7 @@
     <string name="bug_previous_crash">Ein Absturz aus dem vorherigen Lauf wird automatisch angehängt.</string>
     <string name="bug_summary">Kurze Zusammenfassung</string>
     <string name="bug_what_happened">Was ist passiert?</string>
-    <string name="bug_contact">Optionale E-Mail oder Kontakt</string>
+    <string name="bug_contact">Optionale E-Mail</string>
     <string name="bug_include_events">Aktuelle App-Ereignisse einbeziehen</string>
     <string name="bug_sending">Senden</string>
     <string name="bug_sending_message">Fehlerbericht wird gesendet...</string>

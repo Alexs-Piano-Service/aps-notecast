@@ -8,7 +8,7 @@ The primary wireless path is:
 
 USB MIDI adapters exposed through Android's MIDI API can also appear in the device list and be connected directly.
 
-APS NoteCast is developed by Alex's Piano Service LLC for practical player-piano service workflows: importing MIDI files, organizing playlists, connecting to MIDI hardware, recording incoming MIDI, and keeping playback controls accessible from both the app and Android media controls.
+APS NoteCast is developed and provided as a public service by Alex's Piano Service LLC for practical player-piano service workflows: importing MIDI files, organizing playlists, connecting to MIDI hardware, recording incoming MIDI, and keeping playback controls accessible from both the app and Android media controls.
 
 APS NoteCast is free and open-source. It has no subscriptions, in-app purchases,
 advertising, or paid music catalog. It is independent and is not affiliated with

@@ -373,7 +373,7 @@
     <string name="bug_previous_crash">Срив от предишното изпълнение ще бъде прикачен автоматично.</string>
     <string name="bug_summary">Кратко резюме</string>
     <string name="bug_what_happened">Какво се случи?</string>
-    <string name="bug_contact">Незадължителен имейл или контакт</string>
+    <string name="bug_contact">Незадължителен имейл</string>
     <string name="bug_include_events">Включете скорошни събития от приложението</string>
     <string name="bug_sending">Изпращане</string>
     <string name="bug_sending_message">Изпраща се доклад за грешка...</string>

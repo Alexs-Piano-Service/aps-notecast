@@ -373,7 +373,7 @@
     <string name="bug_previous_crash">Verrà allegato automaticamente un arresto anomalo dell\'esecuzione precedente.</string>
     <string name="bug_summary">Breve riassunto</string>
     <string name="bug_what_happened">Cosa è successo?</string>
-    <string name="bug_contact">E-mail o contatto facoltativo</string>
+    <string name="bug_contact">E-mail facoltativa</string>
     <string name="bug_include_events">Includi eventi recenti dell\'app</string>
     <string name="bug_sending">Invio</string>
     <string name="bug_sending_message">Invio segnalazione bug...</string>

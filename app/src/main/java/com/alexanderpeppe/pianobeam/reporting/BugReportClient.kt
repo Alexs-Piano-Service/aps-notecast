@@ -28,7 +28,7 @@ import javax.crypto.spec.SecretKeySpec
 data class BugReportInput(
     val summary: String,
     val description: String,
-    val contact: String,
+    val senderEmail: String,
     val includeLogs: Boolean
 )
 
@@ -43,6 +43,7 @@ object BugReportClient {
     private const val APP_WEBSITE = "https://www.alexanderpeppe.com"
     private const val MAX_SUMMARY_CHARS = 300
     private const val MAX_DESCRIPTION_CHARS = 12_000
+    private const val MAX_SENDER_EMAIL_CHARS = 320
     private const val LOG_TAIL_CHARS = 64_000
 
     suspend fun submit(
@@ -85,6 +86,7 @@ object BugReportClient {
         }
         val eventLogText = if (includeLogs) AppEventLog.tailText(LOG_TAIL_CHARS) else ""
         val eventLogTotalChars = if (includeLogs) AppEventLog.totalTextChars() else 0
+        val senderEmail = input.senderEmail.trim().take(MAX_SENDER_EMAIL_CHARS)
         val logText = buildString {
             append(pendingCrashBlock)
             append(eventLogText)
@@ -95,7 +97,9 @@ object BugReportClient {
             put("created_at", Instant.now().toString())
             put("summary", input.summary.trim().ifBlank { "APS NoteCast bug report" }.take(MAX_SUMMARY_CHARS))
             put("description", input.description.trim().take(MAX_DESCRIPTION_CHARS))
-            put("contact", input.contact.trim())
+            put("email", senderEmail)
+            put("sender_email", senderEmail)
+            put("contact", senderEmail)
             put("app", appBlock(context))
             put("environment", environmentBlock(context))
             put("context", contextBlock(state, settings, diagnostics, pendingCrash.isNotBlank()))

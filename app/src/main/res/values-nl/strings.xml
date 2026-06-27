@@ -373,7 +373,7 @@
     <string name="bug_previous_crash">Een crash van de vorige run wordt automatisch toegevoegd.</string>
     <string name="bug_summary">Korte samenvatting</string>
     <string name="bug_what_happened">Wat is er gebeurd?</string>
-    <string name="bug_contact">Optioneel e-mail of contact</string>
+    <string name="bug_contact">Optioneel e-mailadres</string>
     <string name="bug_include_events">Recente app-gebeurtenissen opnemen</string>
     <string name="bug_sending">Verzenden</string>
     <string name="bug_sending_message">Bugrapport verzenden...</string>

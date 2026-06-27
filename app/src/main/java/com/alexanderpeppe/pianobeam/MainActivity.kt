@@ -24,6 +24,7 @@ import androidx.compose.foundation.gestures.detectDragGesturesAfterLongPress
 import androidx.compose.foundation.gestures.scrollBy
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -151,6 +152,7 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalUriHandler
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.Density
@@ -1778,7 +1780,10 @@ private fun AppInfoDialog(onDismiss: () -> Unit) {
                 PrimaryLogoBanner()
                 InfoLine(stringResource(R.string.about_version), BuildConfig.VERSION_NAME)
                 InfoLine(stringResource(R.string.about_built_for), stringResource(R.string.about_built_for_value))
-                InfoLine(stringResource(R.string.about_cost), stringResource(R.string.about_cost_value))
+                InfoLine(
+                    stringResource(R.string.about_cost),
+                    "${stringResource(R.string.about_cost_value)}\n${stringResource(R.string.about_public_service_value)}"
+                )
                 InfoLine(stringResource(R.string.about_library), stringResource(R.string.about_library_value))
                 InfoLine(stringResource(R.string.about_external), stringResource(R.string.about_external_value))
                 InfoLine(stringResource(R.string.about_playback), stringResource(R.string.about_playback_value))
@@ -1900,7 +1905,7 @@ private fun BugReportDialog(
     val scope = rememberCoroutineScope()
     var summary by rememberSaveable { mutableStateOf(if (pendingCrash.isNotBlank()) crashSummary else "") }
     var description by rememberSaveable { mutableStateOf("") }
-    var contact by rememberSaveable { mutableStateOf("") }
+    var senderEmail by rememberSaveable { mutableStateOf("") }
     var includeLogs by rememberSaveable { mutableStateOf(true) }
     var sending by rememberSaveable { mutableStateOf(false) }
     var sent by rememberSaveable { mutableStateOf(false) }
@@ -1946,10 +1951,11 @@ private fun BugReportDialog(
                     modifier = Modifier.fillMaxWidth()
                 )
                 OutlinedTextField(
-                    value = contact,
-                    onValueChange = { contact = it.take(300) },
+                    value = senderEmail,
+                    onValueChange = { senderEmail = it.take(320) },
                     label = { Text(stringResource(R.string.bug_contact)) },
                     enabled = !sending && !sent,
+                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Email),
                     singleLine = true,
                     modifier = Modifier.fillMaxWidth()
                 )
@@ -1991,7 +1997,7 @@ private fun BugReportDialog(
                                     input = BugReportInput(
                                         summary = summary,
                                         description = description,
-                                        contact = contact,
+                                        senderEmail = senderEmail,
                                         includeLogs = includeLogs
                                     ),
                                     state = state,

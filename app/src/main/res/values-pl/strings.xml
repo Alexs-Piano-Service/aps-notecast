@@ -373,7 +373,7 @@
     <string name="bug_previous_crash">Awaria z poprzedniego uruchomienia zostanie dołączona automatycznie.</string>
     <string name="bug_summary">Krótkie podsumowanie</string>
     <string name="bug_what_happened">Co się stało?</string>
-    <string name="bug_contact">Opcjonalny e-mail lub kontakt</string>
+    <string name="bug_contact">Opcjonalny e-mail</string>
     <string name="bug_include_events">Uwzględnij ostatnie zdarzenia w aplikacji</string>
     <string name="bug_sending">Wysyłanie</string>
     <string name="bug_sending_message">Wysyłanie raportu o błędzie...</string>

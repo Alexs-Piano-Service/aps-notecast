@@ -375,7 +375,7 @@
     <string name="bug_previous_crash">A crash from the previous run will be attached automatically.</string>
     <string name="bug_summary">Short summary</string>
     <string name="bug_what_happened">What happened?</string>
-    <string name="bug_contact">Optional email or contact</string>
+    <string name="bug_contact">Optional email</string>
     <string name="bug_include_events">Include recent app events</string>
     <string name="bug_sending">Sending</string>
     <string name="bug_sending_message">Sending bug report...</string>
@@ -387,6 +387,7 @@
     <string name="about_built_for_value">Bluetooth LE MIDI or USB MIDI playback to compatible player-piano adapters</string>
     <string name="about_cost">Cost</string>
     <string name="about_cost_value">Free and open-source. No subscriptions, in-app purchases, ads, or paid music catalog.</string>
+    <string name="about_public_service_value" translatable="false">APS NoteCast is provided as a public service by Alex\'s Piano Service LLC.</string>
     <string name="about_library">Library</string>
     <string name="about_library_value">Import MIDI files, use bundled Mutopia demos, create playlists, or record MIDI input</string>
     <string name="about_external">External MIDI</string>

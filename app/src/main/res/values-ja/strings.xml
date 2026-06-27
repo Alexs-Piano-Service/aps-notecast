@@ -373,7 +373,7 @@
     <string name="bug_previous_crash">前回の実行によるクラッシュが自動的に付加されます。</string>
     <string name="bug_summary">短い概要</string>
     <string name="bug_what_happened">何が起こったのですか？</string>
-    <string name="bug_contact">オプションの電子メールまたは連絡先</string>
+    <string name="bug_contact">任意のメールアドレス</string>
     <string name="bug_include_events">最近のアプリイベントを含める</string>
     <string name="bug_sending">送信中</string>
     <string name="bug_sending_message">バグレポートを送信中...</string>

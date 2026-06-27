@@ -373,7 +373,7 @@
     <string name="bug_previous_crash">Un crash de l\'exécution précédente sera automatiquement joint.</string>
     <string name="bug_summary">Bref résumé</string>
     <string name="bug_what_happened">Que s\'est-il passé ?</string>
-    <string name="bug_contact">E-mail ou contact facultatif</string>
+    <string name="bug_contact">E-mail facultatif</string>
     <string name="bug_include_events">Inclure les événements récents de l\'application</string>
     <string name="bug_sending">Envoi</string>
     <string name="bug_sending_message">Envoi du rapport de bug...</string>

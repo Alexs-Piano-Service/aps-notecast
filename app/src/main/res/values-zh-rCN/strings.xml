@@ -373,7 +373,7 @@
     <string name="bug_previous_crash">将自动附加上一次运行的崩溃。</string>
     <string name="bug_summary">简短摘要</string>
     <string name="bug_what_happened">发生了什么？</string>
-    <string name="bug_contact">可选电子邮件或联系方式</string>
+    <string name="bug_contact">可选电子邮件</string>
     <string name="bug_include_events">包括最近的应用程序事件</string>
     <string name="bug_sending">发送中</string>
     <string name="bug_sending_message">正在发送错误报告...</string>

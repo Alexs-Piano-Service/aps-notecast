@@ -373,7 +373,7 @@
     <string name="bug_previous_crash">이전 실행의 충돌이 자동으로 첨부됩니다.</string>
     <string name="bug_summary">간략한 요약</string>
     <string name="bug_what_happened">무슨 일이 있었던 걸까요?</string>
-    <string name="bug_contact">선택 이메일 또는 연락처</string>
+    <string name="bug_contact">선택 이메일</string>
     <string name="bug_include_events">최근 앱 이벤트 포함</string>
     <string name="bug_sending">보내는 중</string>
     <string name="bug_sending_message">버그 리포트 보내는 중...</string>
