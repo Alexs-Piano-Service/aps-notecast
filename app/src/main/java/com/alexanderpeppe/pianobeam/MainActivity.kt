@@ -124,6 +124,7 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.derivedStateOf
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateMapOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -934,13 +935,15 @@ private fun LibraryPane(
     var midiFileSearchText by rememberSaveable { mutableStateOf("") }
     var appliedMidiFileQuery by rememberSaveable { mutableStateOf("") }
     var showMidiSearch by rememberSaveable { mutableStateOf(false) }
-    var midiFilePageStart by rememberSaveable { mutableStateOf(0) }
-    var selectedFileIds by rememberSaveable { mutableStateOf(emptyList<String>()) }
+    var midiFilePageStart by rememberSaveable { mutableIntStateOf(0) }
+    // Large selections should not be written into the activity saved-state Bundle.
+    var selectedFileIds by remember { mutableStateOf(emptyList<String>()) }
     var midiFileDisplayModeName by rememberSaveable { mutableStateOf(MidiFileDisplayMode.Alphabetical.name) }
     val expandedPlaylists = remember { mutableStateMapOf<String, Boolean>() }
     val expandedMidiLetters = remember { mutableStateMapOf<String, Boolean>() }
     val midiLetterPageStarts = remember { mutableStateMapOf<String, Int>() }
-    val playlistBounds = remember { mutableStateMapOf<String, Rect>() }
+    val playlistBounds = remember { mutableMapOf<String, PlaylistDropBound>() }
+    var hoveredPlaylistId by remember { mutableStateOf<String?>(null) }
     var draggingFiles by remember { mutableStateOf(emptyList<MidiLibraryItem>()) }
     var dragPosition by remember { mutableStateOf<Offset?>(null) }
     var paneOrigin by remember { mutableStateOf(Offset.Zero) }
@@ -948,11 +951,17 @@ private fun LibraryPane(
     val gridState = rememberLazyListState()
     val libraryScope = rememberCoroutineScope()
     val density = LocalDensity.current
-    val filesById = remember(state.files) { state.files.associateBy { it.id } }
+    var midiFileIndex by remember { mutableStateOf<MidiFileIndex?>(null) }
+    var playlistSearchIndex by remember { mutableStateOf<PlaylistSearchIndex?>(null) }
+    val currentMidiFileIndex = midiFileIndex?.takeIf { it.sourceFiles === state.files }
+    val filesById = currentMidiFileIndex?.filesById.orEmpty()
     val selectedFileIdSet = remember(selectedFileIds) { selectedFileIds.toSet() }
-    val selectedFileItems = remember(state.files, selectedFileIdSet) { state.files.filter { it.id in selectedFileIdSet } }
+    val selectedFileItems = remember(filesById, selectedFileIds) {
+        selectedFileIds.mapNotNull(filesById::get)
+    }
     val selectionActive = selectedFileItems.isNotEmpty()
     var visibleMidiFiles by remember(state.files) { mutableStateOf(state.files) }
+    var visiblePlaylists by remember(state.playlists) { mutableStateOf(state.playlists) }
     val midiLibraryPageSize = settings.midiLibraryPageSize.coerceIn(
         MIN_MIDI_LIBRARY_PAGE_SIZE,
         MAX_MIDI_LIBRARY_PAGE_SIZE
@@ -962,27 +971,33 @@ private fun LibraryPane(
         ?: MidiFileDisplayMode.Alphabetical
     val midiSearchFiltering = midiFileSearchText.isNotBlank() && appliedMidiFileQuery != midiFileSearchText
     val forceFlatMidiList = midiFileSearchText.isNotBlank()
-    val effectiveMidiFileDisplayMode = if (forceFlatMidiList) MidiFileDisplayMode.List else midiFileDisplayMode
-    val sortedVisibleMidiFiles = remember(visibleMidiFiles) { visibleMidiFiles.sortedForMidiDisplay() }
-    val midiDisplaySourceFiles = remember(visibleMidiFiles) { visibleMidiFiles }
-    val normalizedMidiPageStart = midiFilePageStart.coercedPageStart(midiDisplaySourceFiles.size, midiLibraryPageSize)
-    val displayedMidiFiles = remember(midiDisplaySourceFiles, normalizedMidiPageStart, midiLibraryPageSize) {
-        midiDisplaySourceFiles
-            .drop(normalizedMidiPageStart)
-            .take(midiLibraryPageSize)
+    val effectiveMidiFileDisplayMode = if (forceFlatMidiList || currentMidiFileIndex == null) {
+        MidiFileDisplayMode.List
+    } else {
+        midiFileDisplayMode
     }
-    val midiDisplayStartNumber = if (displayedMidiFiles.isEmpty()) 0 else normalizedMidiPageStart + 1
-    val midiDisplayEndNumber = normalizedMidiPageStart + displayedMidiFiles.size
-    val midiFileGroups = remember(sortedVisibleMidiFiles, effectiveMidiFileDisplayMode) {
-        if (effectiveMidiFileDisplayMode == MidiFileDisplayMode.Alphabetical) {
-            midiFileLetterGroups(sortedVisibleMidiFiles)
-        } else {
-            emptyList()
+    val midiDisplaySourceFiles = visibleMidiFiles
+    val normalizedMidiPageStart = if (effectiveMidiFileDisplayMode == MidiFileDisplayMode.List) {
+        midiFilePageStart.coercedPageStart(midiDisplaySourceFiles.size, midiLibraryPageSize)
+    } else {
+        0
+    }
+    val midiDisplayPageCount = if (effectiveMidiFileDisplayMode == MidiFileDisplayMode.List) {
+        minOf(midiLibraryPageSize, (midiDisplaySourceFiles.size - normalizedMidiPageStart).coerceAtLeast(0))
+    } else {
+        0
+    }
+    val midiDisplayStartNumber = if (midiDisplayPageCount == 0) 0 else normalizedMidiPageStart + 1
+    val midiDisplayEndNumber = normalizedMidiPageStart + midiDisplayPageCount
+    val midiFileGroups = if (effectiveMidiFileDisplayMode == MidiFileDisplayMode.Alphabetical) {
+        currentMidiFileIndex?.letterGroups.orEmpty()
+    } else {
+        emptyList()
+    }
+    val allMidiLettersExpanded = effectiveMidiFileDisplayMode == MidiFileDisplayMode.Alphabetical &&
+        midiFileGroups.all { group ->
+            expandedMidiLetters[group.key] ?: group.defaultExpanded(midiLibraryPageSize)
         }
-    }
-    val allMidiLettersExpanded = midiFileGroups.all { group ->
-        expandedMidiLetters[group.key] ?: group.defaultExpanded(midiLibraryPageSize)
-    }
     val midiHeaderRangeStart = if (effectiveMidiFileDisplayMode == MidiFileDisplayMode.List) {
         midiDisplayStartNumber
     } else if (visibleMidiFiles.isNotEmpty()) {
@@ -996,19 +1011,19 @@ private fun LibraryPane(
         visibleMidiFiles.size
     }
     val showPlaylistSearch = state.playlists.size > 10
-    val visiblePlaylists = remember(state.playlists, playlistQuery, filesById, showPlaylistSearch) {
-        if (!showPlaylistSearch || playlistQuery.isBlank()) {
-            state.playlists
-        } else {
-            state.playlists.filter { playlist -> playlist.matchesPlaylistSearch(playlistQuery, filesById) }
-        }
+    val selectedPlaylistTrackSelection = remember(selectedKind, selectedId) {
+        selectedId.playlistTrackSelection()?.takeIf { selectedKind == SELECTION_PLAYLIST_TRACK }
+    }
+    val playlistLazyItemCount = visiblePlaylists.sumOf { playlist ->
+        1 + if (expandedPlaylists[playlist.id] == true) maxOf(1, playlist.itemIds.size) else 0
     }
     val midiHeaderItemIndex = remember(
         state.importState.importing,
         state.files.isEmpty(),
         state.playlists.isEmpty(),
         showPlaylistSearch,
-        visiblePlaylists.size
+        visiblePlaylists.size,
+        playlistLazyItemCount
     ) {
         var index = 1
         if (state.importState.importing) index += 1
@@ -1016,7 +1031,7 @@ private fun LibraryPane(
         if (state.playlists.isNotEmpty()) {
             index += 1
             if (showPlaylistSearch) index += 1
-            index += if (visiblePlaylists.isEmpty()) 1 else visiblePlaylists.size
+            index += if (visiblePlaylists.isEmpty()) 1 else playlistLazyItemCount
         }
         index
     }
@@ -1028,19 +1043,56 @@ private fun LibraryPane(
         }
     }
 
-    LaunchedEffect(state.files, midiFileSearchText) {
+    fun playlistAt(position: Offset): String? =
+        playlistBounds.values.firstOrNull { it.bounds.contains(position) }?.playlistId
+
+    fun refreshHoveredPlaylist() {
+        val next = dragPosition?.let(::playlistAt)
+        if (hoveredPlaylistId != next) hoveredPlaylistId = next
+    }
+
+    LaunchedEffect(state.files) {
+        val filesSnapshot = state.files
+        val index = withContext(Dispatchers.Default) { buildMidiFileIndex(filesSnapshot) }
+        midiFileIndex = index
+    }
+
+    LaunchedEffect(state.playlists, state.files) {
+        val playlistsSnapshot = state.playlists
+        val filesSnapshot = state.files
+        playlistSearchIndex = withContext(Dispatchers.Default) {
+            buildPlaylistSearchIndex(playlistsSnapshot, filesSnapshot)
+        }
+    }
+
+    LaunchedEffect(state.files, currentMidiFileIndex, midiFileSearchText) {
         val filesSnapshot = state.files
         val query = midiFileSearchText
         if (query.isBlank()) {
             appliedMidiFileQuery = ""
             visibleMidiFiles = filesSnapshot
         } else {
+            val index = currentMidiFileIndex ?: return@LaunchedEffect
             delay(MIDI_SEARCH_DEBOUNCE_MS)
             val result = withContext(Dispatchers.Default) {
-                filesSnapshot.filterMidiFiles(query)
+                index.filter(query)
             }
             appliedMidiFileQuery = query
             visibleMidiFiles = result
+        }
+    }
+
+    LaunchedEffect(showPlaylistSearch, state.playlists, playlistQuery, playlistSearchIndex) {
+        val query = playlistQuery
+        if (!showPlaylistSearch || query.isBlank()) {
+            if (!showPlaylistSearch) playlistQuery = ""
+            visiblePlaylists = state.playlists
+        } else {
+            val index = playlistSearchIndex?.takeIf {
+                it.sourcePlaylists === state.playlists && it.sourceFiles === state.files
+            } ?: return@LaunchedEffect
+            delay(MIDI_SEARCH_DEBOUNCE_MS)
+            visiblePlaylists = withContext(Dispatchers.Default) { index.filter(query) }
         }
     }
 
@@ -1053,12 +1105,18 @@ private fun LibraryPane(
         if (appliedMidiFileQuery.isNotBlank()) gridState.scrollToItem(0)
     }
 
-    LaunchedEffect(state.files) {
-        val validIds = state.files.map { it.id }.toSet()
+    LaunchedEffect(currentMidiFileIndex) {
+        val validIds = currentMidiFileIndex?.filesById ?: return@LaunchedEffect
         selectedFileIds = selectedFileIds.filter { it in validIds }
     }
 
+    LaunchedEffect(state.playlists) {
+        val validIds = state.playlists.mapTo(HashSet(state.playlists.size)) { it.id }
+        expandedPlaylists.keys.filterNot { it in validIds }.forEach { expandedPlaylists.remove(it) }
+    }
+
     LaunchedEffect(midiFileGroups, midiLibraryPageSize) {
+        if (effectiveMidiFileDisplayMode != MidiFileDisplayMode.Alphabetical) return@LaunchedEffect
         val validLetters = midiFileGroups.map { it.key }.toSet()
         expandedMidiLetters.keys.filterNot { it in validLetters }.forEach { expandedMidiLetters.remove(it) }
         midiLetterPageStarts.keys.filterNot { it in validLetters }.forEach { midiLetterPageStarts.remove(it) }
@@ -1071,10 +1129,10 @@ private fun LibraryPane(
         }
     }
 
-    LaunchedEffect(showPlaylistSearch, playlistQuery, visiblePlaylists) {
-        if (!showPlaylistSearch) playlistQuery = ""
+    LaunchedEffect(visiblePlaylists) {
         val visibleIds = visiblePlaylists.map { it.id }.toSet()
-        playlistBounds.keys.filterNot { it in visibleIds }.forEach { playlistBounds.remove(it) }
+        playlistBounds.entries.removeAll { it.value.playlistId !in visibleIds }
+        refreshHoveredPlaylist()
     }
 
     LaunchedEffect(draggingFiles.isNotEmpty()) {
@@ -1096,7 +1154,10 @@ private fun LibraryPane(
                     }
                     else -> 0f
                 }
-                if (scrollDelta != 0f) gridState.scrollBy(scrollDelta)
+                if (scrollDelta != 0f) {
+                    gridState.scrollBy(scrollDelta)
+                    refreshHoveredPlaylist()
+                }
             }
             delay(16L)
         }
@@ -1114,25 +1175,29 @@ private fun LibraryPane(
         val files = draggingFiles
         val position = dragPosition
         if (files.isNotEmpty() && position != null) {
-            val targetPlaylist = playlistBounds.entries.firstOrNull { it.value.contains(position) }?.key
+            val targetPlaylist = playlistAt(position)
             if (targetPlaylist != null) service.addToPlaylist(targetPlaylist, files.map { it.id })
         }
         draggingFiles = emptyList()
         dragPosition = null
+        hoveredPlaylistId = null
     }
 
     fun startDrag(files: List<MidiLibraryItem>, rootOffset: Offset) {
         draggingFiles = files
         dragPosition = rootOffset
+        refreshHoveredPlaylist()
     }
 
     fun updateDrag(delta: Offset) {
         dragPosition = (dragPosition ?: Offset.Zero) + delta
+        refreshHoveredPlaylist()
     }
 
     fun cancelDrag() {
         draggingFiles = emptyList()
         dragPosition = null
+        hoveredPlaylistId = null
     }
 
     fun showMidiPage(startIndex: Int) {
@@ -1151,7 +1216,7 @@ private fun LibraryPane(
             if (expanded) {
                 val pageStart = (midiLetterPageStarts[group.key] ?: 0)
                     .coercedPageStart(group.files.size, midiLibraryPageSize)
-                index += group.files.drop(pageStart).take(midiLibraryPageSize).size
+                index += minOf(midiLibraryPageSize, group.files.size - pageStart)
                 if (group.files.size > midiLibraryPageSize) index += 1
             }
         }
@@ -1231,53 +1296,107 @@ private fun LibraryPane(
                             )
                         }
                     }
-                    items(
-                        visiblePlaylists,
-                        key = { it.id },
-                        contentType = { "playlist" }
-                    ) { playlist ->
-                        DisposableEffect(playlist.id) {
-                            onDispose { playlistBounds.remove(playlist.id) }
-                        }
+                    visiblePlaylists.forEach { playlist ->
                         val expanded = expandedPlaylists[playlist.id] ?: false
-                        val highlighted = dragPosition?.let { playlistBounds[playlist.id]?.contains(it) } == true
-                        val selectedPlaylistTrack = selectedId
-                            .playlistTrackSelection()
-                            ?.takeIf { (playlistId, _) -> selectedKind == SELECTION_PLAYLIST_TRACK && playlistId == playlist.id }
+                        val selectedPlaylistTrack = selectedPlaylistTrackSelection
+                            ?.takeIf { (playlistId, _) -> playlistId == playlist.id }
                             ?.second
-                        PlaylistFolder(
-                            playlist = playlist,
-                            filesById = filesById,
-                            selected = selectedKind == SELECTION_PLAYLIST && selectedId == playlist.id,
-                            selectedTrackIndex = selectedPlaylistTrack,
-                            expanded = expanded,
-                            highlighted = highlighted,
-                            connected = state.connected,
-                            preparing = state.playback.isPreparing &&
-                                state.playback.playlistName == playlist.name &&
-                                state.playback.currentItemId in playlist.itemIds,
-                            onSelect = { onSelectPlaylist(playlist.id) },
-                            onSelectTrack = { index, itemId -> onSelectPlaylistTrack(playlist.id, index, itemId) },
-                            onToggle = { expandedPlaylists[playlist.id] = !expanded },
-                            onAddFiles = { addFilesPlaylistId = playlist.id },
-                            onPlaySequential = {
-                                onSelectPlaylist(playlist.id)
-                                service.playPlaylist(playlist.id, shuffled = false)
-                            },
-                            onPlayShuffle = {
-                                onSelectPlaylist(playlist.id)
-                                service.playPlaylist(playlist.id, shuffled = true)
-                            },
-                            onRename = { renamePlaylistId = playlist.id },
-                            onColor = { colorPlaylistId = playlist.id },
-                            onClone = { service.duplicatePlaylist(playlist.id) },
-                            onDelete = { deletePlaylistId = playlist.id },
-                            onRemove = { index -> service.removeFromPlaylist(playlist.id, index) },
-                            onMove = { index, direction -> service.movePlaylistItem(playlist.id, index, direction) },
-                            modifier = Modifier.onGloballyPositioned { coordinates ->
-                                playlistBounds[playlist.id] = coordinates.boundsInRoot()
+                        val playlistSelected = selectedKind == SELECTION_PLAYLIST && selectedId == playlist.id
+                        val headerBoundsKey = "playlist-header-${playlist.id}"
+                        item(key = headerBoundsKey, contentType = "playlist-header") {
+                            DisposableEffect(headerBoundsKey) {
+                                onDispose { playlistBounds.remove(headerBoundsKey) }
                             }
-                        )
+                            PlaylistFolderHeader(
+                                playlist = playlist,
+                                selected = playlistSelected,
+                                expanded = expanded,
+                                highlighted = hoveredPlaylistId == playlist.id,
+                                connected = state.connected,
+                                preparing = state.playback.isPreparing &&
+                                    state.playback.playlistName == playlist.name &&
+                                    state.playback.currentItemId in playlist.itemIds,
+                                onSelect = { onSelectPlaylist(playlist.id) },
+                                onToggle = { expandedPlaylists[playlist.id] = !expanded },
+                                onAddFiles = { addFilesPlaylistId = playlist.id },
+                                onPlaySequential = {
+                                    onSelectPlaylist(playlist.id)
+                                    service.playPlaylist(playlist.id, shuffled = false)
+                                },
+                                onPlayShuffle = {
+                                    onSelectPlaylist(playlist.id)
+                                    service.playPlaylist(playlist.id, shuffled = true)
+                                },
+                                onRename = { renamePlaylistId = playlist.id },
+                                onColor = { colorPlaylistId = playlist.id },
+                                onClone = { service.duplicatePlaylist(playlist.id) },
+                                onDelete = { deletePlaylistId = playlist.id },
+                                modifier = Modifier.onGloballyPositioned { coordinates ->
+                                    val next = PlaylistDropBound(playlist.id, coordinates.boundsInRoot())
+                                    if (playlistBounds[headerBoundsKey] != next) {
+                                        playlistBounds[headerBoundsKey] = next
+                                        refreshHoveredPlaylist()
+                                    }
+                                }
+                            )
+                        }
+                        if (expanded && playlist.itemIds.isEmpty()) {
+                            val emptyBoundsKey = "playlist-empty-${playlist.id}"
+                            item(key = emptyBoundsKey, contentType = "playlist-empty") {
+                                DisposableEffect(emptyBoundsKey) {
+                                    onDispose { playlistBounds.remove(emptyBoundsKey) }
+                                }
+                                PlaylistEmptyFolderRow(
+                                    playlist = playlist,
+                                    selected = playlistSelected,
+                                    highlighted = hoveredPlaylistId == playlist.id,
+                                    onSelect = { onSelectPlaylist(playlist.id) },
+                                    modifier = Modifier.onGloballyPositioned { coordinates ->
+                                        val next = PlaylistDropBound(playlist.id, coordinates.boundsInRoot())
+                                        if (playlistBounds[emptyBoundsKey] != next) {
+                                            playlistBounds[emptyBoundsKey] = next
+                                            refreshHoveredPlaylist()
+                                        }
+                                    }
+                                )
+                            }
+                        } else if (expanded) {
+                            items(
+                                count = playlist.itemIds.size,
+                                key = { index ->
+                                    "playlist-track-${playlist.id}-$index-${playlist.itemIds[index]}"
+                                },
+                                contentType = { "playlist-track" }
+                            ) { index ->
+                                val itemId = playlist.itemIds[index]
+                                val item = filesById[itemId]
+                                val trackBoundsKey = "playlist-track-${playlist.id}-$index-$itemId"
+                                DisposableEffect(trackBoundsKey) {
+                                    onDispose { playlistBounds.remove(trackBoundsKey) }
+                                }
+                                PlaylistFolderTrackRow(
+                                    playlist = playlist,
+                                    item = item,
+                                    index = index,
+                                    selected = selectedPlaylistTrack == index,
+                                    playlistSelected = playlistSelected,
+                                    highlighted = hoveredPlaylistId == playlist.id,
+                                    isFirst = index == 0,
+                                    isLast = index == playlist.itemIds.lastIndex,
+                                    onSelectPlaylist = { onSelectPlaylist(playlist.id) },
+                                    onSelectTrack = { item?.let { onSelectPlaylistTrack(playlist.id, index, it.id) } },
+                                    onMove = { direction -> service.movePlaylistItem(playlist.id, index, direction) },
+                                    onRemove = { service.removeFromPlaylist(playlist.id, index) },
+                                    modifier = Modifier.onGloballyPositioned { coordinates ->
+                                        val next = PlaylistDropBound(playlist.id, coordinates.boundsInRoot())
+                                        if (playlistBounds[trackBoundsKey] != next) {
+                                            playlistBounds[trackBoundsKey] = next
+                                            refreshHoveredPlaylist()
+                                        }
+                                    }
+                                )
+                            }
+                        }
                     }
                 }
 
@@ -1348,14 +1467,18 @@ private fun LibraryPane(
                             if (expanded) {
                                 val letterPageStart = (midiLetterPageStarts[group.key] ?: 0)
                                     .coercedPageStart(group.files.size, midiLibraryPageSize)
-                                val letterPageFiles = group.files
-                                    .drop(letterPageStart)
-                                    .take(midiLibraryPageSize)
+                                val letterPageCount = minOf(
+                                    midiLibraryPageSize,
+                                    group.files.size - letterPageStart
+                                )
                                 items(
-                                    letterPageFiles,
-                                    key = { "midi-file-${it.id}" },
+                                    count = letterPageCount,
+                                    key = { pageIndex ->
+                                        "midi-file-${group.files[letterPageStart + pageIndex].id}"
+                                    },
                                     contentType = { "midi-file" }
-                                ) { midiItem ->
+                                ) { pageIndex ->
+                                    val midiItem = group.files[letterPageStart + pageIndex]
                                     MidiFileLibraryRow(
                                         item = midiItem,
                                         selected = selectedKind == SELECTION_FILE && selectedId == midiItem.id,
@@ -1387,10 +1510,10 @@ private fun LibraryPane(
                                     ) {
                                         MidiFilePagingFooter(
                                             rangeStart = letterPageStart + 1,
-                                            rangeEnd = letterPageStart + letterPageFiles.size,
+                                            rangeEnd = letterPageStart + letterPageCount,
                                             totalCount = group.files.size,
                                             canPageBackward = letterPageStart > 0,
-                                            canPageForward = letterPageStart + letterPageFiles.size < group.files.size,
+                                            canPageForward = letterPageStart + letterPageCount < group.files.size,
                                             onPrevious = {
                                                 showMidiLetterPage(group.key, letterPageStart - midiLibraryPageSize)
                                             },
@@ -1404,10 +1527,13 @@ private fun LibraryPane(
                         }
                     } else {
                         items(
-                            displayedMidiFiles,
-                            key = { "midi-file-${it.id}" },
+                            count = midiDisplayPageCount,
+                            key = { pageIndex ->
+                                "midi-file-${midiDisplaySourceFiles[normalizedMidiPageStart + pageIndex].id}"
+                            },
                             contentType = { "midi-file" }
-                        ) { midiItem ->
+                        ) { pageIndex ->
+                            val midiItem = midiDisplaySourceFiles[normalizedMidiPageStart + pageIndex]
                             MidiFileLibraryRow(
                                 item = midiItem,
                                 selected = selectedKind == SELECTION_FILE && selectedId == midiItem.id,
@@ -1548,6 +1674,7 @@ private fun LibraryPane(
             AddFilesToPlaylistDialog(
                 playlist = playlist,
                 files = state.files,
+                cachedFileIndex = currentMidiFileIndex,
                 onDismiss = { addFilesPlaylistId = null },
                 onAdd = { itemIds ->
                     service.addToPlaylist(playlist.id, itemIds)
@@ -1880,13 +2007,19 @@ private fun DialogScrollThumb(
     val minThumbPx = with(density) { 32.dp.toPx() }
     val thumbHeightPx = (viewportPx * viewportPx / contentPx).coerceAtLeast(minThumbPx)
     val maxOffsetPx = (viewportPx - thumbHeightPx).coerceAtLeast(0f)
-    val thumbOffsetPx = maxOffsetPx * (scrollState.value.toFloat() / scrollState.maxValue.toFloat())
 
     Surface(
         modifier = modifier
             .width(3.dp)
             .height(with(density) { thumbHeightPx.toDp() })
-            .graphicsLayer { translationY = thumbOffsetPx },
+            .graphicsLayer {
+                val maxScroll = scrollState.maxValue
+                translationY = if (maxScroll > 0) {
+                    maxOffsetPx * (scrollState.value.toFloat() / maxScroll.toFloat())
+                } else {
+                    0f
+                }
+            },
         shape = RoundedCornerShape(2.dp),
         color = MaterialTheme.colorScheme.outline.copy(alpha = 0.7f)
     ) {}
@@ -2372,27 +2505,118 @@ private data class MidiLetterGroup(
     val files: List<MidiLibraryItem>
 )
 
+private data class MidiFileSearchEntry(
+    val item: MidiLibraryItem,
+    val searchDocument: String,
+    val durationSearchText: String,
+    val sortTitle: String,
+    val sortOriginalName: String,
+    val letterKey: String
+)
+
+private data class MidiFileIndex(
+    val sourceFiles: List<MidiLibraryItem>,
+    val filesById: Map<String, MidiLibraryItem>,
+    val entries: List<MidiFileSearchEntry>,
+    val letterGroups: List<MidiLetterGroup>
+) {
+    fun filter(query: String, forPlaylistPicker: Boolean = false): List<MidiLibraryItem> {
+        val tokens = searchTokens(query)
+        if (tokens.isEmpty()) return sourceFiles
+        return entries.asSequence()
+            .filter { entry ->
+                tokens.all { token ->
+                    token in entry.searchDocument ||
+                        (!forPlaylistPicker && token in entry.durationSearchText)
+                }
+            }
+            .map { it.item }
+            .toList()
+    }
+}
+
+private data class PlaylistSearchIndex(
+    val sourcePlaylists: List<MidiPlaylist>,
+    val sourceFiles: List<MidiLibraryItem>,
+    val documentsById: Map<String, String>
+) {
+    fun filter(query: String): List<MidiPlaylist> {
+        val tokens = searchTokens(query)
+        if (tokens.isEmpty()) return sourcePlaylists
+        return sourcePlaylists.filter { playlist ->
+            val document = documentsById[playlist.id].orEmpty()
+            tokens.all { it in document }
+        }
+    }
+}
+
 private fun MidiLetterGroup.defaultExpanded(pageSize: Int): Boolean =
     files.size <= pageSize
 
-private fun List<MidiLibraryItem>.sortedForMidiDisplay(): List<MidiLibraryItem> =
-    sortedWith(
-        compareBy<MidiLibraryItem> { it.title.lowercase(Locale.US) }
-            .thenBy { it.originalName.lowercase(Locale.US) }
+private fun buildMidiFileIndex(files: List<MidiLibraryItem>): MidiFileIndex {
+    val entries = files.map { item ->
+        val title = item.title.lowercase(Locale.US)
+        val originalName = item.originalName.lowercase(Locale.US)
+        val notes = item.notes.lowercase(Locale.US)
+        val pickerDocument = "$title $originalName $notes"
+        MidiFileSearchEntry(
+            item = item,
+            searchDocument = pickerDocument,
+            durationSearchText = item.durationUs.formatDuration().lowercase(Locale.US),
+            sortTitle = title,
+            sortOriginalName = originalName,
+            letterKey = midiFileLetterKey(item)
+        )
+    }
+    val sortedEntries = entries.sortedWith(
+        compareBy<MidiFileSearchEntry> { it.sortTitle }.thenBy { it.sortOriginalName }
     )
-
-private fun midiFileLetterGroups(files: List<MidiLibraryItem>): List<MidiLetterGroup> =
-    files
-        .groupBy { midiFileLetterKey(it) }
-        .toList()
-        .sortedBy { (key, _) -> if (key == "#") "ZZZ" else key }
-        .map { (key, groupFiles) ->
-            MidiLetterGroup(
-                key = key,
-                title = if (key == "#") "#" else key,
-                files = groupFiles
-            )
+    val filesByLetter = sortedEntries.groupBy { it.letterKey }
+    val orderedKeys = buildList {
+        ('A'..'Z').forEach { letter ->
+            val key = letter.toString()
+            if (filesByLetter.containsKey(key)) add(key)
         }
+        if (filesByLetter.containsKey("#")) add("#")
+    }
+    val groups = orderedKeys.map { key ->
+        MidiLetterGroup(
+            key = key,
+            title = key,
+            files = filesByLetter.getValue(key).map { it.item }
+        )
+    }
+    return MidiFileIndex(
+        sourceFiles = files,
+        filesById = files.associateBy { it.id },
+        entries = entries,
+        letterGroups = groups
+    )
+}
+
+private fun buildPlaylistSearchIndex(
+    playlists: List<MidiPlaylist>,
+    files: List<MidiLibraryItem>
+): PlaylistSearchIndex {
+    val filesById = files.associateBy { it.id }
+    val documents = HashMap<String, String>(playlists.size)
+    playlists.forEach { playlist ->
+        documents[playlist.id] = buildString {
+            append(playlist.name)
+            playlist.itemIds.forEach { itemId ->
+                filesById[itemId]?.title?.let { title ->
+                    append(' ')
+                    append(title)
+                }
+            }
+        }.lowercase(Locale.US)
+    }
+    return PlaylistSearchIndex(
+        sourcePlaylists = playlists,
+        sourceFiles = files,
+        documentsById = documents
+    )
+}
 
 private fun midiFileLetterKey(item: MidiLibraryItem): String {
     val first = item.title
@@ -3003,18 +3227,20 @@ private class LayoutCoordinatesHolder {
     var coordinates: LayoutCoordinates? = null
 }
 
+private data class PlaylistDropBound(
+    val playlistId: String,
+    val bounds: Rect
+)
+
 @Composable
-private fun PlaylistFolder(
+private fun PlaylistFolderHeader(
     playlist: MidiPlaylist,
-    filesById: Map<String, MidiLibraryItem>,
     selected: Boolean,
-    selectedTrackIndex: Int?,
     expanded: Boolean,
     highlighted: Boolean,
     connected: Boolean,
     preparing: Boolean,
     onSelect: () -> Unit,
-    onSelectTrack: (Int, String) -> Unit,
     onToggle: () -> Unit,
     onAddFiles: () -> Unit,
     onPlaySequential: () -> Unit,
@@ -3023,17 +3249,10 @@ private fun PlaylistFolder(
     onColor: () -> Unit,
     onClone: () -> Unit,
     onDelete: () -> Unit,
-    onRemove: (Int) -> Unit,
-    onMove: (Int, Int) -> Unit,
     modifier: Modifier = Modifier
 ) {
     val playlistColor = playlist.colorHex.toPlaylistColor()
-    val color = when {
-        highlighted -> MaterialTheme.colorScheme.tertiaryContainer
-        selected -> MaterialTheme.colorScheme.secondaryContainer
-        playlistColor != null -> playlistColor.copy(alpha = 0.20f)
-        else -> MaterialTheme.colorScheme.surfaceVariant
-    }
+    val color = playlistFolderContainerColor(playlistColor, selected, highlighted)
     var showMenu by remember { mutableStateOf(false) }
     Surface(
         modifier = modifier
@@ -3042,8 +3261,7 @@ private fun PlaylistFolder(
         shape = RoundedCornerShape(4.dp),
         color = color
     ) {
-        Column(Modifier.padding(8.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
-            Row(verticalAlignment = Alignment.CenterVertically) {
+        Row(Modifier.padding(8.dp), verticalAlignment = Alignment.CenterVertically) {
                 IconButton(onClick = onToggle, modifier = Modifier.size(34.dp)) {
                     Icon(if (expanded) Icons.Default.ExpandMore else Icons.AutoMirrored.Filled.KeyboardArrowRight, contentDescription = stringResource(R.string.cd_toggle_playlist))
                 }
@@ -3134,34 +3352,84 @@ private fun PlaylistFolder(
                         )
                     }
                 }
-            }
-
-            if (expanded) {
-                if (playlist.itemIds.isEmpty()) {
-                    Text(
-                        stringResource(R.string.library_drop_midi_here),
-                        style = MaterialTheme.typography.bodyMedium,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        modifier = Modifier.padding(start = 46.dp, bottom = 6.dp)
-                    )
-                } else {
-                    playlist.itemIds.forEachIndexed { index, itemId ->
-                        val item = filesById[itemId]
-                        PlaylistTrackRow(
-                            index = index,
-                            item = item,
-                            selected = selectedTrackIndex == index,
-                            isFirst = index == 0,
-                            isLast = index == playlist.itemIds.lastIndex,
-                            onSelect = { item?.let { onSelectTrack(index, it.id) } },
-                            onMove = onMove,
-                            onRemove = onRemove
-                        )
-                    }
-                }
-            }
         }
     }
+}
+
+@Composable
+private fun PlaylistEmptyFolderRow(
+    playlist: MidiPlaylist,
+    selected: Boolean,
+    highlighted: Boolean,
+    onSelect: () -> Unit,
+    modifier: Modifier = Modifier
+) {
+    val playlistColor = playlist.colorHex.toPlaylistColor()
+    Surface(
+        modifier = modifier
+            .fillMaxWidth()
+            .clickable(onClick = onSelect),
+        shape = RoundedCornerShape(4.dp),
+        color = playlistFolderContainerColor(playlistColor, selected, highlighted)
+    ) {
+        Text(
+            stringResource(R.string.library_drop_midi_here),
+            style = MaterialTheme.typography.bodyMedium,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+            modifier = Modifier.padding(start = 54.dp, end = 8.dp, top = 6.dp, bottom = 10.dp)
+        )
+    }
+}
+
+@Composable
+private fun PlaylistFolderTrackRow(
+    playlist: MidiPlaylist,
+    item: MidiLibraryItem?,
+    index: Int,
+    selected: Boolean,
+    playlistSelected: Boolean,
+    highlighted: Boolean,
+    isFirst: Boolean,
+    isLast: Boolean,
+    onSelectPlaylist: () -> Unit,
+    onSelectTrack: () -> Unit,
+    onMove: (Int) -> Unit,
+    onRemove: () -> Unit,
+    modifier: Modifier = Modifier
+) {
+    val playlistColor = playlist.colorHex.toPlaylistColor()
+    Surface(
+        modifier = modifier
+            .fillMaxWidth()
+            .clickable(onClick = onSelectPlaylist),
+        shape = RoundedCornerShape(4.dp),
+        color = playlistFolderContainerColor(playlistColor, playlistSelected, highlighted)
+    ) {
+        Box(Modifier.padding(horizontal = 8.dp)) {
+            PlaylistTrackRow(
+                index = index,
+                item = item,
+                selected = selected,
+                isFirst = isFirst,
+                isLast = isLast,
+                onSelect = onSelectTrack,
+                onMove = { _, direction -> onMove(direction) },
+                onRemove = { onRemove() }
+            )
+        }
+    }
+}
+
+@Composable
+private fun playlistFolderContainerColor(
+    playlistColor: Color?,
+    selected: Boolean,
+    highlighted: Boolean
+): Color = when {
+    highlighted -> MaterialTheme.colorScheme.tertiaryContainer
+    selected -> MaterialTheme.colorScheme.secondaryContainer
+    playlistColor != null -> playlistColor.copy(alpha = 0.20f)
+    else -> MaterialTheme.colorScheme.surfaceVariant
 }
 
 @Composable
@@ -5429,20 +5697,59 @@ private fun KuhmannResultRow(
 private fun AddFilesToPlaylistDialog(
     playlist: MidiPlaylist,
     files: List<MidiLibraryItem>,
+    cachedFileIndex: MidiFileIndex?,
     onDismiss: () -> Unit,
     onAdd: (List<String>) -> Unit
 ) {
-    val selected = remember(playlist.id, files) { mutableStateMapOf<String, Boolean>() }
+    val selected = remember(playlist.id) { LinkedHashSet<String>() }
+    var selectedRevision by remember(playlist.id) { mutableIntStateOf(0) }
     var query by rememberSaveable(playlist.id) { mutableStateOf("") }
-    val cleanQuery = query.trim()
-    val visibleFiles = remember(files, cleanQuery) {
-        if (cleanQuery.isBlank()) {
-            files
+    var visibleFiles by remember(files) { mutableStateOf(files) }
+    var localFileIndex by remember(files) {
+        mutableStateOf(cachedFileIndex?.takeIf { it.sourceFiles === files })
+    }
+    val readyFileIndex = cachedFileIndex?.takeIf { it.sourceFiles === files }
+        ?: localFileIndex?.takeIf { it.sourceFiles === files }
+    val selectedCount = selectedRevision.let { selected.size }
+
+    fun setSelected(itemId: String, checked: Boolean) {
+        val changed = if (checked) selected.add(itemId) else selected.remove(itemId)
+        if (changed) selectedRevision += 1
+    }
+
+    fun setVisibleSelected(checked: Boolean) {
+        var changed = false
+        visibleFiles.forEach { item ->
+            changed = (if (checked) selected.add(item.id) else selected.remove(item.id)) || changed
+        }
+        if (changed) selectedRevision += 1
+    }
+
+    LaunchedEffect(files, cachedFileIndex) {
+        if (cachedFileIndex?.sourceFiles === files) {
+            localFileIndex = cachedFileIndex
         } else {
-            files.filter { it.matchesPlaylistFileSearch(cleanQuery) }
+            localFileIndex = withContext(Dispatchers.Default) { buildMidiFileIndex(files) }
         }
     }
-    val selectedIds = files.filter { selected[it.id] == true }.map { it.id }
+
+    LaunchedEffect(files, readyFileIndex, query) {
+        val cleanQuery = query.trim()
+        if (cleanQuery.isBlank()) {
+            visibleFiles = files
+        } else {
+            val index = readyFileIndex ?: return@LaunchedEffect
+            delay(MIDI_SEARCH_DEBOUNCE_MS)
+            visibleFiles = withContext(Dispatchers.Default) {
+                index.filter(cleanQuery, forPlaylistPicker = true)
+            }
+        }
+    }
+
+    LaunchedEffect(readyFileIndex) {
+        val validIds = readyFileIndex?.filesById ?: return@LaunchedEffect
+        if (selected.removeAll { it !in validIds }) selectedRevision += 1
+    }
     Dialog(
         onDismissRequest = onDismiss,
         properties = DialogProperties(usePlatformDefaultWidth = false)
@@ -5493,7 +5800,7 @@ private fun AddFilesToPlaylistDialog(
                             )
                         }
                         Text(
-                            stringResource(R.string.library_files_visible_selected, visibleFiles.size, files.size, selectedIds.size),
+                            stringResource(R.string.library_files_visible_selected, visibleFiles.size, files.size, selectedCount),
                             style = MaterialTheme.typography.bodySmall,
                             color = MaterialTheme.colorScheme.onSurfaceVariant,
                             maxLines = 1
@@ -5519,14 +5826,14 @@ private fun AddFilesToPlaylistDialog(
                     )
                     Row(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
                         TextButton(
-                            onClick = { visibleFiles.forEach { selected[it.id] = true } },
+                            onClick = { setVisibleSelected(true) },
                             enabled = visibleFiles.isNotEmpty()
                         ) {
                             Text(stringResource(R.string.action_select_shown))
                         }
                         TextButton(
-                            onClick = { visibleFiles.forEach { selected[it.id] = false } },
-                            enabled = visibleFiles.any { selected[it.id] == true }
+                            onClick = { setVisibleSelected(false) },
+                            enabled = selectedCount > 0 && visibleFiles.isNotEmpty()
                         ) {
                             Text(stringResource(R.string.action_clear_shown))
                         }
@@ -5553,11 +5860,11 @@ private fun AddFilesToPlaylistDialog(
                             verticalArrangement = Arrangement.spacedBy(2.dp)
                         ) {
                             gridItems(visibleFiles, key = { it.id }) { item ->
-                                val checked = selected[item.id] == true
+                                val checked = selectedRevision.let { item.id in selected }
                                 PlaylistFilePickerRow(
                                     item = item,
                                     checked = checked,
-                                    onCheckedChange = { selected[item.id] = it }
+                                    onCheckedChange = { setSelected(item.id, it) }
                                 )
                             }
                         }
@@ -5569,8 +5876,11 @@ private fun AddFilesToPlaylistDialog(
                     ) {
                         TextButton(onClick = onDismiss) { Text(stringResource(R.string.action_cancel)) }
                         Spacer(Modifier.width(8.dp))
-                        Button(onClick = { onAdd(selectedIds) }, enabled = selectedIds.isNotEmpty()) {
-                            Text(stringResource(R.string.library_add_selected_count, selectedIds.size))
+                        Button(
+                            onClick = { onAdd(files.filter { it.id in selected }.map { it.id }) },
+                            enabled = selectedCount > 0
+                        ) {
+                            Text(stringResource(R.string.library_add_selected_count, selectedCount))
                         }
                     }
                 }
@@ -5625,32 +5935,12 @@ private fun PlaylistFilePickerRow(
     }
 }
 
-private fun MidiLibraryItem.matchesPlaylistFileSearch(query: String): Boolean {
-    val searchable = "$title $originalName $notes".lowercase()
-    return searchTokens(query).all { it in searchable }
-}
-
-private fun List<MidiLibraryItem>.filterMidiFiles(query: String): List<MidiLibraryItem> {
-    val tokens = searchTokens(query)
-    if (tokens.isEmpty()) return this
-    return filter { it.matchesMidiFileSearch(tokens) }
-}
-
-private fun MidiLibraryItem.matchesMidiFileSearch(tokens: List<String>): Boolean {
-    val searchable = "$title $originalName $notes ${durationUs.formatDuration()}".lowercase(Locale.US)
-    return tokens.all { it in searchable }
-}
-
-private fun MidiPlaylist.matchesPlaylistSearch(query: String, filesById: Map<String, MidiLibraryItem>): Boolean {
-    val trackTitles = itemIds.mapNotNull { filesById[it]?.title }.joinToString(" ")
-    val searchable = "$name $trackTitles".lowercase(Locale.US)
-    return searchTokens(query).all { it in searchable }
-}
+private val searchWhitespaceRegex = Regex("\\s+")
 
 private fun searchTokens(query: String): List<String> =
     query
         .lowercase(Locale.US)
-        .split(Regex("\\s+"))
+        .split(searchWhitespaceRegex)
         .filter { it.isNotBlank() }
 
 private fun Int.coercedPageStart(totalCount: Int, pageSize: Int): Int {

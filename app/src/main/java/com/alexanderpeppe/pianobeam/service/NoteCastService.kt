@@ -54,8 +54,10 @@ import com.alexanderpeppe.pianobeam.data.ImportUiState
 import com.alexanderpeppe.pianobeam.data.KuhmannMidiResult
 import com.alexanderpeppe.pianobeam.data.KuhmannSearchUiState
 import com.alexanderpeppe.pianobeam.data.LastPlaybackSnapshot
+import com.alexanderpeppe.pianobeam.data.LibrarySnapshot
 import com.alexanderpeppe.pianobeam.data.MidiChannelControl
 import com.alexanderpeppe.pianobeam.data.MidiLibraryItem
+import com.alexanderpeppe.pianobeam.data.MidiPlaylist
 import com.alexanderpeppe.pianobeam.data.MidiRepository
 import com.alexanderpeppe.pianobeam.data.PedalOutputMode
 import com.alexanderpeppe.pianobeam.data.PedalValueMode
@@ -134,6 +136,7 @@ class NoteCastService : Service() {
         private const val PROGRESS_POST_INTERVAL_NS = 500_000_000L
         private const val MAX_TRACKED_NOTE_STACK = 127
         private const val PLAYBACK_THREAD_NAME = "NoteCastPlayback"
+        private const val LIBRARY_THREAD_NAME = "NoteCastLibrary"
         private const val DIAGNOSTIC_FIRST_PIANO_NOTE = 21 // A0
         private const val DIAGNOSTIC_LAST_PIANO_NOTE = 108 // C8
         private const val DIAGNOSTIC_PEDAL_TEST_VELOCITY = 72
@@ -173,6 +176,11 @@ class NoteCastService : Service() {
     private val playbackDispatcher = Executors.newSingleThreadExecutor { runnable ->
         Thread(runnable, PLAYBACK_THREAD_NAME).apply {
             priority = Thread.NORM_PRIORITY + 1
+        }
+    }.asCoroutineDispatcher()
+    private val libraryDispatcher = Executors.newSingleThreadExecutor { runnable ->
+        Thread(runnable, LIBRARY_THREAD_NAME).apply {
+            priority = Thread.NORM_PRIORITY - 1
         }
     }.asCoroutineDispatcher()
     private val mainHandler = Handler(Looper.getMainLooper())
@@ -383,6 +391,29 @@ class NoteCastService : Service() {
     private var recordingReceiver: MidiReceiver? = null
     private val playbackSurfaceUpdatePending = AtomicBoolean(false)
 
+    private data class PreparedLibrarySnapshot(
+        val publicationId: Long,
+        val files: List<MidiLibraryItem>,
+        val playlists: List<MidiPlaylist>,
+        val filesById: Map<String, MidiLibraryItem>,
+        val playlistsById: Map<String, MidiPlaylist>
+    )
+
+    // These source-identity caches are accessed only on libraryDispatcher. A playlist-only
+    // mutation therefore reuses the exact files list/map references (and vice versa).
+    private var preparedFilesSource: List<MidiLibraryItem>? = null
+    private var preparedFiles: List<MidiLibraryItem> = emptyList()
+    private var preparedFilesById: Map<String, MidiLibraryItem> = emptyMap()
+    private var preparedPlaylistsSource: List<MidiPlaylist>? = null
+    private var preparedPlaylists: List<MidiPlaylist> = emptyList()
+    private var preparedPlaylistsById: Map<String, MidiPlaylist> = emptyMap()
+    private var nextLibraryPublicationId = 0L
+    private var publishedLibraryPublicationId = 0L
+    @Volatile
+    private var libraryFilesById: Map<String, MidiLibraryItem> = emptyMap()
+    @Volatile
+    private var libraryPlaylistsById: Map<String, MidiPlaylist> = emptyMap()
+
     private val _state = MutableStateFlow(AppUiState())
     val state: StateFlow<AppUiState> = _state.asStateFlow()
 
@@ -425,13 +456,12 @@ class NoteCastService : Service() {
         prefs = getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
         createNotificationChannel()
         createMediaSession()
-        repository.ensureDemoMidi()
         loadExternalMidiSources()
         restoreRememberedDevice()
         midiManager.registerDeviceCallback(midiDeviceCallback, mainHandler)
         registerBluetoothStateReceiver()
         refreshKnownDevices()
-        reloadLibrary(text(R.string.service_ready))
+        reloadLibrary(text(R.string.service_ready), ensureDemos = true)
     }
 
     override fun onBind(intent: Intent?): IBinder = binder
@@ -564,8 +594,9 @@ class NoteCastService : Service() {
             mediaSession.isActive = false
             mediaSession.release()
         }
-        playbackDispatcher.close()
         serviceJob.cancel()
+        libraryDispatcher.close()
+        playbackDispatcher.close()
         super.onDestroy()
     }
 
@@ -803,7 +834,7 @@ class NoteCastService : Service() {
                 lastMessage = startMessage
             )
         }
-        serviceScope.launch(Dispatchers.IO) {
+        serviceScope.launch(libraryDispatcher) {
             var lastProgressPostMs = 0L
             var lastLoggedFailureCount = 0
             var processedItems = 0
@@ -851,6 +882,7 @@ class NoteCastService : Service() {
                 }
             }
             result.exceptionOrNull()?.let { if (it is CancellationException) throw it }
+            val prepared = prepareLibrarySnapshot(result.getOrNull()?.snapshot ?: repository.load())
             withContext(Dispatchers.Main) {
                 result.onSuccess { importResult ->
                     val imported = importResult.importedItems.size
@@ -876,7 +908,7 @@ class NoteCastService : Service() {
                         else ->
                             text(R.string.service_could_not_import_midi)
                     }
-                    reloadLibrary(message)
+                    publishLibrary(prepared, message)
                     _state.update {
                         it.copy(
                             importState = ImportUiState(
@@ -892,7 +924,7 @@ class NoteCastService : Service() {
                 }.onFailure { throwable ->
                     val message = text(R.string.service_import_failed, throwable.message ?: text(R.string.service_import_failure_fallback))
                     AppEventLog.append("MIDI import failed after $processedItems/$totalItems items: ${throwable.message ?: throwable::class.java.simpleName}")
-                    reloadLibrary(message)
+                    publishLibrary(prepared, message)
                     _state.update {
                         it.copy(
                             importState = ImportUiState(
@@ -1072,74 +1104,102 @@ class NoteCastService : Service() {
             )
         }
         kuhmannDownloadJob = serviceScope.launch(Dispatchers.IO) {
-            var imported = 0
             var failed = 0
             var networkFailure = false
-            val importedKeys = mutableListOf<String>()
-            val importedItemsByResultKey = mutableMapOf<String, MidiLibraryItem>()
-            uniqueResults.forEach { result ->
-                ensureActive()
-                runCatching {
-                    val bytes = downloadExternalMidiBytes(result)
-                    val item = repository.importMidiBytes(
-                        bytes = bytes,
-                        displayName = result.filename.ifBlank { "${result.title}.mid" },
-                        preferredTitle = result.title,
-                        notePrefix = result.externalImportNote()
-                    )
-                    imported++
-                    importedKeys += result.stableKey
-                    importedItemsByResultKey[result.stableKey] = item
-                }.onFailure { t ->
-                    failed++
-                    if (ApsNetworkStatus.isLikelyNetworkFailure(t)) networkFailure = true
-                    logEvent("${result.source.displayName} MIDI download failed key=${result.stableKey} title=${result.title}: ${t.message ?: t::class.java.simpleName}")
-                }
-            }
-            withContext(Dispatchers.Main) {
-                val message = when {
-                    imported > 0 && failed == 0 -> text(R.string.service_import_source_success, imported, source.displayName)
-                    imported > 0 -> text(R.string.service_import_source_failed, imported, source.displayName, failed)
-                    networkFailure -> ApsNetworkStatus.userMessage(this@NoteCastService)
-                    else -> text(R.string.service_could_not_import_external, source.displayName)
-                }
-                reloadLibrary(message)
-                val previewItemId = _state.value.playback.currentItemId
-                val importedPlaybackItem = previewItemId
-                    ?.externalPreviewResultKey()
-                    ?.let { resultKey -> importedItemsByResultKey[resultKey] }
-                if (previewItemId != null && importedPlaybackItem != null) {
-                    aliasPlaybackItemId(previewItemId, importedPlaybackItem.id)
-                }
-                _state.update {
-                    val playback = if (
-                        importedPlaybackItem != null &&
-                        it.playback.isActive &&
-                        (it.playback.currentItemId == previewItemId || it.playback.currentItemId == importedPlaybackItem.id)
-                    ) {
-                        it.playback.copy(
-                            currentItemId = importedPlaybackItem.id,
-                            currentTitle = importedPlaybackItem.title,
-                            durationUs = importedPlaybackItem.durationUs.takeIf { duration -> duration > 0L }
-                                ?: it.playback.durationUs
-                        )
-                    } else {
-                        it.playback
+            val stagedImports = mutableListOf<MidiRepository.StagedMidiBytesImport>()
+            var stagedImportsCommitted = false
+            try {
+                uniqueResults.forEach { result ->
+                    ensureActive()
+                    runCatching {
+                        val bytes = downloadExternalMidiBytes(result)
+                        withContext(libraryDispatcher) {
+                            repository.stageMidiBytesImport(
+                                MidiRepository.MidiBytesImportRequest(
+                                    key = result.stableKey,
+                                    bytes = bytes,
+                                    displayName = result.filename.ifBlank { "${result.title}.mid" },
+                                    preferredTitle = result.title,
+                                    notePrefix = result.externalImportNote()
+                                )
+                            ).also { staged -> stagedImports += staged }
+                        }
+                    }.onFailure { t ->
+                        if (t is CancellationException) throw t
+                        failed++
+                        if (ApsNetworkStatus.isLikelyNetworkFailure(t)) networkFailure = true
+                        logEvent("${result.source.displayName} MIDI download/import failed key=${result.stableKey} title=${result.title}: ${t.message ?: t::class.java.simpleName}")
                     }
-                    it.copy(
-                        playback = playback,
-                        lastPlayback = if (playback.isActive) {
-                            playback.toLastPlaybackSnapshot(it.playbackChannels)
+                }
+                val batchResult = runCatching {
+                    withContext(libraryDispatcher) {
+                        repository.commitStagedMidiImports(stagedImports).also {
+                            stagedImportsCommitted = true
+                        }.let { committed ->
+                            committed to prepareLibrarySnapshot(committed.snapshot)
+                        }
+                    }
+                }
+                batchResult.exceptionOrNull()?.let { error ->
+                    if (error is CancellationException) throw error
+                    failed += stagedImports.size
+                    logEvent("${source.displayName} MIDI batch save failed: ${unknownError(error)}")
+                }
+                val importedItemsByResultKey = batchResult.getOrNull()?.first?.importedItemsByKey.orEmpty()
+                val imported = importedItemsByResultKey.size
+                val importedKeys = uniqueResults.map { it.stableKey }.filter { it in importedItemsByResultKey }
+                val prepared = batchResult.getOrNull()?.second ?: withContext(libraryDispatcher) {
+                    prepareLibrarySnapshot(repository.load())
+                }
+                withContext(Dispatchers.Main) {
+                    val message = when {
+                        imported > 0 && failed == 0 -> text(R.string.service_import_source_success, imported, source.displayName)
+                        imported > 0 -> text(R.string.service_import_source_failed, imported, source.displayName, failed)
+                        networkFailure -> ApsNetworkStatus.userMessage(this@NoteCastService)
+                        else -> text(R.string.service_could_not_import_external, source.displayName)
+                    }
+                    publishLibrary(prepared, message)
+                    val previewItemId = _state.value.playback.currentItemId
+                    val importedPlaybackItem = previewItemId
+                        ?.externalPreviewResultKey()
+                        ?.let { resultKey -> importedItemsByResultKey[resultKey] }
+                    if (previewItemId != null && importedPlaybackItem != null) {
+                        aliasPlaybackItemId(previewItemId, importedPlaybackItem.id)
+                    }
+                    _state.update {
+                        val playback = if (
+                            importedPlaybackItem != null &&
+                            it.playback.isActive &&
+                            (it.playback.currentItemId == previewItemId || it.playback.currentItemId == importedPlaybackItem.id)
+                        ) {
+                            it.playback.copy(
+                                currentItemId = importedPlaybackItem.id,
+                                currentTitle = importedPlaybackItem.title,
+                                durationUs = importedPlaybackItem.durationUs.takeIf { duration -> duration > 0L }
+                                    ?: it.playback.durationUs
+                            )
                         } else {
-                            it.lastPlayback
-                        },
-                        kuhmann = it.kuhmann.copy(
-                            downloading = false,
-                            source = source,
-                            message = message,
-                            lastImportedKeys = importedKeys
+                            it.playback
+                        }
+                        it.copy(
+                            playback = playback,
+                            lastPlayback = if (playback.isActive) {
+                                playback.toLastPlaybackSnapshot(it.playbackChannels)
+                            } else {
+                                it.lastPlayback
+                            },
+                            kuhmann = it.kuhmann.copy(
+                                downloading = false,
+                                source = source,
+                                message = message,
+                                lastImportedKeys = importedKeys
+                            )
                         )
-                    )
+                    }
+                }
+            } finally {
+                if (!stagedImportsCommitted && stagedImports.isNotEmpty()) {
+                    repository.discardStagedMidiImports(stagedImports)
                 }
             }
         }
@@ -1205,76 +1265,89 @@ class NoteCastService : Service() {
 
     fun deleteMidiFile(itemId: String) {
         stopPlaybackIfUsing(itemId)
-        repository.deleteFile(itemId)
-        reloadLibrary(text(R.string.service_remove_midi_file))
+        launchLibraryMutation(text(R.string.service_remove_midi_file)) {
+            repository.deleteFile(itemId)
+        }
     }
 
     fun deleteMidiFiles(itemIds: List<String>) {
         val cleanIds = itemIds.filter { it.isNotBlank() }.distinct()
         if (cleanIds.isEmpty()) return
         if (cleanIds.any { _state.value.playback.currentItemId == it }) stopPlayback(userRequested = true)
-        repository.deleteFiles(cleanIds)
-        reloadLibrary(text(R.string.service_remove_midi_files, cleanIds.size))
+        launchLibraryMutation(text(R.string.service_remove_midi_files, cleanIds.size)) {
+            repository.deleteFiles(cleanIds)
+        }
     }
 
     fun renameMidiFile(itemId: String, title: String) {
-        repository.renameFile(itemId, title)
-        reloadLibrary(text(R.string.service_rename_midi_file))
+        launchLibraryMutation(text(R.string.service_rename_midi_file)) {
+            repository.renameFile(itemId, title)
+        }
     }
 
     fun createPlaylist(name: String) {
-        repository.createPlaylist(name)
-        reloadLibrary(text(R.string.service_create_playlist))
+        launchLibraryMutation(text(R.string.service_create_playlist)) {
+            repository.createPlaylist(name).snapshot
+        }
     }
 
     fun createPlaylist(name: String, itemIds: List<String>) {
-        repository.createPlaylist(name, itemIds)
         val count = itemIds.distinct().size
-        reloadLibrary(text(R.string.service_create_playlist_with_count, count))
+        launchLibraryMutation(text(R.string.service_create_playlist_with_count, count)) {
+            repository.createPlaylist(name, itemIds).snapshot
+        }
     }
 
     fun deletePlaylist(playlistId: String) {
-        repository.deletePlaylist(playlistId)
-        reloadLibrary(text(R.string.service_delete_playlist))
+        launchLibraryMutation(text(R.string.service_delete_playlist)) {
+            repository.deletePlaylist(playlistId)
+        }
     }
 
     fun renamePlaylist(playlistId: String, name: String) {
-        repository.renamePlaylist(playlistId, name)
-        reloadLibrary(text(R.string.service_rename_playlist))
+        launchLibraryMutation(text(R.string.service_rename_playlist)) {
+            repository.renamePlaylist(playlistId, name)
+        }
     }
 
     fun setPlaylistColor(playlistId: String, colorHex: String?) {
-        repository.setPlaylistColor(playlistId, colorHex)
-        reloadLibrary(text(R.string.service_update_playlist_color))
+        launchLibraryMutation(text(R.string.service_update_playlist_color)) {
+            repository.setPlaylistColor(playlistId, colorHex)
+        }
     }
 
     fun duplicatePlaylist(playlistId: String) {
-        repository.duplicatePlaylist(playlistId)
-        reloadLibrary(text(R.string.service_duplicate_playlist))
+        launchLibraryMutation(text(R.string.service_duplicate_playlist)) {
+            repository.duplicatePlaylist(playlistId).snapshot
+        }
     }
 
     fun addToPlaylist(playlistId: String, itemId: String) {
-        repository.addToPlaylist(playlistId, itemId)
-        reloadLibrary(text(R.string.service_add_to_playlist))
+        launchLibraryMutation(text(R.string.service_add_to_playlist)) {
+            repository.addToPlaylist(playlistId, itemId)
+        }
     }
 
     fun addToPlaylist(playlistId: String, itemIds: List<String>) {
-        repository.addToPlaylist(playlistId, itemIds)
-        reloadLibrary(text(R.string.service_add_files_to_playlist, itemIds.size))
+        launchLibraryMutation(text(R.string.service_add_files_to_playlist, itemIds.size)) {
+            repository.addToPlaylist(playlistId, itemIds)
+        }
     }
 
     fun removeFromPlaylist(playlistId: String, index: Int) {
-        repository.removeFromPlaylist(playlistId, index)
-        reloadLibrary(text(R.string.service_remove_from_playlist))
+        launchLibraryMutation(text(R.string.service_remove_from_playlist)) {
+            repository.removeFromPlaylist(playlistId, index)
+        }
     }
 
     fun movePlaylistItem(playlistId: String, fromIndex: Int, direction: Int) {
-        repository.movePlaylistItem(playlistId, fromIndex, direction)
-        reloadLibrary(text(R.string.service_playlist_updated))
+        launchLibraryMutation(text(R.string.service_playlist_updated)) {
+            repository.movePlaylistItem(playlistId, fromIndex, direction)
+        }
     }
 
     fun exportMidiFile(itemId: String, uri: Uri) {
-        val item = _state.value.files.firstOrNull { it.id == itemId } ?: return
+        val item = libraryFilesById[itemId] ?: return
         serviceScope.launch(Dispatchers.IO) {
             runCatching {
                 contentResolver.openOutputStream(uri).use { output ->
@@ -1290,7 +1363,7 @@ class NoteCastService : Service() {
     }
 
     fun shareMidiFileIntent(itemId: String): Intent? {
-        val item = _state.value.files.firstOrNull { it.id == itemId } ?: return null
+        val item = libraryFilesById[itemId] ?: return null
         val file = repository.fileFor(item)
         if (!file.exists()) return null
         val uri = FileProvider.getUriForFile(this, "$packageName.fileprovider", file)
@@ -1303,7 +1376,7 @@ class NoteCastService : Service() {
     }
 
     fun exportLibraryBackup(uri: Uri) {
-        serviceScope.launch(Dispatchers.IO) {
+        serviceScope.launch(libraryDispatcher) {
             runCatching {
                 val json = repository.exportBackupJson()
                 contentResolver.openOutputStream(uri).use { output ->
@@ -1320,16 +1393,18 @@ class NoteCastService : Service() {
 
     fun restoreLibraryBackup(uri: Uri) {
         stopPlayback(userRequested = false)
-        serviceScope.launch(Dispatchers.IO) {
+        serviceScope.launch(libraryDispatcher) {
             runCatching {
                 val json = contentResolver.openInputStream(uri).use { input ->
                     requireNotNull(input) { "Could not open backup file." }
                     input.readBytes().toString(Charsets.UTF_8)
                 }
                 repository.restoreBackupJson(json)
-                repository.ensureDemoMidi()
+                prepareLibrarySnapshot(repository.ensureDemoMidi())
             }.onSuccess {
-                withContext(Dispatchers.Main) { reloadLibrary(text(R.string.service_library_backup_restored)) }
+                withContext(Dispatchers.Main) {
+                    publishLibrary(it, text(R.string.service_library_backup_restored))
+                }
             }.onFailure {
                 withContext(Dispatchers.Main) { postMessage(text(R.string.service_could_not_restore_library_backup)) }
             }
@@ -1338,11 +1413,13 @@ class NoteCastService : Service() {
 
     fun purgeLibrary() {
         stopPlayback(userRequested = false)
-        serviceScope.launch(Dispatchers.IO) {
+        serviceScope.launch(libraryDispatcher) {
             runCatching {
-                repository.purgeLibrary()
+                prepareLibrarySnapshot(repository.purgeLibrary())
             }.onSuccess {
-                withContext(Dispatchers.Main) { reloadLibrary(text(R.string.service_library_purged)) }
+                withContext(Dispatchers.Main) {
+                    publishLibrary(it, text(R.string.service_library_purged))
+                }
             }.onFailure {
                 withContext(Dispatchers.Main) { postMessage(text(R.string.service_could_not_purge_library)) }
             }
@@ -2449,7 +2526,7 @@ class NoteCastService : Service() {
     }
 
     fun playFile(itemId: String) {
-        val item = _state.value.files.firstOrNull { it.id == itemId }
+        val item = libraryFilesById[itemId]
         if (item == null) {
             postMessage(text(R.string.service_could_not_find_midi_file))
             return
@@ -2458,14 +2535,12 @@ class NoteCastService : Service() {
     }
 
     fun playPlaylist(playlistId: String, shuffled: Boolean? = null) {
-        val snapshot = _state.value
-        val playlist = snapshot.playlists.firstOrNull { it.id == playlistId }
+        val playlist = libraryPlaylistsById[playlistId]
         if (playlist == null) {
             postMessage(text(R.string.service_could_not_find_playlist))
             return
         }
-        val byId = snapshot.files.associateBy { it.id }
-        val items = playlist.itemIds.mapNotNull { byId[it] }
+        val items = playlist.itemIds.mapNotNull { libraryFilesById[it] }
         if (items.isEmpty()) {
             postMessage(text(R.string.service_playlist_empty))
             return
@@ -2475,8 +2550,7 @@ class NoteCastService : Service() {
     }
 
     fun playPlaylistFromIndex(playlistId: String, startIndex: Int) {
-        val snapshot = _state.value
-        val playlist = snapshot.playlists.firstOrNull { it.id == playlistId }
+        val playlist = libraryPlaylistsById[playlistId]
         if (playlist == null) {
             postMessage(text(R.string.service_could_not_find_playlist))
             return
@@ -2485,8 +2559,7 @@ class NoteCastService : Service() {
             postMessage(text(R.string.service_could_not_find_playlist_track))
             return
         }
-        val byId = snapshot.files.associateBy { it.id }
-        val items = playlist.itemIds.mapNotNull { byId[it] }
+        val items = playlist.itemIds.mapNotNull { libraryFilesById[it] }
         val selectedItemId = playlist.itemIds[startIndex]
         val playbackStartIndex = items.indexOfFirst { it.id == selectedItemId }
         if (items.isEmpty() || playbackStartIndex < 0) {
@@ -2714,19 +2787,22 @@ class NoteCastService : Service() {
         serviceScope.launch(Dispatchers.IO) {
             runCatching {
                 val bytes = MidiFileWriter.write(cleanTitle, events)
-                val item = repository.saveRecordedMidi(cleanTitle, bytes)
-                appSettings.recordingTargetPlaylistId
-                    ?.takeIf { playlistId -> repository.load().playlists.any { it.id == playlistId } }
-                    ?.let { playlistId -> repository.addToPlaylist(playlistId, item.id) }
-                item
-            }.onSuccess {
+                withContext(libraryDispatcher) {
+                    val mutation = repository.saveRecordedMidi(
+                        title = cleanTitle,
+                        bytes = bytes,
+                        targetPlaylistId = appSettings.recordingTargetPlaylistId
+                    )
+                    mutation.value to prepareLibrarySnapshot(mutation.snapshot)
+                }
+            }.onSuccess { (item, prepared) ->
                 synchronized(recordingLock) {
                     recordingEvents.clear()
                     recordingStartedNs = 0L
                 }
                 withContext(Dispatchers.Main) {
-                    reloadLibrary(text(R.string.service_recording_saved_title, it.title))
-                    _state.update { state -> state.copy(recording = RecordingUiState(message = text(R.string.service_recording_saved, it.title))) }
+                    publishLibrary(prepared, text(R.string.service_recording_saved_title, item.title))
+                    _state.update { state -> state.copy(recording = RecordingUiState(message = text(R.string.service_recording_saved, item.title))) }
                 }
             }.onFailure { error ->
                 withContext(Dispatchers.Main) {
@@ -4306,15 +4382,75 @@ class NoteCastService : Service() {
 
     private fun String.urlEncoded(): String = URLEncoder.encode(this, Charsets.UTF_8.name())
 
-    private fun reloadLibrary(message: String = _state.value.lastMessage) {
+    private fun prepareLibrarySnapshot(snapshot: LibrarySnapshot): PreparedLibrarySnapshot {
+        if (preparedFilesSource !== snapshot.files) {
+            preparedFilesSource = snapshot.files
+            preparedFiles = snapshot.files.sortedByDescending { file -> file.importedAtMs }
+            preparedFilesById = snapshot.files.associateBy { file -> file.id }
+        }
+        if (preparedPlaylistsSource !== snapshot.playlists) {
+            preparedPlaylistsSource = snapshot.playlists
+            preparedPlaylists = snapshot.playlists.sortedBy { playlist -> playlist.createdAtMs }
+            preparedPlaylistsById = snapshot.playlists.associateBy { playlist -> playlist.id }
+        }
+        return PreparedLibrarySnapshot(
+            publicationId = ++nextLibraryPublicationId,
+            files = preparedFiles,
+            playlists = preparedPlaylists,
+            filesById = preparedFilesById,
+            playlistsById = preparedPlaylistsById
+        )
+    }
+
+    private fun publishLibrary(prepared: PreparedLibrarySnapshot, message: String) {
+        if (prepared.publicationId < publishedLibraryPublicationId) return
+        publishedLibraryPublicationId = prepared.publicationId
         AppEventLog.append(message)
-        val snapshot = repository.load()
+        libraryFilesById = prepared.filesById
+        libraryPlaylistsById = prepared.playlistsById
         _state.update {
             it.copy(
-                files = snapshot.files.sortedByDescending { file -> file.importedAtMs },
-                playlists = snapshot.playlists.sortedBy { playlist -> playlist.createdAtMs },
+                files = prepared.files,
+                playlists = prepared.playlists,
                 lastMessage = message
             )
+        }
+    }
+
+    private fun reloadLibrary(
+        message: String = _state.value.lastMessage,
+        ensureDemos: Boolean = false
+    ) {
+        serviceScope.launch(libraryDispatcher) {
+            try {
+                if (ensureDemos) repository.cleanupStagedMidiImports()
+                val snapshot = if (ensureDemos) repository.ensureDemoMidi() else repository.load()
+                val prepared = prepareLibrarySnapshot(snapshot)
+                withContext(Dispatchers.Main) { publishLibrary(prepared, message) }
+            } catch (cancelled: CancellationException) {
+                throw cancelled
+            } catch (t: Throwable) {
+                logEvent("Library load failed: ${unknownError(t)}")
+                withContext(Dispatchers.Main) { postMessage(unknownError(t)) }
+            }
+        }
+    }
+
+    private fun launchLibraryMutation(
+        message: String,
+        mutation: () -> LibrarySnapshot
+    ) {
+        // The single-thread dispatcher preserves user action order, including rapid move/remove taps.
+        serviceScope.launch(libraryDispatcher) {
+            try {
+                val prepared = prepareLibrarySnapshot(mutation())
+                withContext(Dispatchers.Main) { publishLibrary(prepared, message) }
+            } catch (cancelled: CancellationException) {
+                throw cancelled
+            } catch (t: Throwable) {
+                logEvent("Library update failed: ${unknownError(t)}")
+                withContext(Dispatchers.Main) { postMessage(unknownError(t)) }
+            }
         }
     }
 

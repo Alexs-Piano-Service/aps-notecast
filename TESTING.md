@@ -1,5 +1,47 @@
 # APS NoteCast field test notes
 
+## Large-library performance regression
+
+Run this matrix when changing library loading, search, sorting, paging, playlists, or repository persistence. Use the same physical device, Android version, build type, display mode, and page size for before/after comparisons. A release or profileable build gives meaningful timing data; a debug build is suitable only for correctness checks.
+
+Use a disposable app installation. Create deterministic `library.json` fixtures containing 1,000, 10,000, and 50,000 files. Spread titles across A-Z and `#`, give 10 percent of the files a shared search term, give one file a unique term, and include both a large playlist and several small playlists. Set the fixture's name-normalization version to the current repository version so a migration does not distort normal startup measurements. Metadata-only entries are sufficient for list tests, but do not play or export them because their MIDI files do not exist.
+
+For a debug build, a fixture can be installed without exercising the importer:
+
+```bash
+adb shell am force-stop com.alexanderpeppe.notecast
+adb push /path/to/library.json /data/local/tmp/notecast-library.json
+adb shell run-as com.alexanderpeppe.notecast cp /data/local/tmp/notecast-library.json files/library.json
+```
+
+For each fixture, run every scenario at least five times and report the median. Record `TotalTime` for a process-cold launch:
+
+```bash
+adb shell am force-stop com.alexanderpeppe.notecast
+adb shell am start -W -n com.alexanderpeppe.notecast/com.alexanderpeppe.pianobeam.MainActivity
+```
+
+Reset frame statistics immediately before the scrolling and paging scenarios, then inspect them afterward. Capture an Android Studio or Perfetto system trace for any run with a long or frozen frame.
+
+```bash
+adb shell dumpsys gfxinfo com.alexanderpeppe.notecast reset
+# Perform the scenario on the device.
+adb shell dumpsys gfxinfo com.alexanderpeppe.notecast
+adb shell dumpsys meminfo com.alexanderpeppe.notecast
+```
+
+Exercise the following scenarios at every fixture size:
+
+1. Launch after a force-stop, then launch twice more with unchanged metadata to cover both first-read and cached-read behavior.
+2. Scroll continuously from the first file through at least ten screens in list and alphabetical modes while playback progress is updating.
+3. With page sizes 50 and 500, visit the first, middle, and final pages. Verify that boundaries contain no duplicates or omissions and that the final partial page is correct.
+4. Search for the common term, the unique term, and a term with no matches, then clear the query quickly. Verify that older background results never replace the newest query.
+5. Expand the large playlist, scroll through its tracks, collapse it, and expand it again. Also search playlists by playlist name and track title.
+6. Open Add files to playlist, search, select and deselect files, and confirm the selection. Check that scrolling remains responsive as the selected set grows.
+7. Rename and delete a file, add and remove playlist tracks, and batch-import several files. Relaunch after each operation and verify that the persisted catalog matches the UI.
+
+A run passes when catalog order and page boundaries are correct, search never presents stale results, actions survive relaunch, and no operation produces an ANR or multi-second UI freeze. For performance comparisons, treat a greater than 10 percent regression in median launch time, peak memory, or reported janky-frame rate on the 1,000-file fixture as a failure. The 10,000- and 50,000-file fixtures should show bounded page-composition cost, no main-thread metadata reads or writes in the trace, and a clear improvement over the pre-change baseline. Record device and build details with the measurements rather than comparing numbers from different devices.
+
 ## Recommended first test file
 
 Use a short, simple piano MIDI file before testing dense or expressive files. A C-major scale MIDI file is ideal because it makes stuck notes, missing note-off events, and timing problems obvious.
