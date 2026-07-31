@@ -138,6 +138,7 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Rect
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.ColorFilter
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.luminance
 import androidx.compose.ui.input.pointer.pointerInput
@@ -398,7 +399,8 @@ private fun LoadingIcon(
         painter = painterResource(R.drawable.loading_icon),
         contentDescription = contentDescription,
         modifier = modifier,
-        contentScale = ContentScale.Fit
+        contentScale = ContentScale.Fit,
+        colorFilter = ColorFilter.tint(MaterialTheme.colorScheme.onBackground)
     )
 }
 
@@ -424,7 +426,8 @@ private fun BrandMark(
         painter = painterResource(R.drawable.app_header_logo),
         contentDescription = contentDescription,
         modifier = modifier,
-        contentScale = ContentScale.Fit
+        contentScale = ContentScale.Fit,
+        colorFilter = ColorFilter.tint(MaterialTheme.colorScheme.onSurface)
     )
 }
 
