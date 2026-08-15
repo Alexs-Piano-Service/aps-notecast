@@ -203,6 +203,7 @@ class NoteCastService : Service() {
     private var scanAutoConnectKnownDevices = false
     private var scanPreferredReconnectAddress: String? = null
     private var scanFallbackReconnectAddress: String? = null
+    private var scanReconnectFallbackEnabled = false
     private var scanSessionId = 0L
     private var scanStartedAtMs = 0L
     private val scanResultCountsByAddress = linkedMapOf<String, Int>()
@@ -816,6 +817,9 @@ class NoteCastService : Service() {
 
     fun setAutoReconnectPausedForDevicePicker(paused: Boolean) {
         autoReconnectPausedForDevicePicker = paused
+        if (paused && scanAutoConnectKnownDevices) {
+            stopBleScan(connectReconnectFallback = false)
+        }
     }
 
     fun importMidiFiles(uris: List<android.net.Uri>) {
@@ -1427,12 +1431,37 @@ class NoteCastService : Service() {
     }
 
     fun autoReconnectIfPossible(force: Boolean = false) {
+        reconnectIfPossible(force = force, requestedAddress = null)
+    }
+
+    fun reconnect(address: String) {
+        if (address.isBlank()) return
+        reconnectIfPossible(force = true, requestedAddress = address)
+    }
+
+    private fun reconnectIfPossible(force: Boolean, requestedAddress: String?) {
         if (autoReconnectPausedForDevicePicker && !force) return
-        if (_state.value.connection.connected || _state.value.connection.connecting || _state.value.connection.scanning) return
+        if (_state.value.connection.connected || _state.value.connection.connecting) return
+        if (_state.value.connection.scanning) {
+            if (requestedAddress == null) return
+            stopBleScan(connectReconnectFallback = false)
+        }
         if (force) clearManualDisconnectSuppression()
         if (manualDisconnectSuppressed() && !force) return
         refreshKnownDevices()
-        val refreshedCandidates = knownReconnectCandidates()
+        val allCandidates = knownReconnectCandidates()
+        val refreshedCandidates = if (requestedAddress == null) {
+            allCandidates
+        } else {
+            allCandidates.filter { candidate -> sameConnectionTarget(candidate.address, requestedAddress) }
+                .ifEmpty {
+                    val requestedName = _state.value.connection
+                        .takeIf { connection -> sameConnectionTarget(connection.rememberedDeviceAddress, requestedAddress) }
+                        ?.rememberedDeviceName
+                        ?: text(R.string.service_preferred_midi_device)
+                    listOf(KnownMidiDevice(requestedAddress, requestedName))
+                }
+        }
         val preferred = refreshedCandidates.firstOrNull() ?: return
         val available = refreshedCandidates.firstNotNullOfOrNull { candidate ->
             availableAutoReconnectAddress(candidate.address)?.let { address -> candidate to address }
@@ -1443,15 +1472,25 @@ class NoteCastService : Service() {
             connect(address)
             return
         }
-        val initialFallbackAddress = refreshedCandidates
-            .drop(1)
-            .firstNotNullOfOrNull { availableAutoReconnectAddress(it.address) }
+        val allowFallback = requestedAddress == null
+        val initialFallbackAddress = if (allowFallback) {
+            refreshedCandidates
+                .drop(1)
+                .firstNotNullOfOrNull { availableAutoReconnectAddress(it.address) }
+        } else {
+            null
+        }
         if (!hasScanPermission()) {
             postMessage(text(R.string.service_bluetooth_scan_permission_needed_for, preferred.name))
             return
         }
         postMessage(text(R.string.service_looking_known_ble))
-        startBleScan(autoConnectKnownDevices = true, initialFallbackAddress = initialFallbackAddress)
+        startBleScan(
+            autoConnectKnownDevices = true,
+            initialFallbackAddress = initialFallbackAddress,
+            preferredReconnectAddress = preferred.address,
+            reconnectFallbackEnabled = allowFallback
+        )
     }
 
     fun refreshBluetoothState() {
@@ -1472,7 +1511,12 @@ class NoteCastService : Service() {
         refreshAndroidMidiDevices()
     }
 
-    fun startBleScan(autoConnectKnownDevices: Boolean = false, initialFallbackAddress: String? = null) {
+    fun startBleScan(
+        autoConnectKnownDevices: Boolean = false,
+        initialFallbackAddress: String? = null,
+        preferredReconnectAddress: String? = null,
+        reconnectFallbackEnabled: Boolean = autoConnectKnownDevices
+    ) {
         if (!autoConnectKnownDevices) clearHiddenDevices()
         refreshKnownDevices()
         if (!hasScanPermission()) {
@@ -1504,8 +1548,9 @@ class NoteCastService : Service() {
         refreshBondedBluetoothDevices()
         refreshAndroidMidiDevices()
         scanAutoConnectKnownDevices = autoConnectKnownDevices
-        scanPreferredReconnectAddress = knownReconnectCandidates().firstOrNull()?.address
+        scanPreferredReconnectAddress = preferredReconnectAddress ?: knownReconnectCandidates().firstOrNull()?.address
         scanFallbackReconnectAddress = initialFallbackAddress
+        scanReconnectFallbackEnabled = reconnectFallbackEnabled
         val message = when {
             autoConnectKnownDevices -> text(R.string.service_looking_known_ble)
             _state.value.connection.connected -> text(R.string.service_looking_another_ble)
@@ -1624,7 +1669,7 @@ class NoteCastService : Service() {
     private fun stopBleScan(connectReconnectFallback: Boolean) {
         scanTimeoutJob?.cancel()
         scanTimeoutJob = null
-        val shouldUseFallback = connectReconnectFallback && scanAutoConnectKnownDevices
+        val shouldUseFallback = connectReconnectFallback && scanAutoConnectKnownDevices && scanReconnectFallbackEnabled
         val fallbackAddress = scanFallbackReconnectAddress
         val callback = scanCallback ?: run {
             clearReconnectScanState()
@@ -4911,6 +4956,7 @@ class NoteCastService : Service() {
             mainHandler.post { connect(availableConnectionAddress(preferredAddress) ?: address) }
             return
         }
+        if (!scanReconnectFallbackEnabled) return
         val index = candidates.indexOfFirst { sameConnectionTarget(it.address, address) }
         if (index < 0) return
         val currentIndex = scanFallbackReconnectAddress?.let { current ->
@@ -5229,6 +5275,7 @@ class NoteCastService : Service() {
         scanAutoConnectKnownDevices = false
         scanPreferredReconnectAddress = null
         scanFallbackReconnectAddress = null
+        scanReconnectFallbackEnabled = false
     }
 
     private fun manualDisconnectSuppressed(): Boolean =

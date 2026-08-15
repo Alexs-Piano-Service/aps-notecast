@@ -13,6 +13,7 @@ All notable changes to APS NoteCast are documented here.
 
 ### Changed
 
+- The quick reconnect action now connects only to the adapter named in the connection dialog.
 - Pedal controllers now fold into the detected piano output channel by default, with a Pedal Options switch to preserve source channels.
 - Pedal curves now default to stable 0/127 output using the standard MIDI pedal threshold, with continuous pedal output still available in settings.
 - Sustain pedal state now restores on resume when pausing in the middle of a sustained passage.

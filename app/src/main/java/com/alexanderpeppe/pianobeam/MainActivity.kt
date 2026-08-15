@@ -4626,11 +4626,13 @@ private fun DeviceConnectorContent(
         }
     }
 
-    if (state.connection.rememberedDeviceName != null && !connected) {
+    val rememberedDeviceName = state.connection.rememberedDeviceName
+    val rememberedDeviceAddress = state.connection.rememberedDeviceAddress
+    if (rememberedDeviceName != null && rememberedDeviceAddress != null && !connected) {
         QuickReconnectPanel(
-            deviceName = state.connection.rememberedDeviceName,
+            deviceName = rememberedDeviceName,
             reconnectPaused = state.connection.autoReconnectSuppressed,
-            onReconnect = { service.autoReconnectIfPossible(force = true) }
+            onReconnect = { service.reconnect(rememberedDeviceAddress) }
         )
     }
 

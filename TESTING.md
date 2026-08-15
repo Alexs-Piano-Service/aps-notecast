@@ -93,8 +93,9 @@ Use this sequence when validating a new build against one or more real WIDI, com
 7. Confirm only the intended receiving instrument responds.
 8. Tap Stop and confirm all notes and pedals stop.
 9. Reconnect to the first adapter from the MIDI connection panel.
-10. Play the short test MIDI file again.
-11. Tap Stop and confirm all notes and pedals stop.
+10. Keep both adapters powered on and confirm the quick reconnect action connects to the adapter named in its panel, not the other saved adapter.
+11. Play the short test MIDI file again.
+12. Tap Stop and confirm all notes and pedals stop.
 
 ### Reconnect integrity
 
