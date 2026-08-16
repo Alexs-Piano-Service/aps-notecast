@@ -422,12 +422,14 @@ private fun BrandMark(
     modifier: Modifier = Modifier,
     contentDescription: String? = null
 ) {
+    val darkTheme = MaterialTheme.colorScheme.surface.luminance() < 0.5f
     Image(
-        painter = painterResource(R.drawable.app_header_logo),
+        painter = painterResource(
+            if (darkTheme) R.drawable.logo_mark_white else R.drawable.app_header_logo
+        ),
         contentDescription = contentDescription,
         modifier = modifier,
-        contentScale = ContentScale.Fit,
-        colorFilter = ColorFilter.tint(MaterialTheme.colorScheme.onSurface)
+        contentScale = ContentScale.Fit
     )
 }
 
