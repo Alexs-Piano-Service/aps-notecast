@@ -4,6 +4,10 @@ All notable changes to APS NoteCast are documented here.
 
 ## Unreleased
 
+### Fixed
+
+- The header logo now remains clearly visible in dark mode.
+
 ### Added
 
 - USB MIDI adapters exposed by Android now appear in the adapter list and can be connected like Bluetooth MIDI devices.

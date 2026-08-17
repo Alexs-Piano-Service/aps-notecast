@@ -1,0 +1,1 @@
+Improves the header logo so it stays crisp and clearly visible in both light and dark themes.
