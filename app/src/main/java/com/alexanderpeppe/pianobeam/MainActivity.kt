@@ -223,16 +223,17 @@ private const val MIDI_SEARCH_DEBOUNCE_MS = 140L
 class MainActivity : ComponentActivity() {
     private var service by mutableStateOf<NoteCastService?>(null)
     private lateinit var settingsStore: AppSettingsStore
-    private var bound = false
+    private var serviceBindingActive = false
 
     private val connection = object : ServiceConnection {
         override fun onServiceConnected(name: ComponentName?, binder: IBinder?) {
-            service = (binder as NoteCastService.LocalBinder).service()
-            bound = true
+            val connectedService = (binder as NoteCastService.LocalBinder).service()
+            service = connectedService
+            setMediaController(connectedService.sessionController)
         }
 
         override fun onServiceDisconnected(name: ComponentName?) {
-            bound = false
+            setMediaController(null)
             service = null
         }
     }
@@ -243,7 +244,7 @@ class MainActivity : ComponentActivity() {
         settingsStore = AppSettingsStore(this)
         val intent = Intent(this, NoteCastService::class.java)
         runCatching { startService(intent) }
-        bindService(intent, connection, BIND_AUTO_CREATE)
+        serviceBindingActive = bindService(intent, connection, BIND_AUTO_CREATE)
 
         setContent {
             val appSettings by settingsStore.settings.collectAsState()
@@ -331,9 +332,10 @@ class MainActivity : ComponentActivity() {
 
     override fun onDestroy() {
         service?.setAutoReconnectPausedForDevicePicker(false)
-        if (bound) {
+        setMediaController(null)
+        if (serviceBindingActive) {
             unbindService(connection)
-            bound = false
+            serviceBindingActive = false
         }
         super.onDestroy()
     }

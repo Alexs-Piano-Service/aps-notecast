@@ -22,13 +22,16 @@ import android.content.SharedPreferences
 import android.content.pm.PackageManager
 import android.content.pm.ServiceInfo
 import android.graphics.drawable.Icon
+import android.media.AudioManager
 import android.media.MediaMetadata
+import android.media.VolumeProvider
 import android.media.midi.MidiDevice
 import android.media.midi.MidiDeviceInfo
 import android.media.midi.MidiInputPort
 import android.media.midi.MidiManager
 import android.media.midi.MidiOutputPort
 import android.media.midi.MidiReceiver
+import android.media.session.MediaController
 import android.media.session.MediaSession
 import android.media.session.PlaybackState
 import android.net.Uri
@@ -197,6 +200,10 @@ class NoteCastService : Service() {
     private lateinit var bluetoothManager: BluetoothManager
     private lateinit var prefs: SharedPreferences
     private lateinit var mediaSession: MediaSession
+    private lateinit var mediaSessionVolumeProvider: VolumeProvider
+
+    val sessionController: MediaController
+        get() = mediaSession.controller
 
     private val devicesByAddress = linkedMapOf<String, BluetoothDevice>()
     private val bleScanItemsByAddress = linkedMapOf<String, BleMidiDeviceItem>()
@@ -2729,12 +2736,23 @@ class NoteCastService : Service() {
     }
 
     fun setVolume(percent: Int) {
-        val cleanPercent = percent.coerceIn(0, 100)
+        val cleanPercent = percent.coerceIn(APP_VOLUME_MIN_PERCENT, APP_VOLUME_MAX_PERCENT)
         _state.update { it.copy(volumePercent = cleanPercent) }
+        if (::mediaSessionVolumeProvider.isInitialized) {
+            mediaSessionVolumeProvider.setCurrentVolume(cleanPercent)
+        }
         if (appSettings.volumeControlMode == VolumeControlMode.StandardMidiVolume) {
-            serviceScope.launch(Dispatchers.IO) {
+            serviceScope.launch(playbackDispatcher) {
                 sendVolumeMessages(cleanPercent)
             }
+        }
+    }
+
+    private fun adjustVolume(direction: Int) {
+        val currentPercent = _state.value.volumePercent
+        val adjustedPercent = adjustedAppVolumePercent(currentPercent, direction)
+        if (adjustedPercent != currentPercent) {
+            setVolume(adjustedPercent)
         }
     }
 
@@ -6265,7 +6283,24 @@ class NoteCastService : Service() {
     }
 
     private fun createMediaSession() {
+        mediaSessionVolumeProvider = object : VolumeProvider(
+            VOLUME_CONTROL_ABSOLUTE,
+            APP_VOLUME_MAX_PERCENT,
+            _state.value.volumePercent
+        ) {
+            override fun onAdjustVolume(direction: Int) {
+                when (direction) {
+                    AudioManager.ADJUST_RAISE -> adjustVolume(1)
+                    AudioManager.ADJUST_LOWER -> adjustVolume(-1)
+                }
+            }
+
+            override fun onSetVolumeTo(volume: Int) {
+                setVolume(volume)
+            }
+        }
         mediaSession = MediaSession(this, "APS NoteCast").apply {
+            setPlaybackToRemote(mediaSessionVolumeProvider)
             setCallback(
                 object : MediaSession.Callback() {
                     override fun onPlay() {

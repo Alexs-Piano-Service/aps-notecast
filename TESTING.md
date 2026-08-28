@@ -195,6 +195,15 @@ Use a MIDI monitor or multitimbral receiver so source and output channels, progr
 14. Turn the phone screen off during playback and confirm foreground playback continues.
 15. Move the phone farther away and determine a practical distance limit.
 
+## Phone volume control regression
+
+1. Connect a MIDI receiver, start playback, and press the phone's volume-up and volume-down buttons. Confirm Main Volume moves in five-percent increments and the phone's local media volume does not change.
+2. Hold each volume button and confirm Main Volume stops at 0 or 100 without wrapping or moving past the limit.
+3. In Standard MIDI volume mode, confirm each change reaches the receiver as a CC7 level change. In Legacy volume scaling mode, confirm subsequent notes use the new velocity scaling.
+4. Pause playback and repeat the button test, then turn the screen off during playback and repeat it once more. Confirm the app volume changes in both cases.
+5. Change Main Volume with the on-screen slider, then press a phone volume button. Confirm the hardware adjustment continues from the slider's value.
+6. Stop playback. While APS NoteCast remains in the foreground, confirm the buttons still control Main Volume. Leave the app and confirm the buttons return to controlling the phone's normal media volume.
+
 ## Signs of trouble
 
 - Notes continue after Stop: inspect whether MIDI input is actually routed to the piano and whether second-tap Stop cleanup messages are being received.
