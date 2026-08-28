@@ -78,6 +78,11 @@ data class SongInstrumentOverrides(
     val channelPrograms: Map<Int, Int> = emptyMap()
 )
 
+data class SongChannelAssignments(
+    val songId: String,
+    val outputChannels: Map<Int, Int> = emptyMap()
+)
+
 const val DEFAULT_MIDI_LIBRARY_PAGE_SIZE = 75
 const val MIN_MIDI_LIBRARY_PAGE_SIZE = 50
 const val MAX_MIDI_LIBRARY_PAGE_SIZE = 500
@@ -98,6 +103,8 @@ data class AppSettings(
     val pedalValueMode: PedalValueMode = PedalValueMode.Binary,
     val foldChannel2IntoPianoChannel: Boolean = true,
     val foldPedalsIntoPianoChannel: Boolean = true,
+    val acousticPianoInputChannel: Int = 1,
+    val mergeAllInstrumentsToPianoChannel: Boolean = false,
     val velocityScalingEnabled: Boolean = true,
     val minimumNoteVelocity: Int = 32,
     val tempoPercent: Int = 100,
@@ -110,6 +117,7 @@ data class AppSettings(
     val recordingMetronomeEnabled: Boolean = false,
     val confirmDiscardRecording: Boolean = true,
     val songInstrumentOverrides: List<SongInstrumentOverrides> = emptyList(),
+    val songChannelAssignments: List<SongChannelAssignments> = emptyList(),
     val batteryRecommendationDismissed: Boolean = false
 )
 
@@ -149,4 +157,46 @@ fun AppSettings.withSongInstrumentOverride(songId: String, channel: Int, program
 fun AppSettings.withClearedSongInstrumentOverrides(songId: String): AppSettings {
     val cleanSongId = songId.takeIf { it.isNotBlank() } ?: return this
     return copy(songInstrumentOverrides = songInstrumentOverrides.filterNot { it.songId == cleanSongId })
+}
+
+fun AppSettings.channelAssignmentsForSong(songId: String?): Map<Int, Int> =
+    songId
+        ?.takeIf { it.isNotBlank() }
+        ?.let { id -> songChannelAssignments.firstOrNull { it.songId == id }?.outputChannels }
+        .orEmpty()
+
+fun AppSettings.channelAssignmentSignatureForSong(songId: String?): String =
+    channelAssignmentsForSong(songId)
+        .toSortedMap()
+        .entries
+        .joinToString("|") { (sourceChannel, outputChannel) -> "$sourceChannel:$outputChannel" }
+
+fun AppSettings.withSongChannelAssignment(
+    songId: String,
+    sourceChannel: Int,
+    outputChannel: Int?
+): AppSettings {
+    val cleanSongId = songId.takeIf { it.isNotBlank() } ?: return this
+    val cleanSourceChannel = sourceChannel.takeIf { it in 1..16 } ?: return this
+    if (outputChannel != null && outputChannel !in 1..16) return this
+
+    val existing = channelAssignmentsForSong(cleanSongId).toMutableMap()
+    if (outputChannel == null) {
+        existing.remove(cleanSourceChannel)
+    } else {
+        // Identity assignments are intentional: they can override automatic piano routing.
+        existing[cleanSourceChannel] = outputChannel
+    }
+    val updated = songChannelAssignments
+        .filterNot { it.songId == cleanSongId }
+        .toMutableList()
+    if (existing.isNotEmpty()) {
+        updated += SongChannelAssignments(cleanSongId, existing.toSortedMap())
+    }
+    return copy(songChannelAssignments = updated.sortedBy { it.songId })
+}
+
+fun AppSettings.withClearedSongChannelAssignments(songId: String): AppSettings {
+    val cleanSongId = songId.takeIf { it.isNotBlank() } ?: return this
+    return copy(songChannelAssignments = songChannelAssignments.filterNot { it.songId == cleanSongId })
 }

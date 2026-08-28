@@ -305,10 +305,10 @@
     <string name="settings_diagnostic_pedal_chord">Pedaaltestakkoord</string>
     <string name="settings_diagnostic_pedal_chord_subtitle">Pedal On speelt een gematigd C-majeurakkoord en laat het los</string>
     <string name="settings_diagnostic_scale_velocity">Schaalsnelheid</string>
-    <string name="settings_fold_channel">Vouw kanaal 2 in kanaal 1</string>
-    <string name="settings_fold_channel_subtitle">Verzend tweekanaals pianobestanden op piano-uitgangskanaal 1</string>
+    <string name="settings_fold_channel">Kanaal 2 samenvoegen met de piano-ingang</string>
+    <string name="settings_fold_channel_subtitle">Kanaal 2 naar ingangskanaal %1$d van de akoestische piano sturen</string>
     <string name="settings_fold_pedals">Vouw de pedalen in het pianokanaal</string>
-    <string name="settings_fold_pedals_subtitle">Stuur pedaalcontrollers op het gedetecteerde piano-uitgangskanaal</string>
+    <string name="settings_fold_pedals_subtitle">Pedaalcontrollers naar alle effectieve piano-uitgangen sturen, inclusief uitgangen van expliciet opnieuw toegewezen pianobronnen</string>
     <string name="settings_library">Bibliotheek</string>
     <string name="settings_library_only">Alleen bibliotheek</string>
     <string name="settings_metronome">Metronoomaftelling</string>
@@ -579,4 +579,21 @@
     <string name="notification_preparing_dots">Voorbereiden...</string>
     <string name="notification_playing_time">%1$s / %2$s afspelen</string>
     <string name="notification_paused_time">%1$s / %2$s gepauzeerd</string>
+    <string name="cd_clear_channel_assignment">Wis toewijzing van uitgangskanaal</string>
+    <string name="mixer_channel_override">Kanaaloverschrijving</string>
+    <string name="mixer_channel_route">Bronkanaal %1$d → uitgangskanaal %2$d</string>
+    <string name="mixer_clear_song_routing">Wis routering van nummer</string>
+    <string name="mixer_instrument_override">Instrumentoverschrijving</string>
+    <string name="mixer_merge_all_notice">Alle bronkanalen worden als akoestische vleugel samengevoegd op uitgangskanaal %1$d. Ze delen kanaalbrede controllerstatus, waaronder pedalen, pitchbend en standaard MIDI-volume. Gebruik Hoofdvolume om het niveau te wijzigen; afzonderlijke instrumentprogramma\'s en uitgangstoewijzingen zijn niet beschikbaar.</string>
+    <string name="mixer_merged_acoustic_piano">Samengevoegde akoestische vleugel</string>
+    <string name="mixer_output_channel">Uitgangskanaal</string>
+    <string name="mixer_output_channel_automatic">Automatisch (momenteel uitgangskanaal %1$d)</string>
+    <string name="mixer_output_channel_help">Automatisch volgt de routeringsinstellingen voor de akoestische piano. Als u een uitgang kiest die al door een andere bron wordt gebruikt, delen die bronnen de status van programma, controller, pedaal, pitchbend en standaard MIDI-volume.</string>
+    <string name="mixer_output_channel_option">Uitgangskanaal %1$d</string>
+    <string name="mixer_output_channel_option_shared">Uitgangskanaal %1$d — gebruikt door bronkanaal %2$s</string>
+    <string name="settings_acoustic_piano_input_channel">Ingangskanaal akoestische piano</string>
+    <string name="settings_acoustic_piano_input_channel_subtitle">Selecteer het MIDI-ingangskanaal dat de ontvangende akoestische piano gebruikt voor automatisch gerouteerde pianopartijen en tests.</string>
+    <string name="settings_merge_all_instruments">Alle instrumenten samenvoegen op de piano-ingang</string>
+    <string name="settings_merge_all_instruments_subtitle">Stuur elk bronkanaal als akoestische vleugel naar ingangskanaal %1$d van de akoestische piano. Alle bronnen delen pedalen, pitchbend, standaard MIDI-volume en andere kanaalbrede controllers. Gebruik Hoofdvolume om het niveau te wijzigen; afzonderlijke programma\'s kunnen niet behouden blijven.</string>
+    <string name="settings_midi_channel_value">Kanaal %1$d</string>
 </resources>

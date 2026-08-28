@@ -69,6 +69,7 @@ fun SettingsDialog(
     var diagnosticVelocity by rememberSaveable { mutableStateOf(64) }
     var diagnosticNoteLengthMs by rememberSaveable { mutableStateOf(180) }
     var pedalTestPlaysChord by rememberSaveable { mutableStateOf(true) }
+    var showAcousticPianoChannelPicker by rememberSaveable { mutableStateOf(false) }
     var showPurgeLibraryConfirmation by rememberSaveable { mutableStateOf(false) }
     val libraryPlaylistCount = playlists.size
     val libraryHasItems = libraryFileCount > 0 || libraryPlaylistCount > 0
@@ -168,9 +169,36 @@ fun SettingsDialog(
                                 )
                             }
                         )
+                        CycleRow(
+                            title = stringResource(R.string.settings_acoustic_piano_input_channel),
+                            value = stringResource(
+                                R.string.settings_midi_channel_value,
+                                settings.acousticPianoInputChannel.coerceIn(1, 16)
+                            ),
+                            onClick = { showAcousticPianoChannelPicker = true }
+                        )
+                        Text(
+                            stringResource(R.string.settings_acoustic_piano_input_channel_subtitle),
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                        SwitchRow(
+                            title = stringResource(R.string.settings_merge_all_instruments),
+                            subtitle = stringResource(
+                                R.string.settings_merge_all_instruments_subtitle,
+                                settings.acousticPianoInputChannel.coerceIn(1, 16)
+                            ),
+                            checked = settings.mergeAllInstrumentsToPianoChannel,
+                            onCheckedChange = {
+                                onSettingsChange(settings.copy(mergeAllInstrumentsToPianoChannel = it))
+                            }
+                        )
                         SwitchRow(
                             title = stringResource(R.string.settings_fold_channel),
-                            subtitle = stringResource(R.string.settings_fold_channel_subtitle),
+                            subtitle = stringResource(
+                                R.string.settings_fold_channel_subtitle,
+                                settings.acousticPianoInputChannel.coerceIn(1, 16)
+                            ),
                             checked = settings.foldChannel2IntoPianoChannel,
                             onCheckedChange = { onSettingsChange(settings.copy(foldChannel2IntoPianoChannel = it)) }
                         )
@@ -438,6 +466,50 @@ fun SettingsDialog(
             }
         }
     )
+
+    if (showAcousticPianoChannelPicker) {
+        AlertDialog(
+            onDismissRequest = { showAcousticPianoChannelPicker = false },
+            title = { Text(stringResource(R.string.settings_acoustic_piano_input_channel)) },
+            text = {
+                LazyColumn(modifier = Modifier.heightIn(max = 420.dp)) {
+                    items(16) { index ->
+                        val channel = index + 1
+                        val selected = channel == settings.acousticPianoInputChannel.coerceIn(1, 16)
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .clickable {
+                                    showAcousticPianoChannelPicker = false
+                                    if (!selected) {
+                                        onSettingsChange(settings.copy(acousticPianoInputChannel = channel))
+                                    }
+                                }
+                                .padding(vertical = 6.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(8.dp)
+                        ) {
+                            RadioButton(
+                                selected = selected,
+                                onClick = {
+                                    showAcousticPianoChannelPicker = false
+                                    if (!selected) {
+                                        onSettingsChange(settings.copy(acousticPianoInputChannel = channel))
+                                    }
+                                }
+                            )
+                            Text(stringResource(R.string.settings_midi_channel_value, channel))
+                        }
+                    }
+                }
+            },
+            confirmButton = {
+                TextButton(onClick = { showAcousticPianoChannelPicker = false }) {
+                    Text(stringResource(R.string.action_cancel))
+                }
+            }
+        )
+    }
 
     if (showPurgeLibraryConfirmation) {
         AlertDialog(

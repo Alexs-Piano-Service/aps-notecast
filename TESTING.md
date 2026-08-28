@@ -127,7 +127,7 @@ Use at least one expressive player-piano roll and one dense classical MIDI file 
 
 1. In Settings, leave Stable pedal values enabled.
 2. Leave Fold pedals into piano channel enabled.
-3. Leave Fold channel 2 into channel 1 enabled unless testing an unusual receiver.
+3. Select the acoustic piano's actual MIDI input channel, then leave Fold channel 2 into the piano input enabled unless testing an unusual receiver.
 4. Connect the WIDI, BLE MIDI adapter, or USB MIDI adapter that feeds the receiving instrument.
 5. Play the first test file and watch the sustain pedal throughout the first minute.
 6. Confirm pedal motion changes at musical points instead of rapidly fluttering or staying down through unrelated passages.
@@ -145,8 +145,37 @@ Use at least one expressive player-piano roll and one dense classical MIDI file 
 1. Sustain output is binary 0/127 by default.
 2. Pause temporarily releases sustain and resume restores it only when the current playback position calls for sustain.
 3. Stop, second-tap Stop cleanup, seek, skip, and song completion send pedal-off cleanup.
-4. Pedal-only channels can drive the detected piano output channel.
+4. Pedal-only channels can drive the selected acoustic piano input channel.
 5. Channel 3 is treated as piano-only only when it carries pedal/controller data without instrument note events.
+
+## MIDI channel routing regression test
+
+Use a MIDI monitor or multitimbral receiver so source and output channels, program changes, CC7 volume, and pedal messages can be observed independently. Use one short file with notes on at least channels 1, 2, 3, and 10; include distinct programs, CC7 values, and sustain changes. Also keep a file with a sustained passage for the paused-routing checks.
+
+1. Set Acoustic piano input channel to a value other than 1 and verify the setting commits once when an option is selected, not while browsing the list.
+2. Start playback and open the mixer. Confirm every row shows `Source Ch X → Output Ch Y` and that Automatic reports the output it would use after clearing an override.
+3. Assign source channel 1 to an unused output channel. Confirm subsequent notes, note-offs, program changes, CC7, and pedals use the selected output while mute, solo, and volume remain associated with source channel 1.
+4. Open the output picker and choose an output marked as used by another source. Confirm the help and option label warn that both sources now share program, controller, pedal, pitch-bend, and Standard MIDI volume state; route back to an unused output before continuing independent-state checks.
+5. Change that assignment to a second output during active notes. Confirm the old output receives cleanup, the new output receives setup, and neither output has a stuck note or pedal.
+6. Select Automatic and confirm the source returns to the configured piano-routing behavior. Set an explicit identity assignment and confirm it can override automatic piano routing.
+7. Assign another source to a different output, close and reopen the mixer, restart the song, and relaunch the app. Confirm both per-song assignments persist and do not affect a different song.
+8. Use Clear song routing and confirm every row returns to Automatic without clearing instrument overrides. Separately clear song instruments and confirm channel assignments remain.
+9. Change an instrument override on a reassigned source during playback. Confirm cleanup/setup occurs once and the selected program is sent on the effective output channel.
+10. Select each acoustic piano input channel needed by the test receiver. Run the chromatic-scale and pedal diagnostics and confirm notes and pedal messages use that selected channel rather than channel 1.
+11. Select Standard MIDI volume, then enable Merge all instruments to the piano input. Confirm all 16 possible source channels, including channel 10, route to the selected piano input and the receiver remains on Acoustic Grand Piano. Confirm instrument/output pickers and per-row volume sliders are disabled, per-source mute remains enabled, and Main Volume changes the shared level.
+12. While merge-all playback is active, exercise source program changes, bank selects, CC7, sustain, pitch bend, and all-notes-off events. Confirm no source program replaces Acoustic Grand Piano, cleanup does not strand notes or sustain, and the UI accurately treats channel-wide controller state as shared rather than independently adjustable per source.
+13. Disable merge-all during playback and confirm source routing/program behavior is restored without restarting the song and without stuck notes.
+14. Pause inside a sustained passage, change the acoustic piano input channel or a source assignment, and wait briefly. Confirm sustain remains released while paused.
+15. Resume and confirm sustain is restored only on the new effective output when the playhead is inside a sustained section. Repeat while not inside a sustained section and confirm no sustain-on is synthesized.
+16. Seek backward and forward after a routing change, then skip to another song. Confirm program, CC7, and pedal state are correct at the destination and cleanup reaches both old and new outputs.
+
+### Routing pass criteria
+
+1. The canonical route shown in the mixer matches every emitted channel message class.
+2. A live settings change produces one cleanup/setup transition, with note-off and pedal-off on the old destination before setup on the new destination.
+3. Per-song assignments persist independently and Automatic/identity assignments have distinct behavior.
+4. Merge-all keeps one Acoustic Grand Piano destination, clearly identifies channel-wide controller and Standard MIDI volume state as shared, and uses Main Volume for the shared level.
+5. Pause, resume, seek, skip, stop, and second-tap Stop never leave notes or pedals active on an old or new destination.
 
 ## Test sequence
 

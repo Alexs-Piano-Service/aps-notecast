@@ -183,10 +183,14 @@ import com.alexanderpeppe.pianobeam.data.RecordingUiState
 import com.alexanderpeppe.pianobeam.data.VolumeControlMode
 import com.alexanderpeppe.pianobeam.data.formatClockTime
 import com.alexanderpeppe.pianobeam.data.formatDuration
+import com.alexanderpeppe.pianobeam.data.channelAssignmentsForSong
 import com.alexanderpeppe.pianobeam.data.instrumentOverridesForSong
+import com.alexanderpeppe.pianobeam.data.withClearedSongChannelAssignments
 import com.alexanderpeppe.pianobeam.data.withClearedSongInstrumentOverrides
+import com.alexanderpeppe.pianobeam.data.withSongChannelAssignment
 import com.alexanderpeppe.pianobeam.data.withSongInstrumentOverride
 import com.alexanderpeppe.pianobeam.midi.GeneralMidi
+import com.alexanderpeppe.pianobeam.midi.MidiChannelRouter
 import com.alexanderpeppe.pianobeam.net.ApsNetworkStatus
 import com.alexanderpeppe.pianobeam.reporting.BugReportClient
 import com.alexanderpeppe.pianobeam.reporting.BugReportInput
@@ -3906,6 +3910,9 @@ private fun VolumeControl(
 
 private data class MixerChannelRowModel(
     val channel: Int,
+    val outputChannel: Int,
+    val automaticOutputChannel: Int,
+    val assignedOutputChannel: Int?,
     val instrumentName: String,
     val detail: String,
     val selectedProgram: Int,
@@ -3924,11 +3931,32 @@ private fun VolumeMixerDialog(
     val context = LocalContext.current
     val currentSongId = state.playback.currentItemId?.takeIf { itemId -> state.files.any { it.id == itemId } }
     val songInstrumentOverrides = settings.instrumentOverridesForSong(currentSongId)
-    val rows = remember(context, state.playback.isActive, state.playbackChannels, currentSongId, settings.songInstrumentOverrides) {
+    val songChannelAssignments = settings.channelAssignmentsForSong(currentSongId)
+    val rows = remember(
+        context,
+        state.playback.isActive,
+        state.playbackChannels,
+        currentSongId,
+        songInstrumentOverrides,
+        songChannelAssignments,
+        settings.acousticPianoInputChannel,
+        settings.foldChannel2IntoPianoChannel,
+        settings.mergeAllInstrumentsToPianoChannel
+    ) {
         mixerChannelRows(
             context = context,
             channels = if (state.playback.isActive) state.playbackChannels else emptyList(),
-            songInstrumentOverrides = songInstrumentOverrides
+            songInstrumentOverrides = songInstrumentOverrides,
+            songChannelAssignments = songChannelAssignments,
+            acousticPianoInputChannel = settings.acousticPianoInputChannel,
+            foldChannel2IntoPianoChannel = settings.foldChannel2IntoPianoChannel,
+            mergeAllInstrumentsToPianoChannel = settings.mergeAllInstrumentsToPianoChannel
+        )
+    }
+    val sourceChannelsByOutput = remember(rows) {
+        rows.groupBy(
+            keySelector = { row -> row.outputChannel },
+            valueTransform = { row -> row.channel }
         )
     }
     Dialog(
@@ -3978,6 +4006,19 @@ private fun VolumeMixerDialog(
                             onVolumeChange = service::setVolume
                         )
                     }
+                    if (settings.mergeAllInstrumentsToPianoChannel) {
+                        item {
+                            Text(
+                                stringResource(
+                                    R.string.mixer_merge_all_notice,
+                                    settings.acousticPianoInputChannel.coerceIn(1, 16)
+                                ),
+                                style = MaterialTheme.typography.bodyMedium,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                modifier = Modifier.padding(horizontal = 4.dp)
+                            )
+                        }
+                    }
                     if (rows.isEmpty()) {
                         item {
                             Text(
@@ -3991,7 +4032,7 @@ private fun VolumeMixerDialog(
                         items(rows, key = { it.channel }) { row ->
                             MixerChannelRow(
                                 row = row,
-                                service = service,
+                                sourceChannelsByOutput = sourceChannelsByOutput,
                                 currentSongId = currentSongId,
                                 settings = settings,
                                 onSettingsChange = onSettingsChange
@@ -3999,22 +4040,40 @@ private fun VolumeMixerDialog(
                         }
                     }
                 }
-                Row(
-                    Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.spacedBy(8.dp, Alignment.End),
-                    verticalAlignment = Alignment.CenterVertically
-                ) {
-                    if (currentSongId != null && songInstrumentOverrides.isNotEmpty()) {
-                        TextButton(
-                            onClick = {
-                                onSettingsChange(settings.withClearedSongInstrumentOverrides(currentSongId))
-                            }
+                Column(Modifier.fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                    if (
+                        currentSongId != null &&
+                        (songInstrumentOverrides.isNotEmpty() || songChannelAssignments.isNotEmpty())
+                    ) {
+                        Row(
+                            Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.spacedBy(8.dp, Alignment.End),
+                            verticalAlignment = Alignment.CenterVertically
                         ) {
-                            Text(stringResource(R.string.mixer_clear_song_instruments))
+                            if (songInstrumentOverrides.isNotEmpty()) {
+                                TextButton(
+                                    onClick = {
+                                        onSettingsChange(settings.withClearedSongInstrumentOverrides(currentSongId))
+                                    }
+                                ) {
+                                    Text(stringResource(R.string.mixer_clear_song_instruments))
+                                }
+                            }
+                            if (songChannelAssignments.isNotEmpty()) {
+                                TextButton(
+                                    onClick = {
+                                        onSettingsChange(settings.withClearedSongChannelAssignments(currentSongId))
+                                    }
+                                ) {
+                                    Text(stringResource(R.string.mixer_clear_song_routing))
+                                }
+                            }
                         }
                     }
-                    Button(onClick = onDismiss) {
-                        Text(stringResource(R.string.action_done))
+                    Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End) {
+                        Button(onClick = onDismiss) {
+                            Text(stringResource(R.string.action_done))
+                        }
                     }
                 }
             }
@@ -4062,7 +4121,7 @@ private fun MixerMainVolumeRow(
 @Composable
 private fun MixerChannelRow(
     row: MixerChannelRowModel,
-    service: NoteCastService,
+    sourceChannelsByOutput: Map<Int, List<Int>>,
     currentSongId: String?,
     settings: AppSettings,
     onSettingsChange: (AppSettings) -> Unit
@@ -4073,6 +4132,7 @@ private fun MixerChannelRow(
     val muted = controls.all { it.muted }
     var showInfo by remember { mutableStateOf(false) }
     var showInstrumentMenu by remember { mutableStateOf(false) }
+    var showOutputChannelMenu by remember { mutableStateOf(false) }
     Surface(
         modifier = Modifier.fillMaxWidth(),
         shape = RoundedCornerShape(6.dp),
@@ -4104,10 +4164,30 @@ private fun MixerChannelRow(
                             maxLines = 1,
                             overflow = TextOverflow.Ellipsis
                         )
-                        if (row.hasInstrumentOverride) {
+                    }
+                    if (
+                        !settings.mergeAllInstrumentsToPianoChannel &&
+                        (row.hasInstrumentOverride || row.assignedOutputChannel != null)
+                    ) {
+                        Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                            if (row.hasInstrumentOverride) {
+                                AssistChip(
+                                    onClick = {},
+                                    label = { Text(stringResource(R.string.mixer_instrument_override), maxLines = 1) }
+                                )
+                            }
+                            if (row.assignedOutputChannel != null) {
+                                AssistChip(
+                                    onClick = {},
+                                    label = { Text(stringResource(R.string.mixer_channel_override), maxLines = 1) }
+                                )
+                            }
+                        }
+                    } else if (settings.mergeAllInstrumentsToPianoChannel) {
+                        Row(verticalAlignment = Alignment.CenterVertically) {
                             AssistChip(
                                 onClick = {},
-                                label = { Text(stringResource(R.string.mixer_song_override), maxLines = 1) }
+                                label = { Text(stringResource(R.string.mixer_merged_acoustic_piano), maxLines = 1) }
                             )
                         }
                     }
@@ -4127,24 +4207,47 @@ private fun MixerChannelRow(
                 )
                 Text(stringResource(R.string.label_mute), style = MaterialTheme.typography.bodySmall)
             }
-            Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                Box {
+            Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                     OutlinedButton(
                         onClick = { showInstrumentMenu = true },
-                        enabled = currentSongId != null
+                        enabled = currentSongId != null && !settings.mergeAllInstrumentsToPianoChannel,
+                        modifier = Modifier.weight(1f)
                     ) {
-                        Text(stringResource(R.string.action_change))
+                        Text(stringResource(R.string.mixer_instrument))
+                    }
+                    if (currentSongId != null && row.hasInstrumentOverride) {
+                        IconButton(
+                            onClick = {
+                                onSettingsChange(settings.withSongInstrumentOverride(currentSongId, row.channel, null))
+                            },
+                            enabled = !settings.mergeAllInstrumentsToPianoChannel,
+                            modifier = Modifier.size(40.dp)
+                        ) {
+                            Icon(Icons.Default.Refresh, contentDescription = stringResource(R.string.cd_clear_instrument_override))
+                        }
                     }
                 }
-                if (currentSongId != null && row.hasInstrumentOverride) {
-                    IconButton(
-                        onClick = {
-                            service.applyLiveInstrumentOverride(currentSongId, row.channel, null)
-                            onSettingsChange(settings.withSongInstrumentOverride(currentSongId, row.channel, null))
-                        },
-                        modifier = Modifier.size(40.dp)
+                Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    OutlinedButton(
+                        onClick = { showOutputChannelMenu = true },
+                        enabled = currentSongId != null && !settings.mergeAllInstrumentsToPianoChannel,
+                        modifier = Modifier.weight(1f)
                     ) {
-                        Icon(Icons.Default.Refresh, contentDescription = stringResource(R.string.cd_clear_instrument_override))
+                        Text(stringResource(R.string.mixer_output_channel))
+                    }
+                    if (currentSongId != null && row.assignedOutputChannel != null) {
+                        IconButton(
+                            onClick = {
+                                onSettingsChange(
+                                    settings.withSongChannelAssignment(currentSongId, row.channel, null)
+                                )
+                            },
+                            enabled = !settings.mergeAllInstrumentsToPianoChannel,
+                            modifier = Modifier.size(40.dp)
+                        ) {
+                            Icon(Icons.Default.Refresh, contentDescription = stringResource(R.string.cd_clear_channel_assignment))
+                        }
                     }
                 }
             }
@@ -4161,6 +4264,10 @@ private fun MixerChannelRow(
                     )
                 },
                 valueRange = 0f..100f,
+                enabled = !(
+                    settings.mergeAllInstrumentsToPianoChannel &&
+                        settings.volumeControlMode == VolumeControlMode.StandardMidiVolume
+                ),
                 modifier = Modifier.fillMaxWidth()
             )
         }
@@ -4168,14 +4275,26 @@ private fun MixerChannelRow(
     if (showInfo) {
         MixerChannelInfoDialog(row = row, onDismiss = { showInfo = false })
     }
-    if (showInstrumentMenu && currentSongId != null) {
+    if (showInstrumentMenu && currentSongId != null && !settings.mergeAllInstrumentsToPianoChannel) {
         InstrumentPickerDialog(
             row = row,
             onDismiss = { showInstrumentMenu = false },
             onSelect = { program ->
                 showInstrumentMenu = false
-                service.applyLiveInstrumentOverride(currentSongId, row.channel, program)
                 onSettingsChange(settings.withSongInstrumentOverride(currentSongId, row.channel, program))
+            }
+        )
+    }
+    if (showOutputChannelMenu && currentSongId != null && !settings.mergeAllInstrumentsToPianoChannel) {
+        OutputChannelPickerDialog(
+            row = row,
+            sourceChannelsByOutput = sourceChannelsByOutput,
+            onDismiss = { showOutputChannelMenu = false },
+            onSelect = { outputChannel ->
+                showOutputChannelMenu = false
+                onSettingsChange(
+                    settings.withSongChannelAssignment(currentSongId, row.channel, outputChannel)
+                )
             }
         )
     }
@@ -4258,6 +4377,115 @@ private fun InstrumentPickerDialog(
 }
 
 @Composable
+private fun OutputChannelPickerDialog(
+    row: MixerChannelRowModel,
+    sourceChannelsByOutput: Map<Int, List<Int>>,
+    onDismiss: () -> Unit,
+    onSelect: (Int?) -> Unit
+) {
+    val channelOptions = remember { (0..16).toList() }
+    Dialog(
+        onDismissRequest = onDismiss,
+        properties = DialogProperties(usePlatformDefaultWidth = false)
+    ) {
+        Surface(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(12.dp)
+                .widthIn(max = 560.dp)
+                .heightIn(max = 680.dp),
+            shape = RoundedCornerShape(8.dp),
+            color = MaterialTheme.colorScheme.surface,
+            tonalElevation = 6.dp
+        ) {
+            Column(
+                modifier = Modifier.padding(16.dp),
+                verticalArrangement = Arrangement.spacedBy(10.dp)
+            ) {
+                Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                    Icon(Icons.Default.GraphicEq, contentDescription = null)
+                    Column(Modifier.weight(1f)) {
+                        Text(
+                            stringResource(R.string.mixer_output_channel),
+                            style = MaterialTheme.typography.headlineSmall,
+                            maxLines = 1
+                        )
+                        Text(
+                            row.detail,
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis
+                        )
+                    }
+                    IconButton(onClick = onDismiss, modifier = Modifier.size(40.dp)) {
+                        Icon(Icons.Default.Close, contentDescription = stringResource(R.string.cd_close))
+                    }
+                }
+                Text(
+                    stringResource(R.string.mixer_output_channel_help),
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+                LazyColumn(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .weight(1f),
+                    verticalArrangement = Arrangement.spacedBy(2.dp)
+                ) {
+                    items(channelOptions, key = { it }) { option ->
+                        val automatic = option == 0
+                        val otherSourceChannels = if (automatic) {
+                            emptyList()
+                        } else {
+                            sourceChannelsByOutput[option]
+                                .orEmpty()
+                                .filterNot { sourceChannel -> sourceChannel == row.channel }
+                        }
+                        val selected = if (automatic) {
+                            row.assignedOutputChannel == null
+                        } else {
+                            row.assignedOutputChannel == option
+                        }
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .clickable { onSelect(if (automatic) null else option) }
+                                .padding(horizontal = 8.dp, vertical = 10.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(10.dp)
+                        ) {
+                            Box(modifier = Modifier.size(24.dp), contentAlignment = Alignment.Center) {
+                                if (selected) {
+                                    Icon(Icons.Default.Check, contentDescription = null, modifier = Modifier.size(20.dp))
+                                }
+                            }
+                            Text(
+                                if (automatic) {
+                                    stringResource(R.string.mixer_output_channel_automatic, row.automaticOutputChannel)
+                                } else if (otherSourceChannels.isNotEmpty()) {
+                                    stringResource(
+                                        R.string.mixer_output_channel_option_shared,
+                                        option,
+                                        otherSourceChannels.joinToString(", ")
+                                    )
+                                } else {
+                                    stringResource(R.string.mixer_output_channel_option, option)
+                                },
+                                modifier = Modifier.weight(1f),
+                                style = MaterialTheme.typography.bodyLarge,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis
+                            )
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+@Composable
 private fun MixerChannelInfoDialog(row: MixerChannelRowModel, onDismiss: () -> Unit) {
     AlertDialog(
         onDismissRequest = onDismiss,
@@ -4282,7 +4510,11 @@ private fun MixerChannelInfoDialog(row: MixerChannelRowModel, onDismiss: () -> U
 private fun mixerChannelRows(
     context: Context,
     channels: List<PlaybackChannelInfo>,
-    songInstrumentOverrides: Map<Int, Int>
+    songInstrumentOverrides: Map<Int, Int>,
+    songChannelAssignments: Map<Int, Int>,
+    acousticPianoInputChannel: Int,
+    foldChannel2IntoPianoChannel: Boolean,
+    mergeAllInstrumentsToPianoChannel: Boolean
 ): List<MixerChannelRowModel> {
     val present = channels
         .filter { it.channel in 1..16 }
@@ -4291,7 +4523,27 @@ private fun mixerChannelRows(
     return present.map { channelInfo ->
         val overrideProgram = songInstrumentOverrides[channelInfo.channel]
         val sourceProgram = channelInfo.programNumbers.firstOrNull()
+        val assignedOutputChannel = songChannelAssignments[channelInfo.channel]
+        val outputChannel = MidiChannelRouter.outputChannel(
+            sourceChannel = channelInfo.channel,
+            channelInfo = channelInfo,
+            instrumentOverrideProgram = overrideProgram,
+            explicitAssignments = songChannelAssignments,
+            acousticPianoInputChannel = acousticPianoInputChannel,
+            foldChannel2IntoPianoChannel = foldChannel2IntoPianoChannel,
+            mergeAllInstrumentsToPianoChannel = mergeAllInstrumentsToPianoChannel
+        )
+        val automaticOutputChannel = MidiChannelRouter.outputChannel(
+            sourceChannel = channelInfo.channel,
+            channelInfo = channelInfo,
+            instrumentOverrideProgram = overrideProgram,
+            explicitAssignments = songChannelAssignments - channelInfo.channel,
+            acousticPianoInputChannel = acousticPianoInputChannel,
+            foldChannel2IntoPianoChannel = foldChannel2IntoPianoChannel,
+            mergeAllInstrumentsToPianoChannel = mergeAllInstrumentsToPianoChannel
+        )
         val instrumentName = when {
+            mergeAllInstrumentsToPianoChannel -> GeneralMidi.programName(0)
             overrideProgram != null -> GeneralMidi.programName(overrideProgram)
             !channelInfo.instrumentName.isNullOrBlank() -> channelInfo.instrumentName
             sourceProgram != null -> GeneralMidi.sourceProgramNameForChannel(channelInfo.channel, sourceProgram)
@@ -4299,21 +4551,26 @@ private fun mixerChannelRows(
         }
         MixerChannelRowModel(
             channel = channelInfo.channel,
+            outputChannel = outputChannel,
+            automaticOutputChannel = automaticOutputChannel,
+            assignedOutputChannel = assignedOutputChannel,
             instrumentName = instrumentName,
-            detail = listOf(channelInfo.channel).channelDetail(context),
-            selectedProgram = overrideProgram ?: sourceProgram ?: GeneralMidi.defaultProgramForChannel(channelInfo.channel),
+            detail = context.getString(
+                R.string.mixer_channel_route,
+                channelInfo.channel,
+                outputChannel
+            ),
+            selectedProgram = if (mergeAllInstrumentsToPianoChannel) {
+                0
+            } else {
+                overrideProgram ?: sourceProgram ?: GeneralMidi.defaultProgramForChannel(channelInfo.channel)
+            },
             hasInstrumentOverride = overrideProgram != null,
-            infoLines = channelInfo.infoLines(context, overrideProgram)
+            infoLines = channelInfo.infoLines(context, overrideProgram) +
+                (context.getString(R.string.mixer_output_channel) to outputChannel.toString())
         )
     }
 }
-
-private fun List<Int>.channelDetail(context: Context): String =
-    if (size == 1) {
-        context.getString(R.string.label_channel, first())
-    } else {
-        context.getString(R.string.label_channels, joinToString(", "))
-    }
 
 private fun PlaybackChannelInfo.infoLines(context: Context, overrideProgram: Int?): List<Pair<String, String>> {
     val hasExtraInfo = overrideProgram != null ||

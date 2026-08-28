@@ -10,6 +10,8 @@ All notable changes to APS NoteCast are documented here.
 
 ### Added
 
+- Per-song MIDI output-channel assignments in the mixer, including automatic-route reset controls.
+- A selectable acoustic-piano input channel and an optional mode that merges every source channel into one Acoustic Grand Piano part.
 - USB MIDI adapters exposed by Android now appear in the adapter list and can be connected like Bluetooth MIDI devices.
 - Mutopia Project is now available as a selectable External MIDI source alongside Kuhmann.
 - External MIDI source definitions can now be extended from bundled per-source JSON files or app-local JSON files.
@@ -24,7 +26,7 @@ All notable changes to APS NoteCast are documented here.
 - Kuhmann is now presented as an external noncommercial MIDI source with copyright and DMCA/removal guidance.
 - Bundled demo MIDI files now come from Mutopia Project public-domain sources.
 - Recommended battery settings now appear as a one-time startup dialog instead of inside the connection wizard.
-- Channel 2 to channel 1 piano routing is now a default-on playback setting.
+- Channel 2 routing now follows the selected acoustic-piano input channel and remains a default-on playback setting.
 - General MIDI files can now switch between Alphabetical sections and the All Songs list.
 - Alphabetical MIDI sections now include an independent expand/collapse-all button beside the Alphabetical view selector.
 - External MIDI Piano/Ensemble filtering now treats channel 3 as piano-only only when it is pedal/controller-only, not when it carries instrument notes.

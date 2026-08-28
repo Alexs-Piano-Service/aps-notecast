@@ -33,6 +33,8 @@ Yamaha, PianoStream, PianoDisc, QRS, Steinway, or Spirio.
 - Second-tap Stop cleanup that sends sustain off, sostenuto off, soft pedal off, all sound off, reset controllers, and all notes off on all 16 MIDI channels.
 - Tempo and transpose controls, including an option to leave channel 10 drums untransposed.
 - Advanced per-channel mute, solo, and volume controls.
+- Per-song source-to-output MIDI channel assignments alongside instrument overrides; sources assigned to the same output share that MIDI channel's program, controller, pedal, pitch-bend, and Standard MIDI volume state.
+- Configurable acoustic-piano input channel, with optional all-channel Acoustic Grand Piano merging. Merged Standard MIDI volume is shared and controlled with Main Volume.
 - Piano-channel routing options for two-channel piano files and pedal-controller channels.
 - BLE MIDI recording to Standard MIDI File with count-in, discard confirmation, silence trimming, and optional save-to-playlist.
 - MIDI file export/share and library backup/restore.

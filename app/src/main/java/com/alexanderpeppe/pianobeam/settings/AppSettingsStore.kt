@@ -11,6 +11,7 @@ import com.alexanderpeppe.pianobeam.data.PedalOutputMode
 import com.alexanderpeppe.pianobeam.data.PedalValueMode
 import com.alexanderpeppe.pianobeam.data.PlaybackAdvanceMode
 import com.alexanderpeppe.pianobeam.data.RepeatMode
+import com.alexanderpeppe.pianobeam.data.SongChannelAssignments
 import com.alexanderpeppe.pianobeam.data.SongInstrumentOverrides
 import com.alexanderpeppe.pianobeam.data.VolumeControlMode
 import com.alexanderpeppe.pianobeam.data.defaultChannelControls
@@ -50,8 +51,10 @@ class AppSettingsStore(context: Context) {
             tempoPercent = settings.tempoPercent.coerceIn(50, 150),
             transposeSemitones = settings.transposeSemitones.coerceIn(-12, 12),
             recordingCountdownSeconds = settings.recordingCountdownSeconds.coerceIn(0, 8),
+            acousticPianoInputChannel = settings.acousticPianoInputChannel.coerceIn(1, 16),
             channelControls = normalizedChannelControls(settings.channelControls),
-            songInstrumentOverrides = normalizedSongInstrumentOverrides(settings.songInstrumentOverrides)
+            songInstrumentOverrides = normalizedSongInstrumentOverrides(settings.songInstrumentOverrides),
+            songChannelAssignments = normalizedSongChannelAssignments(settings.songChannelAssignments)
         )
         preferences.edit()
             .putString(KEY_THEME_MODE, cleanSettings.themeMode.preferenceValue)
@@ -69,6 +72,11 @@ class AppSettingsStore(context: Context) {
             .putString(KEY_PEDAL_VALUE_MODE, cleanSettings.pedalValueMode.preferenceValue)
             .putBoolean(KEY_FOLD_CHANNEL_2_INTO_PIANO_CHANNEL, cleanSettings.foldChannel2IntoPianoChannel)
             .putBoolean(KEY_FOLD_PEDALS_INTO_PIANO_CHANNEL, cleanSettings.foldPedalsIntoPianoChannel)
+            .putInt(KEY_ACOUSTIC_PIANO_INPUT_CHANNEL, cleanSettings.acousticPianoInputChannel)
+            .putBoolean(
+                KEY_MERGE_ALL_INSTRUMENTS_TO_PIANO_CHANNEL,
+                cleanSettings.mergeAllInstrumentsToPianoChannel
+            )
             .putBoolean(KEY_APP_CONTROLS_VOLUME, cleanSettings.volumeControlMode == VolumeControlMode.LegacyVolumeScaling)
             .putBoolean(KEY_VELOCITY_SCALING_ENABLED, cleanSettings.velocityScalingEnabled)
             .putInt(KEY_MINIMUM_NOTE_VELOCITY, cleanSettings.minimumNoteVelocity)
@@ -81,6 +89,7 @@ class AppSettingsStore(context: Context) {
             .putBoolean(KEY_RECORDING_METRONOME, cleanSettings.recordingMetronomeEnabled)
             .putBoolean(KEY_CONFIRM_DISCARD_RECORDING, cleanSettings.confirmDiscardRecording)
             .putString(KEY_SONG_INSTRUMENT_OVERRIDES, encodeSongInstrumentOverrides(cleanSettings.songInstrumentOverrides))
+            .putString(KEY_SONG_CHANNEL_ASSIGNMENTS, encodeSongChannelAssignments(cleanSettings.songChannelAssignments))
             .putBoolean(KEY_BATTERY_RECOMMENDATION_DISMISSED, cleanSettings.batteryRecommendationDismissed)
             .also { editor ->
                 cleanSettings.channelControls.forEach { control ->
@@ -114,6 +123,11 @@ class AppSettingsStore(context: Context) {
             pedalValueMode = PedalValueMode.fromPreference(preferences.getString(KEY_PEDAL_VALUE_MODE, null)),
             foldChannel2IntoPianoChannel = preferences.getBoolean(KEY_FOLD_CHANNEL_2_INTO_PIANO_CHANNEL, true),
             foldPedalsIntoPianoChannel = preferences.getBoolean(KEY_FOLD_PEDALS_INTO_PIANO_CHANNEL, true),
+            acousticPianoInputChannel = preferences.getInt(KEY_ACOUSTIC_PIANO_INPUT_CHANNEL, 1).coerceIn(1, 16),
+            mergeAllInstrumentsToPianoChannel = preferences.getBoolean(
+                KEY_MERGE_ALL_INSTRUMENTS_TO_PIANO_CHANNEL,
+                false
+            ),
             velocityScalingEnabled = preferences.getBoolean(KEY_VELOCITY_SCALING_ENABLED, true),
             minimumNoteVelocity = preferences.getInt(KEY_MINIMUM_NOTE_VELOCITY, 32).coerceIn(1, 127),
             tempoPercent = preferences.getInt(KEY_TEMPO_PERCENT, 100).coerceIn(50, 150),
@@ -133,6 +147,7 @@ class AppSettingsStore(context: Context) {
             recordingMetronomeEnabled = preferences.getBoolean(KEY_RECORDING_METRONOME, false),
             confirmDiscardRecording = preferences.getBoolean(KEY_CONFIRM_DISCARD_RECORDING, true),
             songInstrumentOverrides = decodeSongInstrumentOverrides(preferences.getString(KEY_SONG_INSTRUMENT_OVERRIDES, null)),
+            songChannelAssignments = decodeSongChannelAssignments(preferences.getString(KEY_SONG_CHANNEL_ASSIGNMENTS, null)),
             batteryRecommendationDismissed = preferences.getBoolean(KEY_BATTERY_RECOMMENDATION_DISMISSED, false)
         )
 
@@ -206,6 +221,70 @@ class AppSettingsStore(context: Context) {
         }.getOrElse { emptyList() }.let(::normalizedSongInstrumentOverrides)
     }
 
+    private fun normalizedSongChannelAssignments(assignments: List<SongChannelAssignments>): List<SongChannelAssignments> {
+        val bySong = linkedMapOf<String, MutableMap<Int, Int>>()
+        assignments.forEach { assignment ->
+            val songId = assignment.songId.takeIf { it.isNotBlank() } ?: return@forEach
+            val outputChannels = bySong.getOrPut(songId) { linkedMapOf() }
+            assignment.outputChannels.forEach { (sourceChannel, outputChannel) ->
+                if (sourceChannel in 1..16 && outputChannel in 1..16) {
+                    // Preserve identity assignments because they override automatic piano routing.
+                    outputChannels[sourceChannel] = outputChannel
+                }
+            }
+        }
+        return bySong.mapNotNull { (songId, outputChannels) ->
+            outputChannels.takeIf { it.isNotEmpty() }?.let {
+                SongChannelAssignments(songId = songId, outputChannels = it.toSortedMap())
+            }
+        }.sortedBy { it.songId }
+    }
+
+    private fun encodeSongChannelAssignments(assignments: List<SongChannelAssignments>): String {
+        val array = JSONArray()
+        normalizedSongChannelAssignments(assignments).forEach { assignment ->
+            val outputChannels = JSONObject()
+            assignment.outputChannels.toSortedMap().forEach { (sourceChannel, outputChannel) ->
+                outputChannels.put(sourceChannel.toString(), outputChannel)
+            }
+            array.put(
+                JSONObject()
+                    .put("song_id", assignment.songId)
+                    .put("output_channels", outputChannels)
+            )
+        }
+        return array.toString()
+    }
+
+    private fun decodeSongChannelAssignments(rawJson: String?): List<SongChannelAssignments> {
+        if (rawJson.isNullOrBlank()) return emptyList()
+        return runCatching {
+            val array = JSONArray(rawJson)
+            buildList {
+                for (index in 0 until array.length()) {
+                    val obj = array.optJSONObject(index) ?: continue
+                    val songId = obj.optString("song_id").takeIf { it.isNotBlank() } ?: continue
+                    val outputChannels = obj.optJSONObject("output_channels") ?: continue
+                    val assignments = mutableMapOf<Int, Int>()
+                    val keys = outputChannels.keys()
+                    while (keys.hasNext()) {
+                        val sourceChannel = keys.next().toIntOrNull()
+                        val outputChannel = sourceChannel?.let { outputChannels.optInt(it.toString(), -1) }
+                        if (
+                            sourceChannel != null && sourceChannel in 1..16 &&
+                            outputChannel != null && outputChannel in 1..16
+                        ) {
+                            assignments[sourceChannel] = outputChannel
+                        }
+                    }
+                    if (assignments.isNotEmpty()) {
+                        add(SongChannelAssignments(songId = songId, outputChannels = assignments.toSortedMap()))
+                    }
+                }
+            }
+        }.getOrElse { emptyList() }.let(::normalizedSongChannelAssignments)
+    }
+
     private fun channelKeyPrefix(channel: Int): String = "channel_$channel"
 
     companion object {
@@ -225,6 +304,8 @@ class AppSettingsStore(context: Context) {
         private const val KEY_PEDAL_VALUE_MODE = "pedal_value_mode"
         private const val KEY_FOLD_CHANNEL_2_INTO_PIANO_CHANNEL = "fold_channel_2_into_piano_channel"
         private const val KEY_FOLD_PEDALS_INTO_PIANO_CHANNEL = "fold_pedals_into_piano_channel"
+        private const val KEY_ACOUSTIC_PIANO_INPUT_CHANNEL = "acoustic_piano_input_channel"
+        private const val KEY_MERGE_ALL_INSTRUMENTS_TO_PIANO_CHANNEL = "merge_all_instruments_to_piano_channel"
         private const val KEY_APP_CONTROLS_VOLUME = "app_controls_volume"
         private const val KEY_VELOCITY_SCALING_ENABLED = "velocity_scaling_enabled"
         private const val KEY_MINIMUM_NOTE_VELOCITY = "minimum_note_velocity"
@@ -237,6 +318,7 @@ class AppSettingsStore(context: Context) {
         private const val KEY_RECORDING_METRONOME = "recording_metronome"
         private const val KEY_CONFIRM_DISCARD_RECORDING = "confirm_discard_recording"
         private const val KEY_SONG_INSTRUMENT_OVERRIDES = "song_instrument_overrides"
+        private const val KEY_SONG_CHANNEL_ASSIGNMENTS = "song_channel_assignments"
         private const val KEY_BATTERY_RECOMMENDATION_DISMISSED = "battery_recommendation_dismissed"
     }
 }

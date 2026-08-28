@@ -10,6 +10,7 @@ import com.alexanderpeppe.pianobeam.data.LastPlaybackSnapshot
 import com.alexanderpeppe.pianobeam.data.MidiChannelControl
 import com.alexanderpeppe.pianobeam.data.MidiLibraryItem
 import com.alexanderpeppe.pianobeam.data.PlaybackChannelInfo
+import com.alexanderpeppe.pianobeam.data.channelAssignmentsForSong
 import com.alexanderpeppe.pianobeam.data.instrumentOverridesForSong
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
@@ -210,6 +211,8 @@ object BugReportClient {
                     put("pedal_value_mode", settings.pedalValueMode.preferenceValue)
                     put("fold_channel_2_into_piano_channel", settings.foldChannel2IntoPianoChannel)
                     put("fold_pedals_into_piano_channel", settings.foldPedalsIntoPianoChannel)
+                    put("acoustic_piano_input_channel", settings.acousticPianoInputChannel)
+                    put("merge_all_instruments_to_piano_channel", settings.mergeAllInstrumentsToPianoChannel)
                     put("velocity_scaling_enabled", settings.velocityScalingEnabled)
                     put("minimum_note_velocity", settings.minimumNoteVelocity)
                     put("tempo_percent", settings.tempoPercent)
@@ -223,6 +226,14 @@ object BugReportClient {
                     put(
                         "last_song_instrument_overrides",
                         instrumentOverridesBlock(settings.instrumentOverridesForSong(state.lastPlayback.itemId))
+                    )
+                    put(
+                        "current_song_channel_assignments",
+                        channelAssignmentsBlock(settings.channelAssignmentsForSong(state.playback.currentItemId))
+                    )
+                    put(
+                        "last_song_channel_assignments",
+                        channelAssignmentsBlock(settings.channelAssignmentsForSong(state.lastPlayback.itemId))
                     )
                 }
             )
@@ -250,6 +261,10 @@ object BugReportClient {
                 "current_song_instrument_overrides",
                 instrumentOverridesBlock(settings.instrumentOverridesForSong(state.playback.currentItemId))
             )
+            put(
+                "current_song_channel_assignments",
+                channelAssignmentsBlock(settings.channelAssignmentsForSong(state.playback.currentItemId))
+            )
             put("last_known", lastPlaybackBlock(state.lastPlayback, lastItem, settings))
         }
     }
@@ -274,6 +289,7 @@ object BugReportClient {
             put("library_item", libraryItemBlock(libraryItem))
             put("detected_channels", channelInfoArray(lastPlayback.channels))
             put("song_instrument_overrides", instrumentOverridesBlock(settings.instrumentOverridesForSong(lastPlayback.itemId)))
+            put("song_channel_assignments", channelAssignmentsBlock(settings.channelAssignmentsForSong(lastPlayback.itemId)))
         }
 
     private fun libraryItemBlock(item: MidiLibraryItem?): JSONObject =
@@ -339,6 +355,24 @@ object BugReportClient {
                             JSONObject().apply {
                                 put("channel", channel)
                                 put("program", program)
+                            }
+                        )
+                    }
+                }
+            )
+        }
+
+    private fun channelAssignmentsBlock(assignments: Map<Int, Int>): JSONObject =
+        JSONObject().apply {
+            put("count", assignments.size)
+            put(
+                "channels",
+                JSONArray().apply {
+                    assignments.toSortedMap().forEach { (sourceChannel, outputChannel) ->
+                        put(
+                            JSONObject().apply {
+                                put("source_channel", sourceChannel)
+                                put("output_channel", outputChannel)
                             }
                         )
                     }

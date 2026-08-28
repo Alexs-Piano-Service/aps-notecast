@@ -305,10 +305,10 @@
     <string name="settings_diagnostic_pedal_chord">踏板测试和弦</string>
     <string name="settings_diagnostic_pedal_chord_subtitle">踩踏板演奏并释放温和的 C 大调和弦</string>
     <string name="settings_diagnostic_scale_velocity">刻度速度</string>
-    <string name="settings_fold_channel">将通道 2 折叠到通道 1 中</string>
-    <string name="settings_fold_channel_subtitle">在钢琴输出通道 1 上发送两通道钢琴文件</string>
+    <string name="settings_fold_channel">将通道 2 合并到钢琴输入</string>
+    <string name="settings_fold_channel_subtitle">将通道 2 发送到原声钢琴输入通道 %1$d</string>
     <string name="settings_fold_pedals">将踏板折叠到钢琴通道中</string>
-    <string name="settings_fold_pedals_subtitle">在检测到的钢琴输出通道上发送踏板控制器</string>
+    <string name="settings_fold_pedals_subtitle">将踏板控制器发送到所有实际钢琴输出，包括显式重新分配的钢琴源输出</string>
     <string name="settings_library">图书馆</string>
     <string name="settings_library_only">仅图书馆</string>
     <string name="settings_metronome">节拍器预备拍</string>
@@ -579,4 +579,21 @@
     <string name="notification_preparing_dots">准备中...</string>
     <string name="notification_playing_time">播放 %1$s / %2$s</string>
     <string name="notification_paused_time">已暂停 %1$s / %2$s</string>
+    <string name="cd_clear_channel_assignment">清除输出通道分配</string>
+    <string name="mixer_channel_override">通道覆盖</string>
+    <string name="mixer_channel_route">源通道 %1$d → 输出通道 %2$d</string>
+    <string name="mixer_clear_song_routing">清除乐曲路由</string>
+    <string name="mixer_instrument_override">乐器覆盖</string>
+    <string name="mixer_merge_all_notice">所有源通道均作为原声大钢琴合并到输出通道 %1$d。它们共享整个通道的控制器状态，包括踏板、弯音和标准 MIDI 音量。请使用主音量调整音量；无法使用独立的乐器音色和输出分配。</string>
+    <string name="mixer_merged_acoustic_piano">合并的原声大钢琴</string>
+    <string name="mixer_output_channel">输出通道</string>
+    <string name="mixer_output_channel_automatic">自动（当前为输出通道 %1$d）</string>
+    <string name="mixer_output_channel_help">自动模式遵循原声钢琴路由设置。如果选择已被其他源使用的输出，这些源将共享音色、控制器、踏板、弯音和标准 MIDI 音量状态。</string>
+    <string name="mixer_output_channel_option">输出通道 %1$d</string>
+    <string name="mixer_output_channel_option_shared">输出通道 %1$d — 源通道 %2$s 正在使用</string>
+    <string name="settings_acoustic_piano_input_channel">原声钢琴输入通道</string>
+    <string name="settings_acoustic_piano_input_channel_subtitle">选择接收端原声钢琴用于自动路由钢琴声部和测试的 MIDI 输入通道。</string>
+    <string name="settings_merge_all_instruments">将所有乐器合并到钢琴输入</string>
+    <string name="settings_merge_all_instruments_subtitle">将每个源通道作为原声大钢琴发送到原声钢琴输入通道 %1$d。所有源共享踏板、弯音、标准 MIDI 音量和其他整个通道的控制器。请使用主音量调整音量；无法保留独立音色。</string>
+    <string name="settings_midi_channel_value">通道 %1$d</string>
 </resources>
