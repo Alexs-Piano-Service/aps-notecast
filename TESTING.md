@@ -1,5 +1,33 @@
 # APS NoteCast field test notes
 
+## Library recovery and MIDI recording regressions
+
+Run the automated regressions with `./gradlew :app:testDebugUnitTest`. `MidiRepositoryRecoveryTest` uses disposable temporary directories under Robolectric to check malformed JSON, invalid catalog structure, read failures, atomic backup recovery, blocked mutations, and retry after repair. `MidiStreamParserTest` checks every possible callback partition of representative streams, all channel message classes, interleaved real-time bytes, SysEx continuation, timestamps, separate inputs, and a MIDI file write/read round trip. Android's [MidiReceiver contract](https://developer.android.com/reference/android/media/midi/MidiReceiver) permits splitting data between callbacks and requires receivers to copy retained bytes.
+
+For an app startup check, use only a disposable emulator or debug installation, never a real library:
+
+1. Import a test song, give it a custom title, and add it to a playlist. Back up the installation's data and stop the app.
+2. Save an additional copy of `library.json`, replace it with malformed JSON, and record the malformed file's checksum.
+3. Restart. Confirm the library shows a recovery error and Retry loading library instead of a demo-only catalog. Retry and attempt an import; confirm the app stays responsive and reports the error.
+4. Stop the app. Confirm the malformed metadata checksum and existing MIDI files are unchanged.
+5. Restore the saved metadata and restart (or tap Retry loading library). Confirm the custom title and playlist membership survive.
+
+The parser tests validate reconstruction and saved bytes. Validate actual recording timing, stop/cancel, and disconnect/reconnect behavior separately with a MIDI device; these tests do not establish how often a WIDI device splits callbacks.
+
+## Seek state, End of Track, and title encoding regressions
+
+The synthetic MIDI files in `app/src/test/resources/midi/` reproduce the reported examples. Import them into a test installation:
+
+- `notecast_seek_program_state.mid`: channel 4 selects program byte 40 at the start and 73 at ten seconds. Play past twelve seconds, then seek to two seconds; the next note must use program 40. Repeat with an instrument override and a channel assignment, then seek to zero. The override and destination must remain effective.
+- `notecast_end_of_track_silence.mid`: the note ends at one second and the track ends at four seconds. Confirm a four-second duration, progress through the silent interval, and no transition to the next playlist item before that interval ends. Pause at two seconds, wait, resume, and seek within the silence; the remaining silence must follow the playback clock.
+- `notecast_utf8_title.mid`: the imported title must be `Café`.
+
+`MidiFileParserTest` also covers a tempo change during trailing silence, longer conductor tracks, silent tracks, SMPTE timing, and legacy title encodings. `MidiSeekIndexTest` compares cached seeks with a complete replay of source state and checks bank/program ordering, override priority, controllers, parameter messages, pitch bend, reset controllers, note bookkeeping, and continuous/binary pedal restoration. `MidiPlaybackClockTest` checks pause and seek during the silent ending without depending on wall-clock sleeps.
+
+For continuous pedals, use a file with an intermediate CC64 value, pause/resume within that interval, and seek backward into it. Confirm that the original value is sent again; repeat in binary mode and confirm the thresholded value. Test with the actual receiving instrument as well as the automated tests.
+
+State reconstruction covers MIDI channel state and uses General MIDI defaults where defined. Device-specific SysEx settings and unspecified device-specific initial controller/NRPN values cannot be inferred from the file. Controller and parameter numbers follow the [MIDI Association reference](https://midi.org/midi-1-0-control-change-messages).
+
 ## Large-library performance regression
 
 Run this matrix when changing library loading, search, sorting, paging, playlists, or repository persistence. Use the same physical device, Android version, build type, display mode, and page size for before/after comparisons. A release or profileable build gives meaningful timing data; a debug build is suitable only for correctness checks.

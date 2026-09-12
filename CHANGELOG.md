@@ -6,6 +6,11 @@ All notable changes to APS NoteCast are documented here.
 
 ### Fixed
 
+- Seeking now restores source bank/program, controllers, parameter values, pitch bend, and pedal state from cached checkpoints before playback continues with the current routing and overrides.
+- MIDI duration includes End-of-Track silence and tempo changes during that silence; pause and seek remain active while waiting for the song to end.
+- UTF-8 MIDI titles now decode before legacy encoding fallbacks, with regression coverage for Latin-1, Windows-1252, and Shift-JIS text.
+- Unreadable library metadata now reports a recovery error and blocks catalog changes, preserving existing data instead of replacing it with bundled demos.
+- MIDI recording now preserves running status, partial messages, and SysEx across input callbacks, including interleaved real-time bytes.
 - The header logo now remains clearly visible in dark mode.
 
 ### Added

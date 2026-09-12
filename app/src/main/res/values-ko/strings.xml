@@ -1,4 +1,6 @@
 <resources>
+    <string name="library_recovery_title">라이브러리를 사용할 수 없음</string>
+    <string name="library_retry_load">라이브러리 불러오기 재시도</string>
     <string name="app_name">APS NoteCast</string>
     <string name="app_short_name">NoteCast</string>
     <string name="developed_by">개발</string>

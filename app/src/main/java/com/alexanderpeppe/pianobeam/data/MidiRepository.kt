@@ -10,6 +10,8 @@ import com.alexanderpeppe.pianobeam.midi.MidiFileParser
 import org.json.JSONArray
 import org.json.JSONObject
 import java.io.File
+import java.io.IOException
+import java.nio.file.Files
 import java.util.UUID
 import java.util.zip.ZipInputStream
 
@@ -39,6 +41,12 @@ class MidiRepository(private val context: Context) {
 
     class ZipWithoutMidiException(displayName: String) : IllegalArgumentException(
         "$displayName does not contain MIDI files."
+    )
+
+    class LibraryRecoveryException(cause: Exception) : IOException(
+        "Could not read library.json. Library changes are blocked until the metadata is repaired. " +
+            "The existing library data has been preserved.",
+        cause
     )
 
     data class ImportResult(
@@ -128,20 +136,25 @@ class MidiRepository(private val context: Context) {
     @Synchronized
     fun load(): LibrarySnapshot {
         cachedSnapshot?.let { return it }
-        if (!metadataFile.exists() && !File("${metadataFile.path}.bak").exists()) {
+        val backupFile = File("${metadataFile.path}.bak")
+        // notExists is false when existence cannot be determined (for example, permission errors).
+        if (Files.notExists(metadataFile.toPath()) && Files.notExists(backupFile.toPath())) {
             return LibrarySnapshot().also { cachedSnapshot = it }
         }
         val snapshot = try {
+            // Validate before AtomicFile.openRead() can rename a backup or delete a pending write.
+            val source = if (!Files.notExists(backupFile.toPath())) backupFile else metadataFile
             val root = JSONObject(
-                atomicMetadataFile.openRead().bufferedReader(Charsets.UTF_8).use { it.readText() }
+                source.readText(Charsets.UTF_8)
             )
-            val files = root.optJSONArray("files")?.toMidiFiles() ?: emptyList()
-            val playlists = root.optJSONArray("playlists")?.toPlaylists() ?: emptyList()
+            val files = root.getJSONArray("files").toMidiFiles()
+            val playlists = root.getJSONArray("playlists").toPlaylists(strict = true)
             val parsed = LibrarySnapshot(
                 files = files,
                 playlists = playlists,
                 bundledDemosEnabled = root.optBoolean("bundledDemosEnabled", true)
             )
+            atomicMetadataFile.openRead().close()
             if (root.optInt("nameNormalizationVersion", 0) < IMPORTED_NAME_NORMALIZATION_VERSION) {
                 parsed.normalizeImportedNames().also { migrated ->
                     // A migration marker makes the O(n) name cleanup a one-time operation.
@@ -152,8 +165,9 @@ class MidiRepository(private val context: Context) {
             } else {
                 parsed
             }
-        } catch (t: Throwable) {
-            LibrarySnapshot()
+        } catch (error: Exception) {
+            // Never cache an empty fallback: every mutation must successfully load the catalog.
+            throw LibraryRecoveryException(error)
         }
         cachedSnapshot = snapshot
         return snapshot
@@ -353,8 +367,8 @@ class MidiRepository(private val context: Context) {
 
     @Synchronized
     fun importZipBytes(bytes: ByteArray, displayName: String): LibraryMutation<ImportResult> {
-        val result = importZipBytesWithoutSaving(bytes, displayName, System.currentTimeMillis())
         val snapshot = load()
+        val result = importZipBytesWithoutSaving(bytes, displayName, System.currentTimeMillis())
         val updated = try {
             save(snapshot.copy(files = snapshot.files + result.importedItems, playlists = snapshot.playlists + listOfNotNull(result.createdPlaylist)))
         } catch (t: Throwable) {
@@ -371,6 +385,7 @@ class MidiRepository(private val context: Context) {
         notePrefix: String = "",
         preferredTitle: String? = null
     ): LibraryMutation<MidiLibraryItem> {
+        val snapshot = load()
         val item = createMidiItem(
             bytes = bytes,
             displayName = displayName,
@@ -380,7 +395,6 @@ class MidiRepository(private val context: Context) {
             preferDisplayNameTitle = false,
             replaceTitleSeparators = false
         )
-        val snapshot = load()
         val updated = try {
             save(snapshot.copy(files = snapshot.files + item))
         } catch (t: Throwable) {
@@ -393,6 +407,7 @@ class MidiRepository(private val context: Context) {
     /** Stages one downloaded MIDI without rewriting catalog metadata. */
     @Synchronized
     fun stageMidiBytesImport(request: MidiBytesImportRequest): StagedMidiBytesImport {
+        load()
         check(midiStagingDir.isDirectory || midiStagingDir.mkdirs()) {
             "Could not create the MIDI import staging directory."
         }
@@ -579,6 +594,7 @@ class MidiRepository(private val context: Context) {
         bytes: ByteArray,
         targetPlaylistId: String? = null
     ): LibraryMutation<MidiLibraryItem> {
+        val snapshot = load()
         val cleanTitle = title.trim().ifBlank { "APS NoteCast Recording" }
         val id = UUID.randomUUID().toString()
         val storedName = "$id.mid"
@@ -596,7 +612,6 @@ class MidiRepository(private val context: Context) {
             importedAtMs = System.currentTimeMillis(),
             notes = parseResult.exceptionOrNull()?.message?.let { "Recorded, but parse check reported: $it" } ?: ""
         )
-        val snapshot = load()
         val playlists = targetPlaylistId
             ?.takeIf { playlistId -> snapshot.playlists.any { it.id == playlistId } }
             ?.let { playlistId ->
@@ -840,6 +855,7 @@ class MidiRepository(private val context: Context) {
 
     @Synchronized
     fun restoreBackupJson(json: String): LibrarySnapshot {
+        load()
         val root = JSONObject(json)
         val fileArray = root.optJSONArray("files") ?: JSONArray()
         val restoredFiles = mutableListOf<MidiLibraryItem>()
@@ -876,6 +892,8 @@ class MidiRepository(private val context: Context) {
 
     @Synchronized
     private fun save(snapshot: LibrarySnapshot): LibrarySnapshot {
+        // Also protects replacement operations, such as purge, that do not derive a snapshot.
+        load()
         cachedSnapshot?.takeIf {
             it.files === snapshot.files &&
                 it.playlists === snapshot.playlists &&
@@ -953,7 +971,10 @@ class MidiRepository(private val context: Context) {
 
     private fun JSONArray.toMidiFiles(): List<MidiLibraryItem> = buildList {
         for (i in 0 until length()) {
-            val obj = optJSONObject(i) ?: continue
+            val obj = getJSONObject(i)
+            require(obj.getString("id").isNotBlank() && obj.getString("storedFileName").isNotBlank()) {
+                "Invalid MIDI library entry at index $i"
+            }
             add(
                 MidiLibraryItem(
                     id = obj.optString("id"),
@@ -966,14 +987,19 @@ class MidiRepository(private val context: Context) {
                 )
             )
         }
-    }.filter { it.id.isNotBlank() && it.storedFileName.isNotBlank() }
+    }
 
-    private fun JSONArray.toPlaylists(): List<MidiPlaylist> = buildList {
+    private fun JSONArray.toPlaylists(strict: Boolean = false): List<MidiPlaylist> = buildList {
         for (i in 0 until length()) {
-            val obj = optJSONObject(i) ?: continue
-            val idsArray = obj.optJSONArray("itemIds") ?: JSONArray()
+            val obj = if (strict) getJSONObject(i) else optJSONObject(i) ?: continue
+            if (strict) require(obj.getString("id").isNotBlank()) { "Invalid playlist at index $i" }
+            val idsArray = if (strict) obj.getJSONArray("itemIds") else obj.optJSONArray("itemIds") ?: JSONArray()
             val ids = buildList {
-                for (j in 0 until idsArray.length()) add(idsArray.optString(j))
+                for (j in 0 until idsArray.length()) {
+                    val id = if (strict) idsArray.getString(j) else idsArray.optString(j)
+                    if (strict) require(id.isNotBlank()) { "Invalid playlist item at index $j" }
+                    add(id)
+                }
             }.filter { it.isNotBlank() }
             add(
                 MidiPlaylist(

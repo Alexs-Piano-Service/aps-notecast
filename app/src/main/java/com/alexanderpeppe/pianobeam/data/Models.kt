@@ -331,6 +331,7 @@ data class LastPlaybackSnapshot(
 data class AppUiState(
     val files: List<MidiLibraryItem> = emptyList(),
     val playlists: List<MidiPlaylist> = emptyList(),
+    val libraryError: String? = null,
     val bleDevices: List<BleMidiDeviceItem> = emptyList(),
     val connection: ConnectionUiState = ConnectionUiState(),
     val playback: PlaybackUiState = PlaybackUiState(),

@@ -82,7 +82,11 @@ import com.alexanderpeppe.pianobeam.midi.MidiFileParser
 import com.alexanderpeppe.pianobeam.midi.MidiFileWriter
 import com.alexanderpeppe.pianobeam.midi.MidiMergePolicy
 import com.alexanderpeppe.pianobeam.midi.MidiPedalFanInState
+import com.alexanderpeppe.pianobeam.midi.MidiPlaybackClock
+import com.alexanderpeppe.pianobeam.midi.MidiPlaybackState
+import com.alexanderpeppe.pianobeam.midi.MidiSeekIndex
 import com.alexanderpeppe.pianobeam.midi.MidiSourceNoteLedger
+import com.alexanderpeppe.pianobeam.midi.MidiStreamParser
 import com.alexanderpeppe.pianobeam.net.ApsNetworkStatus
 import com.alexanderpeppe.pianobeam.reporting.AppEventLog
 import kotlinx.coroutines.CancellationException
@@ -296,10 +300,7 @@ class NoteCastService : Service() {
     private var currentPlaybackPedalOnlyChannels: Set<Int> = emptySet()
     private val sourceChannelStateLock = Any()
     private var sourceChannelStateSongId: String? = null
-    private val sourceChannelPrograms = IntArray(16) { GeneralMidi.defaultProgramForChannel(it + 1) }
-    private val sourceChannelBankMsb = IntArray(16) { -1 }
-    private val sourceChannelBankLsb = IntArray(16) { -1 }
-    private val sourceChannelVolumes = IntArray(16) { 100 }
+    private var sourcePlaybackState = MidiPlaybackState()
 
     private data class PreparedSequenceCacheKey(
         val itemId: String,
@@ -321,7 +322,8 @@ class NoteCastService : Service() {
 
     private data class PreparedPlaybackData(
         val sequence: MidiFileParser.MidiSequence,
-        val channels: List<PlaybackChannelInfo>
+        val channels: List<PlaybackChannelInfo>,
+        val seekIndex: MidiSeekIndex = MidiSeekIndex(sequence.events)
     )
 
     private data class PlaybackMidiMessage(
@@ -330,13 +332,6 @@ class NoteCastService : Service() {
         val destinationResolved: Boolean,
         val trackSourceNote: Boolean,
         val bypassSourceControls: Boolean
-    )
-
-    private data class SourceChannelProgramState(
-        val program: Int,
-        val bankMsb: Int?,
-        val bankLsb: Int?,
-        val volume: Int
     )
 
     private data class ActiveMidiNote(
@@ -391,6 +386,7 @@ class NoteCastService : Service() {
     private val recordingEvents = mutableListOf<MidiFileWriter.RecordedEvent>()
     private var recordingStartedNs = 0L
     private var recordingReceiver: MidiReceiver? = null
+    private var recordingParser: MidiStreamParser? = null
     private val playbackSurfaceUpdatePending = AtomicBoolean(false)
 
     private data class PreparedLibrarySnapshot(
@@ -909,7 +905,7 @@ class NoteCastService : Service() {
                 }
             }
             result.exceptionOrNull()?.let { if (it is CancellationException) throw it }
-            val prepared = prepareLibrarySnapshot(result.getOrNull()?.snapshot ?: repository.load())
+            val prepared = result.getOrNull()?.snapshot?.let { prepareLibrarySnapshot(it) }
             withContext(Dispatchers.Main) {
                 result.onSuccess { importResult ->
                     val imported = importResult.importedItems.size
@@ -935,7 +931,7 @@ class NoteCastService : Service() {
                         else ->
                             text(R.string.service_could_not_import_midi)
                     }
-                    publishLibrary(prepared, message)
+                    publishLibrary(requireNotNull(prepared), message)
                     _state.update {
                         it.copy(
                             importState = ImportUiState(
@@ -951,7 +947,7 @@ class NoteCastService : Service() {
                 }.onFailure { throwable ->
                     val message = text(R.string.service_import_failed, throwable.message ?: text(R.string.service_import_failure_fallback))
                     AppEventLog.append("MIDI import failed after $processedItems/$totalItems items: ${throwable.message ?: throwable::class.java.simpleName}")
-                    publishLibrary(prepared, message)
+                    postMessage(message)
                     _state.update {
                         it.copy(
                             importState = ImportUiState(
@@ -1175,17 +1171,17 @@ class NoteCastService : Service() {
                 val importedItemsByResultKey = batchResult.getOrNull()?.first?.importedItemsByKey.orEmpty()
                 val imported = importedItemsByResultKey.size
                 val importedKeys = uniqueResults.map { it.stableKey }.filter { it in importedItemsByResultKey }
-                val prepared = batchResult.getOrNull()?.second ?: withContext(libraryDispatcher) {
-                    prepareLibrarySnapshot(repository.load())
-                }
+                val prepared = batchResult.getOrNull()?.second
                 withContext(Dispatchers.Main) {
                     val message = when {
+                        batchResult.exceptionOrNull() is MidiRepository.LibraryRecoveryException ->
+                            unknownError(requireNotNull(batchResult.exceptionOrNull()))
                         imported > 0 && failed == 0 -> text(R.string.service_import_source_success, imported, source.displayName)
                         imported > 0 -> text(R.string.service_import_source_failed, imported, source.displayName, failed)
                         networkFailure -> ApsNetworkStatus.userMessage(this@NoteCastService)
                         else -> text(R.string.service_could_not_import_external, source.displayName)
                     }
-                    publishLibrary(prepared, message)
+                    if (prepared != null) publishLibrary(prepared, message) else postMessage(message)
                     val previewItemId = _state.value.playback.currentItemId
                     val importedPlaybackItem = previewItemId
                         ?.externalPreviewResultKey()
@@ -2793,18 +2789,23 @@ class NoteCastService : Service() {
 
     private fun beginRecording(cleanTitle: String) {
         val outputPort = midiOutputPort ?: return
+        val parser = MidiStreamParser()
+        val receiver = object : MidiReceiver() {
+            override fun onSend(msg: ByteArray, offset: Int, count: Int, timestamp: Long) {
+                recordIncomingMidi(parser, msg, offset, count, timestamp)
+            }
+
+            override fun onFlush() {
+                synchronized(recordingLock) {
+                    if (recordingParser === parser) parser.reset()
+                }
+            }
+        }
         synchronized(recordingLock) {
             recordingEvents.clear()
             recordingStartedNs = if (appSettings.autoTrimRecordingSilence) 0L else System.nanoTime()
-        }
-        val receiver = object : MidiReceiver() {
-            override fun onSend(msg: ByteArray, offset: Int, count: Int, timestamp: Long) {
-                recordIncomingMidi(msg, offset, count, timestamp)
-            }
-        }
-        runCatching {
-            outputPort.connect(receiver)
             recordingReceiver = receiver
+            recordingParser = parser
             _state.update {
                 it.copy(
                     recording = RecordingUiState(
@@ -2816,7 +2817,11 @@ class NoteCastService : Service() {
                     lastMessage = text(R.string.service_recording_started, cleanTitle)
                 )
             }
+        }
+        runCatching {
+            outputPort.connect(receiver)
         }.onFailure {
+            stopRecordingReceiver()
             _state.update { state ->
                 state.copy(
                     recording = RecordingUiState(message = text(R.string.service_could_not_listen_midi)),
@@ -3073,7 +3078,7 @@ class NoteCastService : Service() {
                 }
                 sendVolumeMessages(_state.value.volumePercent)
                 try {
-                    playSequence(sequence, item, generation)
+                    playSequence(sequence, item, generation, playbackData.seekIndex)
                     sendPanicMessages()
                     delay(250)
                     nextTrackIndex(index, items.size, playlistName != null, settingsSnapshot)?.let { next ->
@@ -3195,7 +3200,7 @@ class NoteCastService : Service() {
             }
             playbackStarted = true
             sendVolumeMessages(_state.value.volumePercent)
-            playSequence(prepared, item, generation)
+            playSequence(prepared, item, generation, playbackData.seekIndex)
             sendPanicMessages()
             delay(250)
             completedNormally = true
@@ -3410,98 +3415,36 @@ class NoteCastService : Service() {
     private fun resetSourceChannelState(songId: String) {
         synchronized(sourceChannelStateLock) {
             sourceChannelStateSongId = songId
-            for (index in 0 until 16) {
-                sourceChannelPrograms[index] = GeneralMidi.defaultProgramForChannel(index + 1)
-                sourceChannelBankMsb[index] = -1
-                sourceChannelBankLsb[index] = -1
-                sourceChannelVolumes[index] = 100
-            }
+            sourcePlaybackState = MidiPlaybackState()
         }
     }
 
     private fun trackSourceChannelState(songId: String, data: ByteArray) {
-        if (data.isEmpty()) return
-        val status = data[0].toInt() and 0xFF
-        if (status !in 0x80..0xEF) return
-        val channelIndex = status and 0x0F
         synchronized(sourceChannelStateLock) {
-            if (sourceChannelStateSongId != songId) {
-                sourceChannelStateSongId = songId
-                for (index in 0 until 16) {
-                    sourceChannelPrograms[index] = GeneralMidi.defaultProgramForChannel(index + 1)
-                    sourceChannelBankMsb[index] = -1
-                    sourceChannelBankLsb[index] = -1
-                    sourceChannelVolumes[index] = 100
-                }
-            }
-            when (status and 0xF0) {
-                0xC0 -> if (data.size > 1) {
-                    sourceChannelPrograms[channelIndex] = data[1].toInt() and 0x7F
-                }
-                0xB0 -> if (data.size > 2) {
-                    when (data[1].toInt() and 0x7F) {
-                        0 -> sourceChannelBankMsb[channelIndex] = data[2].toInt() and 0x7F
-                        7 -> sourceChannelVolumes[channelIndex] = data[2].toInt() and 0x7F
-                        32 -> sourceChannelBankLsb[channelIndex] = data[2].toInt() and 0x7F
-                    }
-                }
+            if (sourceChannelStateSongId != songId) resetSourceChannelState(songId)
+            sourcePlaybackState.accept(data)
+        }
+    }
+
+    private fun primeSourceChannelState(songId: String, state: MidiPlaybackState) {
+        synchronized(sourceChannelStateLock) {
+            sourceChannelStateSongId = songId
+            sourcePlaybackState = state.copy()
+        }
+    }
+
+    private fun primeSourceNoteLedger(state: MidiPlaybackState) {
+        sourceNoteLedger.reset()
+        state.channels.forEach { (channel, channelState) ->
+            channelState.notes.forEachIndexed { note, count ->
+                repeat(count) { sourceNoteLedger.primeSilentNoteOn(channel, note) }
             }
         }
     }
 
-    private fun primeSourceChannelState(
-        songId: String,
-        sequence: MidiFileParser.MidiSequence,
-        progressUs: Long
-    ) {
-        resetSourceChannelState(songId)
-        sequence.events.asSequence()
-            .takeWhile { event -> event.timeUs < progressUs }
-            .forEach { event -> trackSourceChannelState(songId, event.data) }
-    }
-
-    private fun primeSourceNoteLedger(
-        sequence: MidiFileParser.MidiSequence,
-        progressUs: Long
-    ) {
-        sourceNoteLedger.reset()
-        sequence.events.asSequence()
-            .takeWhile { event -> event.timeUs < progressUs }
-            .forEach { event ->
-                val data = event.data
-                if (data.size < 3) return@forEach
-                val status = data[0].toInt() and 0xFF
-                if (status !in 0x80..0xEF) return@forEach
-                val sourceChannel = (status and 0x0F) + 1
-                val messageType = status and 0xF0
-                val data1 = data[1].toInt() and 0x7F
-                val data2 = data[2].toInt() and 0x7F
-                when {
-                    messageType == 0x90 && data2 > 0 ->
-                        sourceNoteLedger.primeSilentNoteOn(sourceChannel, data1)
-                    messageType == 0x80 || (messageType == 0x90 && data2 == 0) ->
-                        sourceNoteLedger.consumeNoteOff(sourceChannel, data1)
-                    messageType == 0xB0 && data1 in listOf(120, 123) ->
-                        sourceNoteLedger.releaseAndClearSource(sourceChannel)
-                }
-            }
-    }
-
-    private fun sourceChannelStateSnapshot(songId: String): Map<Int, SourceChannelProgramState> =
+    private fun sourceChannelStateSnapshot(songId: String): Map<Int, MidiPlaybackState.Channel> =
         synchronized(sourceChannelStateLock) {
-            if (sourceChannelStateSongId != songId) {
-                emptyMap()
-            } else {
-                (1..16).associateWith { channel ->
-                    val index = channel - 1
-                    SourceChannelProgramState(
-                        program = sourceChannelPrograms[index].coerceIn(0, 127),
-                        bankMsb = sourceChannelBankMsb[index].takeIf { it in 0..127 },
-                        bankLsb = sourceChannelBankLsb[index].takeIf { it in 0..127 },
-                        volume = sourceChannelVolumes[index].coerceIn(0, 127)
-                    )
-                }
-            }
+            if (sourceChannelStateSongId == songId) sourcePlaybackState.copy().channels else emptyMap()
         }
 
     private fun transformMidiData(data: ByteArray, settings: AppSettings): ByteArray? {
@@ -3563,6 +3506,9 @@ class NoteCastService : Service() {
         }
         if (message.bypassSourceControls) {
             return data.withMidiChannel(outputChannel)
+        }
+        if (instrumentOverride != null && messageType == 0xB0 && (controller == 0 || controller == 32)) {
+            return null
         }
         if (messageType == 0xC0 && data.size > 1 && instrumentOverride != null) {
             val program = data[1].toInt() and 0xFF
@@ -4122,29 +4068,13 @@ class NoteCastService : Service() {
         }
     }
 
-    private fun primePedalFanInState(
-        sequence: MidiFileParser.MidiSequence,
-        progressUs: Long,
-        pedalFanInState: MidiPedalFanInState
-    ) {
+    private fun primePedalFanInState(state: MidiPlaybackState, pedalFanInState: MidiPedalFanInState) {
         pedalFanInState.clear()
-        sequence.events.asSequence()
-            .takeWhile { event -> event.timeUs < progressUs }
-            .forEach { event ->
-                val data = event.data
-                if (data.size < 3) return@forEach
-                val sourceChannel = data.midiChannelNumber() ?: return@forEach
-                val status = data[0].toInt() and 0xFF
-                if ((status and 0xF0) != 0xB0) return@forEach
-                val controller = data[1].toInt() and 0x7F
-                if (isPedalController(controller)) {
-                    pedalFanInState.prime(sourceChannel, controller, data[2].toInt() and 0x7F)
-                } else if (controller == 121) {
-                    MidiPedalFanInState.SupportedControllers.forEach { pedalController ->
-                        pedalFanInState.prime(sourceChannel, pedalController, 0)
-                    }
-                }
+        state.channels.forEach { (channel, channelState) ->
+            MidiPedalFanInState.SupportedControllers.forEach { controller ->
+                pedalFanInState.prime(channel, controller, channelState.controllers[controller])
             }
+        }
     }
 
     private fun currentPedalStateMessages(
@@ -4191,12 +4121,11 @@ class NoteCastService : Service() {
     private suspend fun playSequence(
         sequence: MidiFileParser.MidiSequence,
         item: MidiLibraryItem,
-        generation: Long
+        generation: Long,
+        seekIndex: MidiSeekIndex
     ) {
-        var startNs = System.nanoTime() + START_DELAY_NS
+        val clock = MidiPlaybackClock(sequence.durationUs, System.nanoTime(), START_DELAY_NS)
         var lastProgressPostNs = 0L
-        var pauseOffsetNs = 0L
-        var pauseStartedNs = 0L
         var eventIndex = 0
         val rollSustainNoteState = RollSustainNoteState()
         val pedalFanInState = MidiPedalFanInState()
@@ -4213,21 +4142,37 @@ class NoteCastService : Service() {
             }
         }
 
+        fun sendCurrentControllerState() {
+            val messages = synchronized(sourceChannelStateLock) {
+                sourcePlaybackState.controllerMessages(seekIndex.sourceChannels, seekIndex.controllersByChannel)
+            }
+            messages.forEach { data ->
+                sendSourceAwarePlaybackMessage(
+                    PlaybackMidiMessage(data, data.midiChannelNumber(), false, false, false),
+                    System.nanoTime()
+                )
+            }
+        }
+
         fun restoreSustainPedalAfterResumeIfRequested() {
             val request = sustainPedalRestoreRequests.get()
             if (request == handledSustainPedalRestoreRequest) return
             handledSustainPedalRestoreRequest = request
+            sendCurrentProgramSetupForSong(item.id)
+            sendCurrentControllerState()
             sendCurrentPedalState()
         }
 
-        fun refreshRoutingIfNeeded(progressUs: Long) {
+        fun refreshRoutingIfNeeded() {
             val revision = routingRevision.get()
             if (revision == handledRoutingRevision) return
             handledRoutingRevision = revision
             rollSustainNoteState.clear()
-            primePedalFanInState(sequence, progressUs, pedalFanInState)
+            val state = synchronized(sourceChannelStateLock) { sourcePlaybackState.copy() }
+            primePedalFanInState(state, pedalFanInState)
             sendCurrentProgramSetupForSong(item.id)
             if (!_state.value.playback.isPaused) {
+                sendCurrentControllerState()
                 sendCurrentPedalState()
                 // A simultaneous Resume request is satisfied by this same forced restore.
                 handledSustainPedalRestoreRequest = sustainPedalRestoreRequests.get()
@@ -4238,17 +4183,14 @@ class NoteCastService : Service() {
             val cleanProgressUs = progressUs.coerceIn(0L, sequence.durationUs)
             sendPanicMessages()
             rollSustainNoteState.clear()
-            primePedalFanInState(sequence, cleanProgressUs, pedalFanInState)
-            primeSourceChannelState(item.id, sequence, cleanProgressUs)
-            primeSourceNoteLedger(sequence, cleanProgressUs)
+            val position = seekIndex.positionAt(cleanProgressUs)
+            primePedalFanInState(position.state, pedalFanInState)
+            primeSourceChannelState(item.id, position.state)
+            primeSourceNoteLedger(position.state)
             sendCurrentProgramSetupForSong(item.id)
-            sentInitialProgramSetup = true
-            eventIndex = sequence.events.indexOfFirst { it.timeUs >= cleanProgressUs }.let { index ->
-                if (index < 0) sequence.events.size else index
-            }
-            startNs = System.nanoTime() + START_DELAY_NS - cleanProgressUs * 1_000L
-            pauseOffsetNs = 0L
-            pauseStartedNs = 0L
+            sentInitialProgramSetup = cleanProgressUs > 0L
+            eventIndex = position.eventIndex
+            clock.seek(cleanProgressUs, System.nanoTime())
             lastProgressPostNs = 0L
             updatePlaybackProgressFromPlaybackThread(
                 generation = generation,
@@ -4258,109 +4200,61 @@ class NoteCastService : Service() {
                 updateNotification = true
             )
             if (!_state.value.playback.isPaused) {
+                sendCurrentControllerState()
                 sendCurrentPedalState()
                 handledSustainPedalRestoreRequest = sustainPedalRestoreRequests.get()
             }
         }
 
-        playback@ while (true) {
-            loop@ while (eventIndex < sequence.events.size) {
-                coroutineContext.ensureActive()
-                consumeSeekRequest(sequence.durationUs)?.let {
-                    applySeek(it)
-                    continue@loop
-                }
-                val event = sequence.events[eventIndex]
-                while (true) {
-                    coroutineContext.ensureActive()
-                    consumeSkipRequest()?.let { throw TrackSkipRequest(it) }
-                    consumeSeekRequest(sequence.durationUs)?.let {
-                        applySeek(it)
-                        continue@loop
-                    }
-                    val playbackPaused = _state.value.playback.isPaused
-                    val cleanupPending = pendingPauseCleanups.get() > 0
-                    if (playbackPaused || cleanupPending) {
-                        if (pauseStartedNs == 0L) pauseStartedNs = System.nanoTime()
-                        val pausedProgressUs = ((pauseStartedNs - startNs - pauseOffsetNs) / 1_000L)
-                            .coerceIn(0L, sequence.durationUs)
-                        if (playbackPaused) refreshRoutingIfNeeded(pausedProgressUs)
-                        rollSustainNoteState.clear()
-                        delay(40)
-                        continue
-                    }
-                    if (pauseStartedNs != 0L) {
-                        pauseOffsetNs += System.nanoTime() - pauseStartedNs
-                        pauseStartedNs = 0L
-                    }
-                    val elapsedUs = ((System.nanoTime() - startNs - pauseOffsetNs) / 1_000L)
-                        .coerceIn(0L, sequence.durationUs)
-                    refreshRoutingIfNeeded(elapsedUs)
-                    restoreSustainPedalAfterResumeIfRequested()
-                    val targetNs = startNs + event.timeUs * 1_000L + pauseOffsetNs
-                    val scheduleAheadNs = scheduleAheadNsForEvent(event.data)
-                    val sleepNs = targetNs - scheduleAheadNs - System.nanoTime()
-                    if (sleepNs <= 0L) break
-                    delay(min(20L, (sleepNs / 1_000_000L).coerceAtLeast(1L)))
-                }
-                consumeSkipRequest()?.let { throw TrackSkipRequest(it) }
-                consumeSeekRequest(sequence.durationUs)?.let {
-                    applySeek(it)
-                    continue@loop
-                }
-                if (_state.value.playback.isPaused || pendingPauseCleanups.get() > 0) continue@loop
-                val targetNs = startNs + event.timeUs * 1_000L + pauseOffsetNs
-                trackSourceChannelState(item.id, event.data)
-                if (!sentInitialProgramSetup && event.data.firstStatusIsChannelMessage()) {
-                    sendCurrentProgramSetupForSong(item.id)
-                    sentInitialProgramSetup = true
-                }
-                var sendInterrupted = false
-                for (message in playbackMessagesForEvent(event.data, rollSustainNoteState, pedalFanInState)) {
-                    val sendTimestampNs = if (scheduleAheadNsForEvent(message.data) == 0L) System.nanoTime() else targetNs
-                    if (!sendSourceAwarePlaybackMessage(message, sendTimestampNs)) {
-                        sendInterrupted = true
-                        break
-                    }
-                }
-                if (sendInterrupted) continue@loop
-
-                val nowNs = System.nanoTime()
-                if (nowNs - lastProgressPostNs > PROGRESS_POST_INTERVAL_NS) {
-                    lastProgressPostNs = nowNs
-                    val progress = event.timeUs.coerceAtMost(sequence.durationUs)
-                    updatePlaybackProgressFromPlaybackThread(
-                        generation = generation,
-                        itemId = item.id,
-                        progressUs = progress,
-                        durationUs = sequence.durationUs,
-                        updateNotification = false
-                    )
-                }
-                eventIndex++
+        while (true) {
+            coroutineContext.ensureActive()
+            consumeSkipRequest()?.let { throw TrackSkipRequest(it) }
+            consumeSeekRequest(sequence.durationUs)?.let { applySeek(it) }
+            val playbackPaused = _state.value.playback.isPaused
+            if (playbackPaused || pendingPauseCleanups.get() > 0) {
+                clock.pause(System.nanoTime())
+                if (playbackPaused) refreshRoutingIfNeeded()
+                rollSustainNoteState.clear()
+                delay(40)
+                continue
+            }
+            val nowNs = System.nanoTime()
+            clock.resume(nowNs)
+            val elapsedUs = clock.progressUs(nowNs)
+            refreshRoutingIfNeeded()
+            restoreSustainPedalAfterResumeIfRequested()
+            if (nowNs - lastProgressPostNs > PROGRESS_POST_INTERVAL_NS) {
+                lastProgressPostNs = nowNs
+                updatePlaybackProgressFromPlaybackThread(
+                    generation, item.id, elapsedUs, sequence.durationUs, updateNotification = false
+                )
             }
 
-            val finishNs = startNs + sequence.durationUs * 1_000L + pauseOffsetNs + 400_000_000L
-            var postedFinalProgress = false
-            while (System.nanoTime() < finishNs && coroutineContext.isActive) {
-                consumeSkipRequest()?.let { throw TrackSkipRequest(it) }
-                consumeSeekRequest(sequence.durationUs)?.let {
-                    applySeek(it)
-                    if (eventIndex < sequence.events.size) continue@playback
-                }
-                delay(min(50L, ((finishNs - System.nanoTime()) / 1_000_000L).coerceAtLeast(1L)))
-                if (!postedFinalProgress) {
-                    postedFinalProgress = true
-                    updatePlaybackProgressFromPlaybackThread(
-                        generation = generation,
-                        itemId = item.id,
-                        progressUs = sequence.durationUs,
-                        durationUs = sequence.durationUs,
-                        updateNotification = false
-                    )
+            val event = sequence.events.getOrNull(eventIndex)
+            // End-of-track silence uses the same clock, pause, seek and cancellation path as notes.
+            val targetNs = clock.targetNs(event?.timeUs ?: sequence.durationUs)
+            val scheduleAheadNs = event?.let { scheduleAheadNsForEvent(it.data) } ?: 0L
+            val sleepNs = clock.remainingNs(event?.timeUs, System.nanoTime(), scheduleAheadNs)
+            if (sleepNs > 0L) {
+                delay(min(20L, (sleepNs / 1_000_000L).coerceAtLeast(1L)))
+                continue
+            }
+            if (event == null) break
+            if (_state.value.playback.isPaused || pendingPauseCleanups.get() > 0) continue
+            trackSourceChannelState(item.id, event.data)
+            if (!sentInitialProgramSetup && event.data.firstStatusIsChannelMessage()) {
+                sendCurrentProgramSetupForSong(item.id)
+                sentInitialProgramSetup = true
+            }
+            var sendInterrupted = false
+            for (message in playbackMessagesForEvent(event.data, rollSustainNoteState, pedalFanInState)) {
+                val sendTimestampNs = if (scheduleAheadNsForEvent(message.data) == 0L) System.nanoTime() else targetNs
+                if (!sendSourceAwarePlaybackMessage(message, sendTimestampNs)) {
+                    sendInterrupted = true
+                    break
                 }
             }
-            break
+            if (!sendInterrupted) eventIndex++
         }
     }
 
@@ -4793,9 +4687,14 @@ class NoteCastService : Service() {
             it.copy(
                 files = prepared.files,
                 playlists = prepared.playlists,
+                libraryError = null,
                 lastMessage = message
             )
         }
+    }
+
+    fun retryLibraryLoad() {
+        reloadLibrary(text(R.string.service_ready), ensureDemos = true)
     }
 
     private fun reloadLibrary(
@@ -4812,7 +4711,10 @@ class NoteCastService : Service() {
                 throw cancelled
             } catch (t: Throwable) {
                 logEvent("Library load failed: ${unknownError(t)}")
-                withContext(Dispatchers.Main) { postMessage(unknownError(t)) }
+                withContext(Dispatchers.Main) {
+                    _state.update { it.copy(libraryError = unknownError(t)) }
+                    postMessage(unknownError(t))
+                }
             }
         }
     }
@@ -5661,98 +5563,47 @@ class NoteCastService : Service() {
     }
 
     private fun stopRecordingReceiver() {
-        val receiver = recordingReceiver ?: return
+        val receiver = synchronized(recordingLock) {
+            recordingParser = null
+            recordingReceiver.also { recordingReceiver = null }
+        } ?: return
         runCatching { midiOutputPort?.disconnect(receiver) }
-        recordingReceiver = null
     }
 
-    private fun recordIncomingMidi(msg: ByteArray, offset: Int, count: Int, timestamp: Long) {
-        val messages = splitMidiMessages(msg, offset, count)
-        if (messages.isEmpty()) return
+    private fun recordIncomingMidi(
+        parser: MidiStreamParser,
+        msg: ByteArray,
+        offset: Int,
+        count: Int,
+        timestamp: Long
+    ) {
         val nowNs = if (timestamp > 0L) timestamp else System.nanoTime()
-        var elapsedUs = 0L
-        var totalEvents = 0
         synchronized(recordingLock) {
-            if (recordingStartedNs == 0L) recordingStartedNs = nowNs
-            elapsedUs = ((nowNs - recordingStartedNs) / 1_000L).coerceAtLeast(0L)
-            messages.forEach { data -> recordingEvents += MidiFileWriter.RecordedEvent(elapsedUs, data) }
-            totalEvents = recordingEvents.size
-        }
-        _state.update {
-            it.copy(
-                recording = it.recording.copy(
-                    isRecording = true,
-                    eventCount = totalEvents,
-                    durationUs = elapsedUs,
-                    message = text(R.string.service_recording_input)
+            // A callback already in flight when disconnecting must not revive a stopped recording.
+            if (recordingParser !== parser) return
+            val messages = parser.parse(msg, offset, count, nowNs).filter { message ->
+                val status = message.data[0].toInt() and 0xFF
+                // The SMF writer records channel messages and complete SysEx. Clock, active sensing,
+                // and system common messages are framed separately but are not performance events.
+                status in 0x80..0xEF || status == 0xF0
+            }
+            if (messages.isEmpty()) return
+            if (recordingStartedNs == 0L) recordingStartedNs = messages.minOf { it.timestampNs }
+            messages.forEach { message ->
+                val elapsedUs = ((message.timestampNs - recordingStartedNs) / 1_000L).coerceAtLeast(0L)
+                recordingEvents += MidiFileWriter.RecordedEvent(elapsedUs, message.data)
+            }
+            val elapsedUs = ((nowNs - recordingStartedNs) / 1_000L).coerceAtLeast(0L)
+            _state.update {
+                it.copy(
+                    recording = it.recording.copy(
+                        isRecording = true,
+                        eventCount = recordingEvents.size,
+                        durationUs = elapsedUs,
+                        message = text(R.string.service_recording_input)
+                    )
                 )
-            )
-        }
-    }
-
-    private fun splitMidiMessages(msg: ByteArray, offset: Int, count: Int): List<ByteArray> {
-        val end = (offset + count).coerceAtMost(msg.size)
-        val messages = mutableListOf<ByteArray>()
-        var index = offset.coerceAtLeast(0)
-        var runningStatus = 0
-        while (index < end) {
-            var status = msg[index].toInt() and 0xFF
-            if (status >= 0x80) {
-                index++
-            } else if (runningStatus != 0) {
-                status = runningStatus
-            } else {
-                index++
-                continue
             }
-
-            when {
-                status in 0x80..0xEF -> {
-                    runningStatus = status
-                    val dataLength = channelMessageDataLength(status)
-                    if (index + dataLength > end) return messages
-                    val data = ByteArray(dataLength + 1)
-                    data[0] = status.toByte()
-                    repeat(dataLength) { data[it + 1] = msg[index + it] }
-                    messages += data
-                    index += dataLength
-                }
-
-                status == 0xF0 -> {
-                    runningStatus = 0
-                    val sysexStart = index - 1
-                    while (index < end && (msg[index].toInt() and 0xFF) != 0xF7) index++
-                    if (index < end) index++
-                    messages += msg.copyOfRange(sysexStart, index)
-                }
-
-                status == 0xF7 -> {
-                    runningStatus = 0
-                    messages += byteArrayOf(0xF7.toByte())
-                }
-
-                else -> {
-                    runningStatus = 0
-                    val dataLength = systemCommonDataLength(status)
-                    if (index + dataLength <= end) index += dataLength else return messages
-                }
-            }
-        }
-        return messages
-    }
-
-    private fun channelMessageDataLength(status: Int): Int {
-        return when (status and 0xF0) {
-            0xC0, 0xD0 -> 1
-            else -> 2
-        }
-    }
-
-    private fun systemCommonDataLength(status: Int): Int {
-        return when (status) {
-            0xF1, 0xF3 -> 1
-            0xF2 -> 2
-            else -> 0
         }
     }
 
@@ -6020,7 +5871,7 @@ class NoteCastService : Service() {
         settings: AppSettings,
         songId: String,
         sourceChannels: List<Int>,
-        sourceStates: Map<Int, SourceChannelProgramState>,
+        sourceStates: Map<Int, MidiPlaybackState.Channel>,
         timestampNs: Long
     ) {
         if (settings.mergeAllInstrumentsToPianoChannel) {
@@ -6034,37 +5885,18 @@ class NoteCastService : Service() {
         }
 
         val overrides = settings.instrumentOverridesForSong(songId).cleanInstrumentOverrides()
-        val metadataPrograms = _state.value.playbackChannels.associate { channelInfo ->
-            channelInfo.channel to channelInfo.programNumbers.firstOrNull()
-        }
         sourceChannels.forEach { sourceChannel ->
             val outputChannel = outputChannelForCurrentPlayback(sourceChannel, settings, songId)
-            val overrideProgram = overrides[sourceChannel]
-            val sourceState = sourceStates[sourceChannel]
-            if (overrideProgram != null) {
-                sendBankSelect(port, outputChannel, msb = 0, lsb = 0, timestampNs = timestampNs)
-            } else if (sourceState != null) {
-                if (sourceState.bankMsb != null || sourceState.bankLsb != null) {
-                    sendBankSelect(
-                        port,
-                        outputChannel,
-                        msb = sourceState.bankMsb ?: 0,
-                        lsb = sourceState.bankLsb ?: 0,
-                        timestampNs = timestampNs
-                    )
-                }
+            val sourceState = sourceStates[sourceChannel] ?: MidiPlaybackState.Channel()
+            sourceState.programMessages(outputChannel, overrides[sourceChannel]).forEach { data ->
+                sendMidiMessage(port, data, timestampNs)
             }
-            val program = overrideProgram
-                ?: sourceState?.program
-                ?: metadataPrograms[sourceChannel]
-                ?: GeneralMidi.defaultProgramForChannel(sourceChannel)
-            sendProgramChange(port, outputChannel, program, timestampNs)
             if (settings.volumeControlMode == VolumeControlMode.LegacyVolumeScaling) {
                 sendControlChange(
                     port,
                     outputChannel,
                     controller = 7,
-                    value = sourceState?.volume ?: 100,
+                    value = sourceState.controllers[7],
                     timestampNs = timestampNs
                 )
             }

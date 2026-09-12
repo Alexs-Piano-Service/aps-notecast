@@ -725,7 +725,19 @@ private fun NoteCastApp(
             )
         }
     ) { innerPadding ->
-        Box(Modifier.fillMaxSize()) {
+        val libraryError = state.libraryError
+        if (libraryError != null) {
+            Column(
+                Modifier.fillMaxSize().padding(innerPadding).padding(24.dp),
+                verticalArrangement = Arrangement.spacedBy(16.dp)
+            ) {
+                Text(stringResource(R.string.library_recovery_title), style = MaterialTheme.typography.titleLarge)
+                Text(libraryError, color = MaterialTheme.colorScheme.error)
+                Button(onClick = service::retryLibraryLoad) {
+                    Text(stringResource(R.string.library_retry_load))
+                }
+            }
+        } else Box(Modifier.fillMaxSize()) {
             AdaptiveHome(
                 state = libraryPaneState,
                 service = service,

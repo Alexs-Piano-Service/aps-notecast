@@ -76,6 +76,7 @@ object MidiFileParser {
         val pedalEventCountsByChannel = mutableMapOf<Int, Int>()
         var title: String? = null
         var order = 0L
+        var endTick = 0L
 
         repeat(trackCount) {
             if (!reader.canRead(8)) return@repeat
@@ -113,6 +114,7 @@ object MidiFileParser {
                         val metaLength = reader.readVariableLengthQuantity().toInt()
                         val data = reader.readBytes(metaLength)
                         when (metaType) {
+                            0x2F -> break // End of Track includes its delta time, even after the last note.
                             0x03 -> {
                                 val cleanName = cleanMetaText(data)
                                 if (trackName.isNullOrBlank()) trackName = cleanName
@@ -168,6 +170,7 @@ object MidiFileParser {
                     else -> error("Unsupported MIDI status byte 0x${status.toString(16)}")
                 }
             }
+            endTick = maxOf(endTick, tick)
             if (reader.position != trackEnd) reader.position = trackEnd
             trackInfos += TrackInfo(
                 trackName = trackName,
@@ -178,14 +181,13 @@ object MidiFileParser {
             )
         }
 
-        val scheduled = schedule(rawEvents, tempos, division)
-        val duration = scheduled.maxOfOrNull { it.timeUs } ?: 0L
+        val scheduled = schedule(rawEvents, tempos, division, endTick)
         val cleanTitle = title ?: fallbackTitle.replace(Regex("\\.(mid|midi)$", RegexOption.IGNORE_CASE), "")
         val metadata = channelMetadata(trackInfos, cleanTitle)
         return MidiSequence(
             title = cleanTitle,
-            durationUs = duration,
-            events = scheduled,
+            durationUs = scheduled.durationUs,
+            events = scheduled.events,
             channelLabels = channelLabels(metadata),
             channelMetadata = metadata,
             pedalAnalysis = pedalAnalysis(noteEventCountsByChannel, pedalEventCountsByChannel)
@@ -200,12 +202,23 @@ object MidiFileParser {
             .takeIf { it.isNotBlank() }
 
     private fun decodeMetaText(data: ByteArray): String {
+        data.decodeStrict(Charsets.UTF_8)?.let { return it }
         val latinText = data.toString(latin1)
         if (!latinText.contains(Regex("[\\u0080-\\u009F]"))) return latinText
+        val japaneseText = data.decodeStrict(shiftJis)
+        // Legacy Japanese text can also be legal Windows-1252. Prefer its Japanese script over
+        // mojibake, while a Western punctuation byte followed by ASCII is weak evidence alone.
+        if (japaneseText != null) {
+            val kana = japaneseText.count { it in '\u3040'..'\u30FF' }
+            val kanji = japaneseText.count { it in '\u4E00'..'\u9FFF' }
+            val hasHighTrailBytes = data.any { (it.toInt() and 0xFF) >= 0xA0 }
+            if (kana > 0 || (kanji > 0 && (hasHighTrailBytes || kanji * 2 >= japaneseText.length))) {
+                return japaneseText
+            }
+        }
         val candidates = listOfNotNull(
-            data.decodeStrict(Charsets.UTF_8),
             data.decodeStrict(windows1252),
-            data.decodeStrict(shiftJis),
+            japaneseText,
             latinText
         ).distinct()
         return candidates.minByOrNull { it.decodePenalty() } ?: latinText
@@ -302,13 +315,15 @@ object MidiFileParser {
         val programNumbers: MutableList<Int> = mutableListOf()
     )
 
+    private data class ScheduledTrack(val events: List<ScheduledMidiEvent>, val durationUs: Long)
+
     private fun schedule(
         rawEvents: List<RawMidiEvent>,
         tempos: List<TempoEvent>,
-        division: Int
-    ): List<ScheduledMidiEvent> {
+        division: Int,
+        endTick: Long
+    ): ScheduledTrack {
         val events = rawEvents.sortedWith(compareBy<RawMidiEvent> { it.tick }.thenBy { it.order })
-        if (events.isEmpty()) return emptyList()
 
         val ppq = division and 0x7FFF
         val isPpq = (division and 0x8000) == 0
@@ -323,7 +338,10 @@ object MidiFileParser {
             }
             val ticksPerFrame = (division and 0xFF).coerceAtLeast(1)
             val usPerTick = 1_000_000.0 / (fps * ticksPerFrame)
-            return events.map { ScheduledMidiEvent((it.tick * usPerTick).roundToLong(), it.data) }
+            return ScheduledTrack(
+                events.map { ScheduledMidiEvent((it.tick * usPerTick).roundToLong(), it.data) },
+                (endTick * usPerTick).roundToLong()
+            )
         }
 
         require(ppq > 0) { "Invalid MIDI time division" }
@@ -345,11 +363,14 @@ object MidiFileParser {
             }
         }
 
-        return events.map { event ->
+        val scheduled = events.map { event ->
             advanceTempo(event.tick)
             val eventUs = lastTempoUs + ((event.tick - lastTempoTick) * currentTempo) / ppq
             ScheduledMidiEvent(eventUs, event.data)
         }
+        advanceTempo(endTick)
+        val durationUs = lastTempoUs + ((endTick - lastTempoTick) * currentTempo) / ppq
+        return ScheduledTrack(scheduled, durationUs)
     }
 
     private fun channelMessageDataLength(status: Int): Int {

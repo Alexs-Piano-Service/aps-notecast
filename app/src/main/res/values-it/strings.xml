@@ -1,4 +1,6 @@
 <resources>
+    <string name="library_recovery_title">Libreria non disponibile</string>
+    <string name="library_retry_load">Riprova a caricare la libreria</string>
     <string name="app_name">APS NoteCast</string>
     <string name="app_short_name">NoteCast</string>
     <string name="developed_by">Sviluppato da</string>
