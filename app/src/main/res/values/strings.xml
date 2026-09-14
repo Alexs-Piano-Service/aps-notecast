@@ -296,6 +296,15 @@
     <string name="playback_select_prompt">Select a MIDI file or playlist</string>
     <string name="playback_track">track</string>
     <string name="record_connect_before">Connect a MIDI device before recording.</string>
+    <string name="record_retry_save">Retry Save</string>
+    <string name="record_export_copy">Export Copy</string>
+    <string name="record_recovering">Recovering recording…</string>
+    <string name="service_recording_recovered">Recovered an unsaved recording. Save, export a copy, or discard it.</string>
+    <string name="service_recording_interrupted">Recording stopped when the device disconnected. Your performance is ready to save.</string>
+    <string name="service_recording_recovery_failed">Could not read the recovery file: %1$s. It has been preserved. Retry or explicitly discard it before starting another recording.</string>
+    <string name="service_recording_checkpoint_failed">Recording continues, but the recovery copy could not be updated: %1$s</string>
+    <string name="service_recording_resolve_pending">Save, export, or discard the unsaved recording before starting another one. Exporting a copy keeps the original pending.</string>
+    <string name="service_recording_copy_exported">Copy exported. The original recording is still pending; save it to the library or discard it.</string>
     <string name="record_default_title">APS NoteCast Recording</string>
     <string name="record_event_count">Events: %1$d - %2$s</string>
     <string name="record_file_name">File name</string>

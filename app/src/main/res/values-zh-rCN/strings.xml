@@ -598,4 +598,13 @@
     <string name="settings_merge_all_instruments">将所有乐器合并到钢琴输入</string>
     <string name="settings_merge_all_instruments_subtitle">将每个源通道作为原声大钢琴发送到原声钢琴输入通道 %1$d。所有源共享踏板、弯音、标准 MIDI 音量和其他整个通道的控制器。请使用主音量调整音量；无法保留独立音色。</string>
     <string name="settings_midi_channel_value">通道 %1$d</string>
+    <string name="record_retry_save">重试保存</string>
+    <string name="record_export_copy">导出副本</string>
+    <string name="record_recovering">正在恢复录音…</string>
+    <string name="service_recording_recovered">已恢复一段未保存的录音。请选择保存、导出副本或丢弃。</string>
+    <string name="service_recording_interrupted">设备断开连接时录音已停止。您的演奏可以保存了。</string>
+    <string name="service_recording_recovery_failed">无法读取恢复文件：%1$s。文件已保留。请重试或明确丢弃该文件后再开始新的录音。</string>
+    <string name="service_recording_checkpoint_failed">录音仍在继续，但无法更新恢复副本：%1$s</string>
+    <string name="service_recording_resolve_pending">开始新的录音前，请保存或丢弃未保存的录音。您也可以导出副本，但原始录音仍会保持待保存状态。</string>
+    <string name="service_recording_copy_exported">副本已导出。原始录音仍未保存，请将其保存到曲库或丢弃。</string>
 </resources>

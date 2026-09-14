@@ -162,6 +162,19 @@ class MidiRepositoryRecoveryTest {
         assertEquals(1, JSONObject(metadata.readText()).getInt("nameNormalizationVersion"))
     }
 
+    @Test
+    fun retryAfterRecordingCommitDoesNotDuplicateTheSongOrPlaylistEntry() {
+        val repository = MidiRepository(context)
+        val playlist = repository.createPlaylist("Recordings").value
+        val recordingId = java.util.UUID.randomUUID().toString()
+        val original = repository.saveRecordedMidi("Original", midiBytes, playlist.id, recordingId)
+        val retried = MidiRepository(context).saveRecordedMidi("Original", midiBytes, playlist.id, recordingId)
+        assertEquals(original, retried)
+        assertEquals(1, retried.snapshot.files.size)
+        assertEquals(listOf(original.value.id), retried.snapshot.playlists.single().itemIds)
+        assertEquals(1, midiDirectory.listFiles()!!.size)
+    }
+
     private fun seedLibrary(): LibrarySnapshot {
         val repository = MidiRepository(context)
         val song = repository.importMidiBytes(midiBytes, "Test song.mid").value

@@ -598,4 +598,13 @@
     <string name="notification_preparing_dots">Préparation...</string>
     <string name="notification_playing_time">Lecture de %1$s / %2$s</string>
     <string name="notification_paused_time">%1$s / %2$s en pause</string>
+    <string name="record_retry_save">Réessayer l’enregistrement</string>
+    <string name="record_export_copy">Exporter une copie</string>
+    <string name="record_recovering">Récupération de la prise…</string>
+    <string name="service_recording_recovered">Une prise non sauvegardée a été récupérée. Sauvegardez-la, exportez une copie ou supprimez-la.</string>
+    <string name="service_recording_interrupted">La prise s’est arrêtée lorsque l’appareil a été déconnecté. Votre interprétation est prête à être sauvegardée.</string>
+    <string name="service_recording_recovery_failed">Impossible de lire le fichier de récupération : %1$s. Il a été conservé. Réessayez ou supprimez-le explicitement avant de commencer une nouvelle prise.</string>
+    <string name="service_recording_checkpoint_failed">La prise continue, mais la copie de récupération n’a pas pu être mise à jour : %1$s</string>
+    <string name="service_recording_resolve_pending">Sauvegardez ou supprimez la prise en attente avant d’en commencer une autre. Vous pouvez aussi exporter une copie ; l’original restera en attente.</string>
+    <string name="service_recording_copy_exported">Copie exportée. La prise originale est toujours en attente ; sauvegardez-la dans la bibliothèque ou supprimez-la.</string>
 </resources>

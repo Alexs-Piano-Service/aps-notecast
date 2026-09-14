@@ -598,4 +598,13 @@
     <string name="notification_preparing_dots">Preparando...</string>
     <string name="notification_playing_time">Reproduzindo %1$s / %2$s</string>
     <string name="notification_paused_time">%1$s / %2$s pausado</string>
+    <string name="record_retry_save">Tentar guardar novamente</string>
+    <string name="record_export_copy">Exportar cópia</string>
+    <string name="record_recovering">A recuperar a gravação…</string>
+    <string name="service_recording_recovered">Foi recuperada uma gravação não guardada. Guarde-a, exporte uma cópia ou descarte-a.</string>
+    <string name="service_recording_interrupted">A gravação parou quando o dispositivo foi desligado. A sua interpretação está pronta para ser guardada.</string>
+    <string name="service_recording_recovery_failed">Não foi possível ler o ficheiro de recuperação: %1$s. O ficheiro foi preservado. Tente novamente ou descarte-o explicitamente antes de iniciar outra gravação.</string>
+    <string name="service_recording_checkpoint_failed">A gravação continua, mas não foi possível atualizar a cópia de recuperação: %1$s</string>
+    <string name="service_recording_resolve_pending">Guarde ou descarte a gravação pendente antes de iniciar outra. Também pode exportar uma cópia; o original continuará pendente.</string>
+    <string name="service_recording_copy_exported">Cópia exportada. A gravação original continua pendente; guarde-a na biblioteca ou descarte-a.</string>
 </resources>

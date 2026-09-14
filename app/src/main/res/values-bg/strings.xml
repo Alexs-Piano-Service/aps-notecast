@@ -598,4 +598,13 @@
     <string name="notification_preparing_dots">Подготвя се...</string>
     <string name="notification_playing_time">Възпроизвеждане на %1$s / %2$s</string>
     <string name="notification_paused_time">На пауза %1$s / %2$s</string>
+    <string name="record_retry_save">Повторен опит за запазване</string>
+    <string name="record_export_copy">Експортиране на копие</string>
+    <string name="record_recovering">Възстановяване на записа…</string>
+    <string name="service_recording_recovered">Възстановен е незапазен запис. Запазете го, експортирайте копие или го отхвърлете.</string>
+    <string name="service_recording_interrupted">Записът спря при прекъсване на връзката с устройството. Изпълнението ви е готово за запазване.</string>
+    <string name="service_recording_recovery_failed">Файлът за възстановяване не може да бъде прочетен: %1$s. Той е запазен. Опитайте отново или го отхвърлете изрично, преди да започнете нов запис.</string>
+    <string name="service_recording_checkpoint_failed">Записът продължава, но копието за възстановяване не може да бъде актуализирано: %1$s</string>
+    <string name="service_recording_resolve_pending">Запазете или отхвърлете незапазения запис, преди да започнете нов. Можете и да експортирате копие; оригиналът ще остане незапазен.</string>
+    <string name="service_recording_copy_exported">Копието е експортирано. Оригиналният запис все още чака запазване; запазете го в библиотеката или го отхвърлете.</string>
 </resources>

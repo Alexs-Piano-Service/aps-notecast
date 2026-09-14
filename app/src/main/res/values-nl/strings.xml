@@ -598,4 +598,13 @@
     <string name="settings_merge_all_instruments">Alle instrumenten samenvoegen op de piano-ingang</string>
     <string name="settings_merge_all_instruments_subtitle">Stuur elk bronkanaal als akoestische vleugel naar ingangskanaal %1$d van de akoestische piano. Alle bronnen delen pedalen, pitchbend, standaard MIDI-volume en andere kanaalbrede controllers. Gebruik Hoofdvolume om het niveau te wijzigen; afzonderlijke programma\'s kunnen niet behouden blijven.</string>
     <string name="settings_midi_channel_value">Kanaal %1$d</string>
+    <string name="record_retry_save">Opslaan opnieuw proberen</string>
+    <string name="record_export_copy">Kopie exporteren</string>
+    <string name="record_recovering">Opname herstellen…</string>
+    <string name="service_recording_recovered">Een niet-opgeslagen opname is hersteld. Sla deze op, exporteer een kopie of verwijder de opname.</string>
+    <string name="service_recording_interrupted">De opname is gestopt doordat het apparaat werd losgekoppeld. Je uitvoering is klaar om op te slaan.</string>
+    <string name="service_recording_recovery_failed">Het herstelbestand kon niet worden gelezen: %1$s. Het bestand is bewaard. Probeer het opnieuw of verwijder het uitdrukkelijk voordat je een nieuwe opname start.</string>
+    <string name="service_recording_checkpoint_failed">De opname gaat door, maar de herstelkopie kon niet worden bijgewerkt: %1$s</string>
+    <string name="service_recording_resolve_pending">Sla de niet-opgeslagen opname op of verwijder deze voordat je een nieuwe start. Je kunt ook een kopie exporteren; het origineel blijft dan nog niet opgeslagen.</string>
+    <string name="service_recording_copy_exported">Kopie geëxporteerd. De originele opname is nog niet opgeslagen; sla deze op in de bibliotheek of verwijder deze.</string>
 </resources>

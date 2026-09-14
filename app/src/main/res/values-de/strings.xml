@@ -598,4 +598,13 @@
     <string name="notification_preparing_dots">Vorbereiten...</string>
     <string name="notification_playing_time">%1$s / %2$s spielen</string>
     <string name="notification_paused_time">%1$s / %2$s angehalten</string>
+    <string name="record_retry_save">Erneut speichern</string>
+    <string name="record_export_copy">Kopie exportieren</string>
+    <string name="record_recovering">Aufnahme wird wiederhergestellt…</string>
+    <string name="service_recording_recovered">Eine ungespeicherte Aufnahme wurde wiederhergestellt. Speichern Sie sie, exportieren Sie eine Kopie oder verwerfen Sie sie.</string>
+    <string name="service_recording_interrupted">Die Aufnahme wurde durch die Gerätetrennung beendet. Ihre Aufnahme kann gespeichert werden.</string>
+    <string name="service_recording_recovery_failed">Die Wiederherstellungsdatei konnte nicht gelesen werden: %1$s. Sie wurde aufbewahrt. Versuchen Sie es erneut oder verwerfen Sie sie ausdrücklich, bevor Sie eine neue Aufnahme starten.</string>
+    <string name="service_recording_checkpoint_failed">Die Aufnahme läuft weiter, aber die Wiederherstellungskopie konnte nicht aktualisiert werden: %1$s</string>
+    <string name="service_recording_resolve_pending">Speichern oder verwerfen Sie die ungespeicherte Aufnahme, bevor Sie eine neue starten. Sie können auch eine Kopie exportieren; das Original bleibt dabei ungespeichert.</string>
+    <string name="service_recording_copy_exported">Kopie exportiert. Die Originalaufnahme ist noch ungespeichert. Speichern Sie sie in der Bibliothek oder verwerfen Sie sie.</string>
 </resources>

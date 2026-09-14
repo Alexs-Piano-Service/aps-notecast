@@ -598,4 +598,13 @@
     <string name="settings_merge_all_instruments">모든 악기를 피아노 입력으로 통합</string>
     <string name="settings_merge_all_instruments_subtitle">모든 소스 채널을 어쿠스틱 그랜드 피아노로 어쿠스틱 피아노 입력 채널 %1$d에 전송합니다. 모든 소스가 페달, 피치 벤드, 표준 MIDI 볼륨 및 기타 채널 전체 컨트롤러를 공유합니다. 레벨 변경에는 메인 볼륨을 사용하세요. 개별 프로그램은 유지할 수 없습니다.</string>
     <string name="settings_midi_channel_value">채널 %1$d</string>
+    <string name="record_retry_save">저장 다시 시도</string>
+    <string name="record_export_copy">사본 내보내기</string>
+    <string name="record_recovering">녹음 복구 중…</string>
+    <string name="service_recording_recovered">저장되지 않은 녹음을 복구했습니다. 저장하거나, 사본을 내보내거나, 삭제하세요.</string>
+    <string name="service_recording_interrupted">기기 연결이 끊어져 녹음이 중단되었습니다. 연주를 저장할 수 있습니다.</string>
+    <string name="service_recording_recovery_failed">복구 파일을 읽을 수 없습니다: %1$s. 파일은 보존되었습니다. 다시 시도하거나 명시적으로 삭제한 후 새 녹음을 시작하세요.</string>
+    <string name="service_recording_checkpoint_failed">녹음은 계속되지만 복구 사본을 업데이트할 수 없습니다: %1$s</string>
+    <string name="service_recording_resolve_pending">새 녹음을 시작하기 전에 저장되지 않은 녹음을 저장하거나 삭제하세요. 사본을 내보낼 수도 있지만 원본은 저장되지 않은 상태로 남습니다.</string>
+    <string name="service_recording_copy_exported">사본을 내보냈습니다. 원본 녹음은 아직 저장되지 않았습니다. 라이브러리에 저장하거나 삭제하세요.</string>
 </resources>

@@ -598,4 +598,13 @@
     <string name="settings_merge_all_instruments">すべての音色をピアノ入力に統合</string>
     <string name="settings_merge_all_instruments_subtitle">すべてのソースチャンネルをアコースティックグランドピアノとして、アコースティックピアノの入力チャンネル %1$d に送信します。すべてのソースでペダル、ピッチベンド、標準 MIDI 音量などのチャンネル全体のコントローラーが共有されます。音量の変更にはメイン音量を使用してください。個別のプログラムは保持できません。</string>
     <string name="settings_midi_channel_value">チャンネル %1$d</string>
+    <string name="record_retry_save">保存を再試行</string>
+    <string name="record_export_copy">コピーを書き出す</string>
+    <string name="record_recovering">録音を復元中…</string>
+    <string name="service_recording_recovered">未保存の録音を復元しました。保存、コピーの書き出し、または破棄を選択してください。</string>
+    <string name="service_recording_interrupted">デバイスの接続が切れたため録音が停止しました。演奏を保存できます。</string>
+    <string name="service_recording_recovery_failed">復元ファイルを読み込めませんでした：%1$s。ファイルは保持されています。再試行するか、明示的に破棄してから新しい録音を開始してください。</string>
+    <string name="service_recording_checkpoint_failed">録音は続行していますが、復元用コピーを更新できませんでした：%1$s</string>
+    <string name="service_recording_resolve_pending">新しい録音を始める前に、未保存の録音を保存または破棄してください。コピーを書き出すこともできますが、元の録音は未保存のまま残ります。</string>
+    <string name="service_recording_copy_exported">コピーを書き出しました。元の録音はまだ未保存です。ライブラリに保存するか、破棄してください。</string>
 </resources>

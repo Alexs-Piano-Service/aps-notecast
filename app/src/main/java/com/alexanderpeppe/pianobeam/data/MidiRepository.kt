@@ -592,11 +592,14 @@ class MidiRepository(private val context: Context) {
     fun saveRecordedMidi(
         title: String,
         bytes: ByteArray,
-        targetPlaylistId: String? = null
+        targetPlaylistId: String? = null,
+        recordingId: String? = null
     ): LibraryMutation<MidiLibraryItem> {
         val snapshot = load()
         val cleanTitle = title.trim().ifBlank { "APS NoteCast Recording" }
-        val id = UUID.randomUUID().toString()
+        val id = recordingId?.let { UUID.fromString(it).toString() } ?: UUID.randomUUID().toString()
+        // A crash after library commit but before recovery cleanup must not create a second song.
+        snapshot.files.firstOrNull { it.id == id }?.let { return LibraryMutation(it, snapshot) }
         val storedName = "$id.mid"
         val displayName = "${cleanTitle.ensureMidiExtension()}"
         val outFile = File(midiDir, storedName)

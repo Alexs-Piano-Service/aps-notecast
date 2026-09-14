@@ -598,4 +598,13 @@
     <string name="notification_preparing_dots">Preparazione...</string>
     <string name="notification_playing_time">Riproduzione di %1$s / %2$s</string>
     <string name="notification_paused_time">%1$s / %2$s in pausa</string>
+    <string name="record_retry_save">Riprova a salvare</string>
+    <string name="record_export_copy">Esporta copia</string>
+    <string name="record_recovering">Recupero della registrazione…</string>
+    <string name="service_recording_recovered">È stata recuperata una registrazione non salvata. Salvala, esportane una copia o eliminala.</string>
+    <string name="service_recording_interrupted">La registrazione si è interrotta quando il dispositivo si è disconnesso. La tua esecuzione è pronta per essere salvata.</string>
+    <string name="service_recording_recovery_failed">Impossibile leggere il file di recupero: %1$s. Il file è stato conservato. Riprova oppure eliminalo esplicitamente prima di avviare una nuova registrazione.</string>
+    <string name="service_recording_checkpoint_failed">La registrazione continua, ma non è stato possibile aggiornare la copia di recupero: %1$s</string>
+    <string name="service_recording_resolve_pending">Salva o elimina la registrazione in sospeso prima di iniziarne un’altra. Puoi anche esportarne una copia; l’originale resterà in sospeso.</string>
+    <string name="service_recording_copy_exported">Copia esportata. La registrazione originale è ancora in sospeso; salvala nella libreria o eliminala.</string>
 </resources>

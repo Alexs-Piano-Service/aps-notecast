@@ -946,6 +946,9 @@ private fun LibraryPane(
     var showPlaylistDialog by rememberSaveable { mutableStateOf(false) }
     var showSelectedPlaylistDialog by rememberSaveable { mutableStateOf(false) }
     var showRecordDialog by rememberSaveable { mutableStateOf(false) }
+    LaunchedEffect(state.recording.hasPendingRecording, state.recording.isRecovering) {
+        if (state.recording.hasPendingRecording && !state.recording.isRecovering) showRecordDialog = true
+    }
     var showKuhmannDialog by rememberSaveable { mutableStateOf(false) }
     var addFilesPlaylistId by rememberSaveable { mutableStateOf<String?>(null) }
     var renameFileId by rememberSaveable { mutableStateOf<String?>(null) }
@@ -6480,10 +6483,15 @@ private fun RecordDialog(
     onDismiss: () -> Unit
 ) {
     val defaultRecordTitle = stringResource(R.string.record_default_title)
-    var title by rememberSaveable(defaultRecordTitle) { mutableStateOf(defaultRecordTitle) }
+    var title by rememberSaveable(recording.title, defaultRecordTitle) {
+        mutableStateOf(recording.title.ifBlank { defaultRecordTitle })
+    }
     var confirmDiscard by rememberSaveable { mutableStateOf(false) }
+    val exportCopyLauncher = rememberLauncherForActivityResult(ActivityResultContracts.CreateDocument("audio/midi")) { uri ->
+        if (uri != null) service.exportPendingRecording(uri, title)
+    }
     AlertDialog(
-        onDismissRequest = { if (!recording.isRecording && !recording.isSaving && !recording.isCountingDown) onDismiss() },
+        onDismissRequest = { if (!recording.needsService && !recording.isRecovering) onDismiss() },
         icon = { Icon(Icons.Default.FiberManualRecord, contentDescription = null, tint = MaterialTheme.colorScheme.error) },
         title = { Text(stringResource(R.string.record_title)) },
         text = {
@@ -6492,6 +6500,7 @@ private fun RecordDialog(
                     value = title,
                     onValueChange = { title = it },
                     label = { Text(stringResource(R.string.record_file_name)) },
+                    enabled = !recording.isSaving && !recording.isRecovering,
                     singleLine = true,
                     modifier = Modifier.fillMaxWidth()
                 )
@@ -6508,20 +6517,28 @@ private fun RecordDialog(
                         }
                     }
                 }
-                if (!connected) {
+                if (recording.hasPendingRecording && !recording.isSaving && !recording.isRecovering) {
+                    TextButton(onClick = { exportCopyLauncher.launch("${title.ifBlank { defaultRecordTitle }}.mid") }) {
+                        Text(stringResource(R.string.record_export_copy))
+                    }
+                }
+                if (!connected && !recording.hasPendingRecording) {
                     Text(stringResource(R.string.record_connect_before), color = MaterialTheme.colorScheme.error)
                 }
             }
         },
         confirmButton = {
             when {
+                recording.isRecovering -> TextButton(onClick = {}, enabled = false) { Text(stringResource(R.string.record_recovering)) }
                 recording.isSaving -> TextButton(onClick = {}) { Text(stringResource(R.string.record_saving)) }
                 recording.isCountingDown -> TextButton(onClick = {}) { Text(stringResource(R.string.record_starting)) }
                 recording.isRecording -> Button(onClick = {
                     service.finishRecording(title)
-                    onDismiss()
                 }) {
                     Text(stringResource(R.string.action_save))
+                }
+                recording.hasPendingRecording -> Button(onClick = { service.finishRecording(title) }) {
+                    Text(stringResource(R.string.record_retry_save))
                 }
                 else -> Button(
                     onClick = { service.startRecording(title) },
@@ -6532,7 +6549,9 @@ private fun RecordDialog(
             }
         },
         dismissButton = {
-            if (recording.isRecording || recording.isCountingDown) {
+            if (recording.isSaving || recording.isRecovering) {
+                // Saving and recovery own the capture until the operation completes.
+            } else if (recording.isRecording || recording.isCountingDown || recording.hasPendingRecording) {
                 TextButton(onClick = {
                     if (settings.confirmDiscardRecording) {
                         confirmDiscard = true
@@ -6541,7 +6560,7 @@ private fun RecordDialog(
                         onDismiss()
                     }
                 }) {
-                    Text(stringResource(R.string.action_cancel))
+                    Text(stringResource(R.string.action_discard))
                 }
             } else {
                 TextButton(onClick = onDismiss) { Text(stringResource(R.string.action_close)) }

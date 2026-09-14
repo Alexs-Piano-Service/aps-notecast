@@ -66,7 +66,8 @@ object MidiFileParser {
         val trackCount = reader.readUInt16()
         val division = reader.readUInt16()
         if (headerLength > 6) reader.skip(headerLength - 6)
-        require(format in 0..2) { "Unsupported MIDI format $format" }
+        require(format != 2) { "MIDI Type 2 contains independent patterns and is not supported. Export a Type 0 or Type 1 file instead." }
+        require(format in 0..1) { "Unsupported MIDI format $format" }
         require(trackCount > 0) { "MIDI file has no tracks" }
 
         val rawEvents = mutableListOf<RawMidiEvent>()
@@ -78,15 +79,20 @@ object MidiFileParser {
         var order = 0L
         var endTick = 0L
 
-        repeat(trackCount) {
-            if (!reader.canRead(8)) return@repeat
+        var tracksRead = 0
+        while (tracksRead < trackCount) {
+            require(reader.canRead(8)) { "Unexpected end of MIDI file: expected $trackCount tracks, found $tracksRead" }
             val chunkId = reader.readAscii(4)
             val length = reader.readInt32()
+            require(reader.canRead(length)) { "Invalid MIDI chunk length for $chunkId" }
             if (chunkId != "MTrk") {
                 reader.skip(length)
-                return@repeat
+                continue
             }
-            val trackEnd = reader.position + length
+            // Bound event reads to this track; malformed events must not consume the next chunk.
+            val reader = ByteReader(reader.readBytes(length))
+            val trackEnd = length
+            tracksRead++
             var tick = 0L
             var runningStatus = 0
             var trackName: String? = null
@@ -383,7 +389,7 @@ object MidiFileParser {
     private class ByteReader(private val bytes: ByteArray) {
         var position: Int = 0
 
-        fun canRead(count: Int): Boolean = position + count <= bytes.size
+        fun canRead(count: Int): Boolean = count >= 0 && count <= bytes.size - position
 
         fun readAscii(count: Int): String = readBytes(count).toString(Charsets.US_ASCII)
 
@@ -410,13 +416,13 @@ object MidiFileParser {
 
         fun readBytes(count: Int): ByteArray {
             require(count >= 0) { "Negative byte count" }
-            require(position + count <= bytes.size) { "Unexpected end of MIDI file" }
+            require(canRead(count)) { "Unexpected end of MIDI file" }
             return bytes.copyOfRange(position, position + count).also { position += count }
         }
 
         fun skip(count: Int) {
             require(count >= 0) { "Negative skip count" }
-            require(position + count <= bytes.size) { "Unexpected end of MIDI file" }
+            require(canRead(count)) { "Unexpected end of MIDI file" }
             position += count
         }
     }

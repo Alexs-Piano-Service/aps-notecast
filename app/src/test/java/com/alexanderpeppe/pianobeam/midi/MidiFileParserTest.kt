@@ -1,6 +1,8 @@
 package com.alexanderpeppe.pianobeam.midi
 
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertArrayEquals
+import org.junit.Assert.assertThrows
 import org.junit.Assert.assertTrue
 import org.junit.Test
 import java.io.ByteArrayOutputStream
@@ -8,6 +10,74 @@ import java.io.DataOutputStream
 import java.nio.charset.Charset
 
 class MidiFileParserTest {
+    @Test
+    fun extensionChunksBeforeAndBetweenTracksDoNotConsumeDeclaredTracks() {
+        val music = track(0 to bytes(0x90, 60, 100), 480 to bytes(0x80, 60, 0), 2400 to bytes(0xFF, 0x2F, 0))
+        val control = parse(music)
+        val extended = MidiFileParser.parse(
+            header(1) + chunk("Xtra", bytes(1, 2, 3)) + chunk("MTrk", music), "Fallback.mid"
+        )
+        assertEquals(3_000_000L, extended.durationUs)
+        assertEquals(control.events.size, extended.events.size)
+        control.events.zip(extended.events).forEach { (expected, actual) ->
+            assertEquals(expected.timeUs, actual.timeUs)
+            assertArrayEquals(expected.data, actual.data)
+        }
+        val twoTracks = MidiFileParser.parse(
+            header(2) + chunk("Xtra", byteArrayOf()) + chunk("MTrk", music) +
+                chunk("Xtra", bytes(4)) + chunk("MTrk", music), "Fallback.mid"
+        )
+        assertEquals(4, twoTracks.events.size)
+        assertEquals(3_000_000L, twoTracks.durationUs)
+    }
+
+    @Test
+    fun missingDeclaredTracksAndPartialChunkHeadersAreRejected() {
+        val first = chunk("MTrk", track(0 to bytes(0xFF, 0x2F, 0)))
+        for (trailer in listOf(byteArrayOf(), bytes(0x4D, 0x54), chunk("Xtra", bytes(1)))) {
+            val error = assertThrows(IllegalArgumentException::class.java) {
+                MidiFileParser.parse(header(2) + first + trailer, "Truncated.mid")
+            }
+            assertTrue(error.message!!.contains("expected 2 tracks, found 1"))
+        }
+    }
+
+    @Test
+    fun invalidChunkLengthsCannotOverflowOrReadPastEndOfFile() {
+        for (id in listOf("Xtra", "MTrk")) {
+            for (length in listOf(-1, Int.MAX_VALUE, 100)) {
+                assertThrows(IllegalArgumentException::class.java) {
+                    MidiFileParser.parse(header(1) + chunk(id, bytes(0), length), "Invalid.mid")
+                }
+            }
+        }
+    }
+
+    @Test
+    fun truncatedEventCannotConsumeBytesFromTheNextChunk() {
+        assertThrows(IllegalArgumentException::class.java) {
+            MidiFileParser.parse(
+                header(2) + chunk("MTrk", bytes(0, 0x90, 60)) +
+                    chunk("MTrk", track(0 to bytes(0xFF, 0x2F, 0))), "Invalid.mid"
+            )
+        }
+    }
+
+    @Test
+    fun typeTwoIndependentPatternsAreRejectedWithAnActionableMessage() {
+        val patterns = listOf(bytes(0x07, 0xA1, 0x20), bytes(0x0F, 0x42, 0x40)).map { tempo ->
+            chunk("MTrk", track(
+                0 to meta(0x51, tempo), 0 to bytes(0x90, 60, 100),
+                480 to bytes(0x80, 60, 0), 0 to bytes(0xFF, 0x2F, 0)
+            ))
+        }
+        val error = assertThrows(IllegalArgumentException::class.java) {
+            MidiFileParser.parse(header(2, format = 2) + patterns[0] + patterns[1], "Patterns.mid")
+        }
+        assertTrue(error.message!!.contains("independent patterns"))
+        assertTrue(error.message!!.contains("Type 0 or Type 1"))
+    }
+
     @Test
     fun endOfTrackPreservesThreeSecondsOfTrailingSilence() {
         val sequence = fixture("notecast_end_of_track_silence.mid")
@@ -109,21 +179,32 @@ class MidiFileParserTest {
     }
 
     private fun parse(vararg tracks: ByteArray, division: Int = 480): MidiFileParser.MidiSequence {
+        val bytes = header(tracks.size, division = division) + tracks.fold(byteArrayOf()) { result, track ->
+            result + chunk("MTrk", track)
+        }
+        return MidiFileParser.parse(bytes, "Fallback.mid")
+    }
+
+    private fun header(trackCount: Int, format: Int = if (trackCount == 1) 0 else 1, division: Int = 480): ByteArray {
         val buffer = ByteArrayOutputStream()
         DataOutputStream(buffer).use { output ->
             output.writeBytes("MThd")
             output.writeInt(6)
-            output.writeShort(if (tracks.size == 1) 0 else 1)
-            output.writeShort(tracks.size)
+            output.writeShort(format)
+            output.writeShort(trackCount)
             output.writeShort(division)
-            tracks.forEach { track ->
-                output.writeBytes("MTrk")
-                output.writeInt(track.size)
-                output.write(track)
-            }
         }
-        return MidiFileParser.parse(buffer.toByteArray(), "Fallback.mid")
+        return buffer.toByteArray()
     }
+
+    private fun chunk(id: String, data: ByteArray, declaredLength: Int = data.size): ByteArray =
+        ByteArrayOutputStream().also { buffer ->
+            DataOutputStream(buffer).use { output ->
+                output.writeBytes(id)
+                output.writeInt(declaredLength)
+                output.write(data)
+            }
+        }.toByteArray()
 
     private fun track(vararg events: Pair<Int, ByteArray>): ByteArray = ByteArrayOutputStream().also { output ->
         events.forEach { (delta, data) ->

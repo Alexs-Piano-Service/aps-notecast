@@ -296,14 +296,18 @@ data class ImportUiState(
 )
 
 data class RecordingUiState(
+    val isRecovering: Boolean = false,
     val isRecording: Boolean = false,
     val isCountingDown: Boolean = false,
     val isSaving: Boolean = false,
+    val hasPendingRecording: Boolean = false,
     val title: String = "",
     val eventCount: Int = 0,
     val durationUs: Long = 0,
     val message: String = "Ready to record"
-)
+) {
+    val needsService: Boolean get() = isRecording || isCountingDown || isSaving
+}
 
 data class PlaybackChannelInfo(
     val channel: Int,

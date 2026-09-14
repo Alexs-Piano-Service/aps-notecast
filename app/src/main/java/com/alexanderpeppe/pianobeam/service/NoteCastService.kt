@@ -68,6 +68,8 @@ import com.alexanderpeppe.pianobeam.data.PlaybackAdvanceMode
 import com.alexanderpeppe.pianobeam.data.PlaybackChannelInfo
 import com.alexanderpeppe.pianobeam.data.PlaybackMode
 import com.alexanderpeppe.pianobeam.data.PlaybackUiState
+import com.alexanderpeppe.pianobeam.data.PendingRecording
+import com.alexanderpeppe.pianobeam.data.RecordingRecoveryStore
 import com.alexanderpeppe.pianobeam.data.RecordingUiState
 import com.alexanderpeppe.pianobeam.data.RepeatMode
 import com.alexanderpeppe.pianobeam.data.VolumeControlMode
@@ -385,8 +387,19 @@ class NoteCastService : Service() {
     private val recordingLock = Any()
     private val recordingEvents = mutableListOf<MidiFileWriter.RecordedEvent>()
     private var recordingStartedNs = 0L
+    private var recordingId = UUID.randomUUID().toString()
+    @Volatile
+    private var recordingCheckpointError: String? = null
     private var recordingReceiver: MidiReceiver? = null
     private var recordingParser: MidiStreamParser? = null
+    private var pendingRecording: PendingRecording? = null
+    // Always acquire this before recordingLock. Checkpoint IO never holds the MIDI callback lock.
+    private val recordingRecoveryLock = Any()
+    private val recordingRecoveryStore by lazy {
+        RecordingRecoveryStore(File(noBackupFilesDir, "recording.recovery"))
+    }
+    private var recordingRecoveryJob: Job? = null
+    private var destroying = false
     private val playbackSurfaceUpdatePending = AtomicBoolean(false)
 
     private data class PreparedLibrarySnapshot(
@@ -454,6 +467,7 @@ class NoteCastService : Service() {
         prefs = getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
         createNotificationChannel()
         createMediaSession()
+        restoreRecordingRecovery()
         loadExternalMidiSources()
         restoreRememberedDevice()
         midiManager.registerDeviceCallback(midiDeviceCallback, mainHandler)
@@ -562,15 +576,18 @@ class NoteCastService : Service() {
             }
             ACTION_DEBUG_DIAGNOSTICS -> logEvent("ADB diagnostics:\n${connectionDiagnostics()}")
         }
-        return if (_state.value.playback.isActive) START_STICKY else START_NOT_STICKY
+        return if (needsService()) START_STICKY else START_NOT_STICKY
     }
 
+    private fun needsService(): Boolean = _state.value.let { it.playback.isActive || it.recording.needsService }
+
     override fun onTaskRemoved(rootIntent: Intent?) {
-        if (!_state.value.playback.isActive) stopSelf()
+        if (!needsService()) stopSelf()
         super.onTaskRemoved(rootIntent)
     }
 
     override fun onDestroy() {
+        destroying = true
         val wasActive = _state.value.playback.isActive
         stopBleScan()
         unregisterBluetoothStateReceiver()
@@ -2752,23 +2769,102 @@ class NoteCastService : Service() {
         }
     }
 
+    private fun restoreRecordingRecovery() {
+        _state.update { it.copy(recording = it.recording.copy(isRecovering = true)) }
+        serviceScope.launch(Dispatchers.IO) {
+            val result = runCatching {
+                synchronized(recordingRecoveryLock) {
+                    recordingRecoveryStore.read()?.also { recovered ->
+                        synchronized(recordingLock) { pendingRecording = recovered }
+                    }
+                }
+            }
+            withContext(Dispatchers.Main) {
+                result.onSuccess { recovered ->
+                    _state.update {
+                        it.copy(recording = recovered?.toUiState(text(R.string.service_recording_recovered)) ?: RecordingUiState())
+                    }
+                }.onFailure { error ->
+                    // Do not allow a new take to overwrite a recovery file we cannot read.
+                    _state.update {
+                        it.copy(recording = RecordingUiState(
+                            hasPendingRecording = true,
+                            message = text(R.string.service_recording_recovery_failed, unknownError(error))
+                        ))
+                    }
+                }
+            }
+        }
+    }
+
+    private fun PendingRecording.toUiState(message: String) = RecordingUiState(
+        hasPendingRecording = true,
+        title = title,
+        eventCount = events.size,
+        durationUs = durationUs,
+        message = message
+    )
+
+    private fun checkpointRecording() = synchronized(recordingRecoveryLock) {
+        val capture = synchronized(recordingLock) {
+            pendingRecording ?: recordingEvents.takeIf { it.isNotEmpty() }?.let {
+                PendingRecording(_state.value.recording.title, it.toList(), recordingId)
+            }
+        }
+        if (capture != null) recordingRecoveryStore.write(capture)
+    }
+
+    private fun startRecordingCheckpoints() {
+        recordingRecoveryJob?.cancel()
+        recordingRecoveryJob = serviceScope.launch(Dispatchers.IO) {
+            while (isActive) {
+                delay(1_000L)
+                runCatching { checkpointRecording() }.onSuccess {
+                    recordingCheckpointError = null
+                }.onFailure { error ->
+                    recordingCheckpointError = text(R.string.service_recording_checkpoint_failed, unknownError(error))
+                    withContext(Dispatchers.Main) {
+                        _state.update {
+                            it.copy(recording = it.recording.copy(
+                                message = recordingCheckpointError ?: it.recording.message
+                            ))
+                        }
+                    }
+                }
+            }
+        }
+    }
+
     fun startRecording(title: String) {
+        val current = _state.value.recording
+        if (current.isRecovering || current.needsService) return
+        if (current.hasPendingRecording) {
+            postMessage(text(R.string.service_recording_resolve_pending))
+            return
+        }
         if (!_state.value.connection.connected || midiOutputPort == null) {
             postMessage(text(R.string.service_connect_before_recording))
             return
         }
-        if (_state.value.recording.isRecording || recordingCountdownJob?.isActive == true) return
         val cleanTitle = title.trim().ifBlank { text(R.string.record_default_title) }
+        _state.update { it.copy(recording = RecordingUiState(isCountingDown = true, title = cleanTitle)) }
+        // Recording has its own foreground lifetime, including count-in and the final save.
+        try {
+            startService(Intent(this, NoteCastService::class.java))
+            startForegroundForRecording()
+            acquireWakeLock()
+        } catch (error: Exception) {
+            _state.update { it.copy(recording = RecordingUiState(message = unknownError(error))) }
+            finishRecordingLifetime()
+            return
+        }
         val countdownSeconds = appSettings.recordingCountdownSeconds.coerceIn(0, 8)
         if (countdownSeconds > 0) {
-            recordingCountdownJob?.cancel()
             recordingCountdownJob = serviceScope.launch {
                 for (remaining in countdownSeconds downTo 1) {
                     _state.update {
                         it.copy(
-                            recording = RecordingUiState(
-                                isCountingDown = true,
-                                title = cleanTitle,
+                            recording = it.recording.copy(
                                 message = if (appSettings.recordingMetronomeEnabled) {
                                     text(R.string.service_count_in, remaining)
                                 } else {
@@ -2778,6 +2874,7 @@ class NoteCastService : Service() {
                             lastMessage = text(R.string.service_recording_starts_in, remaining)
                         )
                     }
+                    updateNotification(cleanTitle)
                     delay(1_000L)
                 }
                 beginRecording(cleanTitle)
@@ -2788,7 +2885,11 @@ class NoteCastService : Service() {
     }
 
     private fun beginRecording(cleanTitle: String) {
-        val outputPort = midiOutputPort ?: return
+        val outputPort = midiOutputPort
+        if (outputPort == null || _state.value.recording.hasPendingRecording || _state.value.recording.isSaving) {
+            preserveRecordingOnDisconnect()
+            return
+        }
         val parser = MidiStreamParser()
         val receiver = object : MidiReceiver() {
             override fun onSend(msg: ByteArray, offset: Int, count: Int, timestamp: Long) {
@@ -2803,6 +2904,8 @@ class NoteCastService : Service() {
         }
         synchronized(recordingLock) {
             recordingEvents.clear()
+            recordingId = UUID.randomUUID().toString()
+            recordingCheckpointError = null
             recordingStartedNs = if (appSettings.autoTrimRecordingSilence) 0L else System.nanoTime()
             recordingReceiver = receiver
             recordingParser = parser
@@ -2810,7 +2913,6 @@ class NoteCastService : Service() {
                 it.copy(
                     recording = RecordingUiState(
                         isRecording = true,
-                        isCountingDown = false,
                         title = cleanTitle,
                         message = text(R.string.service_waiting_midi_input)
                     ),
@@ -2820,86 +2922,167 @@ class NoteCastService : Service() {
         }
         runCatching {
             outputPort.connect(receiver)
+            startRecordingCheckpoints()
+            updateNotification(cleanTitle)
         }.onFailure {
-            stopRecordingReceiver()
-            _state.update { state ->
-                state.copy(
-                    recording = RecordingUiState(message = text(R.string.service_could_not_listen_midi)),
-                    lastMessage = text(R.string.service_recording_failed_to_start)
-                )
-            }
+            preserveRecordingOnDisconnect()
+            postMessage(text(R.string.service_recording_failed_to_start))
         }
     }
 
     fun finishRecording(title: String) {
         val current = _state.value.recording
-        if (!current.isRecording) return
+        if (current.isRecovering || current.isSaving || (!current.isRecording && !current.hasPendingRecording)) return
         stopRecordingReceiver()
+        recordingRecoveryJob?.cancel()
         val cleanTitle = title.trim().ifBlank { current.title.ifBlank { text(R.string.record_default_title) } }
-        val events = synchronized(recordingLock) { recordingEvents.toList() }
-        if (events.isEmpty()) {
-            synchronized(recordingLock) {
-                recordingEvents.clear()
-                recordingStartedNs = 0L
-            }
-            _state.update {
-                it.copy(
-                    recording = RecordingUiState(message = text(R.string.service_recording_discarded_no_input)),
-                    lastMessage = text(R.string.service_no_input_recorded)
-                )
-            }
-            return
-        }
-
-        _state.update {
-            it.copy(recording = current.copy(isRecording = false, isSaving = true, title = cleanTitle, message = text(R.string.record_saving)))
-        }
-        serviceScope.launch(Dispatchers.IO) {
-            runCatching {
-                val bytes = MidiFileWriter.write(cleanTitle, events)
-                withContext(libraryDispatcher) {
-                    val mutation = repository.saveRecordedMidi(
-                        title = cleanTitle,
-                        bytes = bytes,
-                        targetPlaylistId = appSettings.recordingTargetPlaylistId
-                    )
-                    mutation.value to prepareLibrarySnapshot(mutation.snapshot)
-                }
-            }.onSuccess { (item, prepared) ->
-                synchronized(recordingLock) {
+        val pending = synchronized(recordingLock) {
+            (pendingRecording?.copy(title = cleanTitle)
+                ?: recordingEvents.takeIf { it.isNotEmpty() }?.let { PendingRecording(cleanTitle, it.toList(), recordingId) })
+                ?.also {
+                    pendingRecording = it
                     recordingEvents.clear()
                     recordingStartedNs = 0L
                 }
+        }
+        if (pending == null) {
+            if (current.hasPendingRecording) {
+                restoreRecordingRecovery()
+            } else {
+                _state.update { it.copy(recording = RecordingUiState(message = text(R.string.service_recording_discarded_no_input))) }
+                finishRecordingLifetime()
+            }
+            return
+        }
+        _state.update { it.copy(recording = pending.toUiState(text(R.string.record_saving)).copy(isSaving = true)) }
+        updateNotification(cleanTitle)
+        serviceScope.launch(Dispatchers.IO) {
+            try {
+                // A failed checkpoint must not prevent a save to a working library.
+                runCatching { checkpointRecording() }.onFailure { Log.w(LOG_TAG, "Recording checkpoint failed", it) }
+                val bytes = pending.midiBytes()
+                val (item, prepared) = withContext(libraryDispatcher) {
+                    val mutation = repository.saveRecordedMidi(
+                        title = cleanTitle,
+                        bytes = bytes,
+                        targetPlaylistId = appSettings.recordingTargetPlaylistId,
+                        recordingId = pending.id
+                    )
+                    val prepared = prepareLibrarySnapshot(mutation.snapshot)
+                    // Complete cleanup with the committed write, even if the UI coroutine is cancelled.
+                    synchronized(recordingRecoveryLock) {
+                        recordingRecoveryStore.delete()
+                        synchronized(recordingLock) { pendingRecording = null }
+                    }
+                    mutation.value to prepared
+                }
                 withContext(Dispatchers.Main) {
                     publishLibrary(prepared, text(R.string.service_recording_saved_title, item.title))
-                    _state.update { state -> state.copy(recording = RecordingUiState(message = text(R.string.service_recording_saved, item.title))) }
+                    _state.update { it.copy(recording = RecordingUiState(message = text(R.string.service_recording_saved, item.title))) }
                 }
-            }.onFailure { error ->
+            } catch (error: CancellationException) {
+                throw error
+            } catch (error: Exception) {
                 withContext(Dispatchers.Main) {
                     _state.update {
                         it.copy(
-                            recording = RecordingUiState(message = text(R.string.service_could_not_save_recording, unknownError(error))),
+                            recording = pending.toUiState(text(R.string.service_could_not_save_recording, unknownError(error))),
                             lastMessage = text(R.string.service_recording_save_failed)
                         )
                     }
                 }
+            } finally {
+                withContext(kotlinx.coroutines.NonCancellable + Dispatchers.Main) { finishRecordingLifetime() }
+            }
+        }
+    }
+
+    fun exportPendingRecording(uri: Uri, title: String) {
+        val current = _state.value.recording
+        if (current.isSaving || current.isRecovering || !current.hasPendingRecording) return
+        val pending = synchronized(recordingLock) { pendingRecording } ?: return
+        val copy = pending.copy(title = title.trim().ifBlank { pending.title })
+        _state.update { it.copy(recording = current.copy(isSaving = true)) }
+        serviceScope.launch(Dispatchers.IO) {
+            try {
+                contentResolver.openOutputStream(uri, "wt").use { output ->
+                    requireNotNull(output) { "Could not open export destination." }
+                    output.write(copy.midiBytes())
+                }
+                _state.update { it.copy(recording = current.copy(message = text(R.string.service_recording_copy_exported))) }
+            } catch (error: CancellationException) {
+                throw error
+            } catch (error: Exception) {
+                _state.update { it.copy(recording = current.copy(message = text(R.string.service_could_not_save_recording, unknownError(error)))) }
+            } finally {
+                withContext(kotlinx.coroutines.NonCancellable + Dispatchers.Main) { finishRecordingLifetime() }
             }
         }
     }
 
     fun cancelRecording() {
+        if (_state.value.recording.isSaving || _state.value.recording.isRecovering) return
         recordingCountdownJob?.cancel()
         recordingCountdownJob = null
         stopRecordingReceiver()
-        synchronized(recordingLock) {
-            recordingEvents.clear()
-            recordingStartedNs = 0L
+        recordingRecoveryJob?.cancel()
+        val current = _state.value.recording
+        _state.update { it.copy(recording = current.copy(isRecording = false, isCountingDown = false, isSaving = true)) }
+        serviceScope.launch(Dispatchers.IO) {
+            val result = runCatching {
+                synchronized(recordingRecoveryLock) {
+                    recordingRecoveryStore.delete()
+                    synchronized(recordingLock) {
+                        pendingRecording = null
+                        recordingEvents.clear()
+                        recordingStartedNs = 0L
+                    }
+                }
+            }
+            withContext(Dispatchers.Main) {
+                result.onSuccess {
+                    _state.update { it.copy(recording = RecordingUiState(message = text(R.string.service_recording_cancelled))) }
+                }.onFailure { error ->
+                    preserveRecordingOnDisconnect()
+                    _state.update { it.copy(recording = it.recording.copy(isSaving = false, hasPendingRecording = true, message = unknownError(error))) }
+                }
+                finishRecordingLifetime()
+            }
         }
-        _state.update {
-            it.copy(
-                recording = RecordingUiState(message = text(R.string.service_recording_cancelled)),
-                lastMessage = text(R.string.service_recording_cancelled)
-            )
+    }
+
+    private fun preserveRecordingOnDisconnect() {
+        recordingCountdownJob?.cancel()
+        recordingCountdownJob = null
+        recordingRecoveryJob?.cancel()
+        stopRecordingReceiver()
+        synchronized(recordingLock) {
+            if (_state.value.recording.isRecording) {
+                pendingRecording = recordingEvents.takeIf { it.isNotEmpty() }?.let {
+                    PendingRecording(_state.value.recording.title, it.toList(), recordingId)
+                }
+                recordingEvents.clear()
+                recordingStartedNs = 0L
+                _state.update {
+                    it.copy(recording = pendingRecording?.toUiState(text(R.string.service_recording_interrupted))
+                        ?: RecordingUiState(message = text(R.string.service_recording_discarded_no_input)))
+                }
+            } else if (_state.value.recording.isCountingDown) {
+                _state.update { it.copy(recording = RecordingUiState(message = text(R.string.service_recording_cancelled))) }
+            }
+        }
+        // onDestroy cannot depend on a coroutine surviving serviceJob.cancel().
+        runCatching { checkpointRecording() }.onFailure { Log.w(LOG_TAG, "Recording recovery could not be saved", it) }
+        if (!destroying) finishRecordingLifetime()
+    }
+
+    private fun finishRecordingLifetime() {
+        if (destroying) return
+        if (_state.value.playback.isActive) {
+            updateNotification(_state.value.playback.currentTitle ?: text(R.string.app_name))
+        } else {
+            stopForegroundIfNeeded()
+            releaseWakeLock()
         }
     }
 
@@ -5600,7 +5783,7 @@ class NoteCastService : Service() {
                         isRecording = true,
                         eventCount = recordingEvents.size,
                         durationUs = elapsedUs,
-                        message = text(R.string.service_recording_input)
+                        message = recordingCheckpointError ?: text(R.string.service_recording_input)
                     )
                 )
             }
@@ -5627,7 +5810,7 @@ class NoteCastService : Service() {
     }
 
     private fun closeMidiConnection() {
-        stopRecordingReceiver()
+        preserveRecordingOnDisconnect()
         clearSustainPedalState()
         val inputPort = midiInputPort
         val outputPort = midiOutputPort
@@ -5639,7 +5822,6 @@ class NoteCastService : Service() {
         runCatching { inputPort?.close() }
         runCatching { outputPort?.close() }
         runCatching { device?.close() }
-        _state.update { it.copy(recording = RecordingUiState()) }
     }
 
     private fun sendPanicMessages(clearTrackedNotesAfterSend: Boolean = true) {
@@ -6094,6 +6276,7 @@ class NoteCastService : Service() {
     }
 
     private fun releaseWakeLock() {
+        if (!destroying && _state.value.recording.needsService) return
         val lock = wakeLock
         if (lock?.isHeld == true) runCatching { lock.release() }
         wakeLock = null
@@ -6168,7 +6351,19 @@ class NoteCastService : Service() {
     private fun startForegroundForPlayback(title: String) {
         val notification = buildNotification(title)
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-            startForeground(NOTIFICATION_ID, notification, ServiceInfo.FOREGROUND_SERVICE_TYPE_MEDIA_PLAYBACK)
+            val recordingType = if (_state.value.recording.needsService) ServiceInfo.FOREGROUND_SERVICE_TYPE_CONNECTED_DEVICE else 0
+            startForeground(NOTIFICATION_ID, notification, ServiceInfo.FOREGROUND_SERVICE_TYPE_MEDIA_PLAYBACK or recordingType)
+        } else {
+            startForeground(NOTIFICATION_ID, notification)
+        }
+        foreground = true
+    }
+
+    private fun startForegroundForRecording() {
+        val notification = buildNotification(_state.value.recording.title)
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+            val playbackType = if (_state.value.playback.isActive) ServiceInfo.FOREGROUND_SERVICE_TYPE_MEDIA_PLAYBACK else 0
+            startForeground(NOTIFICATION_ID, notification, ServiceInfo.FOREGROUND_SERVICE_TYPE_CONNECTED_DEVICE or playbackType)
         } else {
             startForeground(NOTIFICATION_ID, notification)
         }
@@ -6186,6 +6381,10 @@ class NoteCastService : Service() {
 
     private fun stopForegroundIfNeeded() {
         if (!foreground) return
+        if (_state.value.recording.needsService) {
+            updateNotification(_state.value.playback.currentTitle ?: _state.value.recording.title)
+            return
+        }
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N) {
             stopForeground(STOP_FOREGROUND_REMOVE)
         } else {
@@ -6261,6 +6460,22 @@ class NoteCastService : Service() {
             flags
         )
         val playback = _state.value.playback
+        val recording = _state.value.recording
+        if (recording.needsService) {
+            return Notification.Builder(this, CHANNEL_ID)
+                .setSmallIcon(R.drawable.ic_piano_notification)
+                .setContentTitle(recording.title)
+                .setContentText(when {
+                    recording.isSaving -> text(R.string.record_saving)
+                    recording.isCountingDown -> recording.message
+                    else -> text(R.string.service_recording_input)
+                })
+                .setContentIntent(openIntent)
+                .setOngoing(true)
+                .setOnlyAlertOnce(true)
+                .setCategory(Notification.CATEGORY_SERVICE)
+                .build()
+        }
         val displayTitle = playback.currentTitle ?: title
         val displayText = playback.playlistName ?: when (playback.mode) {
             PlaybackMode.Preparing -> text(R.string.notification_preparing_dots)

@@ -598,4 +598,13 @@
     <string name="settings_merge_all_instruments">Połącz wszystkie instrumenty na wejściu fortepianu</string>
     <string name="settings_merge_all_instruments_subtitle">Wyślij każdy kanał źródłowy na kanał wejściowy %1$d fortepianu akustycznego jako fortepian akustyczny. Wszystkie źródła współdzielą pedały, pitch bend, standardową głośność MIDI i inne kontrolery całego kanału. Do zmiany poziomu użyj Głośności głównej; oddzielnych programów nie można zachować.</string>
     <string name="settings_midi_channel_value">Kanał %1$d</string>
+    <string name="record_retry_save">Ponów zapis</string>
+    <string name="record_export_copy">Eksportuj kopię</string>
+    <string name="record_recovering">Odzyskiwanie nagrania…</string>
+    <string name="service_recording_recovered">Odzyskano niezapisane nagranie. Zapisz je, wyeksportuj kopię lub odrzuć nagranie.</string>
+    <string name="service_recording_interrupted">Nagrywanie zostało zatrzymane po odłączeniu urządzenia. Twoje wykonanie jest gotowe do zapisania.</string>
+    <string name="service_recording_recovery_failed">Nie można odczytać pliku odzyskiwania: %1$s. Plik został zachowany. Spróbuj ponownie lub odrzuć go świadomie przed rozpoczęciem kolejnego nagrania.</string>
+    <string name="service_recording_checkpoint_failed">Nagrywanie trwa, ale nie można zaktualizować kopii odzyskiwania: %1$s</string>
+    <string name="service_recording_resolve_pending">Zapisz lub odrzuć oczekujące nagranie przed rozpoczęciem kolejnego. Możesz też wyeksportować kopię; oryginał nadal będzie oczekiwał na zapis.</string>
+    <string name="service_recording_copy_exported">Kopia została wyeksportowana. Oryginalne nagranie nadal oczekuje na zapis; zapisz je w bibliotece lub odrzuć.</string>
 </resources>
